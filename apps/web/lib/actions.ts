@@ -762,7 +762,7 @@ export async function updatePodImage(slug: string): Promise<ActionResult> {
   // lets the flow proceed; use the configured local image for honesty.
   const image =
     process.env.PODBAY_BASE_IMAGE ??
-    (editionOss() ? process.env.PODBAY_LOCAL_IMAGE || "ghcr.io/velsa/pod-base:latest" : undefined);
+    (editionOss() ? process.env.PODBAY_LOCAL_IMAGE || "ghcr.io/podbay-cloud/pod-base:latest" : undefined);
   if (!image) return { error: "No pod image is configured" };
   try {
     // Starts the update and returns — the recreate takes minutes and awaiting it

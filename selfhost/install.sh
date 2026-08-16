@@ -141,7 +141,7 @@ else
   # Docker then presents expired/invalid credentials and the registry answers "denied" instead of
   # falling back to an anonymous pull. Detect that specifically and tell the user how to fix it.
   app_img=$(grep -oE 'ghcr\.io/[A-Za-z0-9._/-]*pod-app[A-Za-z0-9._:@/-]*' "$DIR/compose.yaml" 2>/dev/null | head -1)
-  app_img="${app_img:-ghcr.io/velsa/pod-app:latest}"
+  app_img="${app_img:-ghcr.io/podbay-cloud/pod-app:latest}"
   if docker pull "$app_img" 2>&1 | grep -qiE 'denied|unauthorized'; then
     die "image pull was DENIED for $app_img — but that image is public.
 

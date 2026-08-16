@@ -57,8 +57,8 @@ Set these in your shell or in a `.env` file beside `compose.yaml`:
 | Variable | Default | Purpose |
 |---|---|---|
 | `PODBAY_PORT` | `8080` | Dashboard port on the Docker host |
-| `PODBAY_APP_IMAGE` | `ghcr.io/velsa/pod-app:latest` | App image override or digest pin |
-| `PODBAY_POD_IMAGE` | `ghcr.io/velsa/pod-base:latest` | Pod image override or digest pin |
+| `PODBAY_APP_IMAGE` | `ghcr.io/podbay-cloud/pod-app:latest` | App image override or digest pin |
+| `PODBAY_POD_IMAGE` | `ghcr.io/podbay-cloud/pod-base:latest` | Pod image override or digest pin |
 | `PODBAY_AUTH_EMAIL` | `owner@localhost` | Owner email for login or pre-seeding |
 | `PODBAY_AUTH_PASSWORD` | unset | Optional owner password to create before the first visit |
 | `BETTER_AUTH_SECRET` | generated | Optional session-secret override; normally persisted automatically |

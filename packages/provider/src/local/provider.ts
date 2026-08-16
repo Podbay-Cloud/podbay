@@ -283,7 +283,7 @@ export class LocalProvider implements SandboxProvider {
   private async imageDigestOf(imageId: string): Promise<string | undefined> {
     if (!imageId) return undefined;
     const r = await this.docker(["inspect", "-f", "{{index .RepoDigests 0}}", imageId]).catch(() => null);
-    // e.g. "ghcr.io/velsa/pod-base@sha256:abc…" → "sha256:abc…"
+    // e.g. "ghcr.io/podbay-cloud/pod-base@sha256:abc…" → "sha256:abc…"
     return r?.exitCode === 0 ? r.stdout.trim().split("@")[1] || undefined : undefined;
   }
 
@@ -640,7 +640,7 @@ export class LocalProvider implements SandboxProvider {
     const preservedSecrets = await catFile("/etc/podbay/secrets.env");
 
     // The web action's `image` is a cloud digest, meaningless to Docker — self-host updates to the
-    // tag it runs (this.image, e.g. ghcr.io/velsa/pod-base:latest). Pull the newest of that tag.
+    // tag it runs (this.image, e.g. ghcr.io/podbay-cloud/pod-base:latest). Pull the newest of that tag.
     void image;
     stage("pulling");
     await this.docker(["pull", this.image]).catch(() => undefined);

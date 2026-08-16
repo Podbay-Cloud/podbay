@@ -14,7 +14,7 @@
 # them by name.
 name: podbay
 
-x-app-image: &app-image ${PODBAY_APP_IMAGE:-ghcr.io/velsa/pod-app:latest}
+x-app-image: &app-image ${PODBAY_APP_IMAGE:-ghcr.io/podbay-cloud/pod-app:latest}
 
 x-app-env: &podbay-env
   PODBAY_EDITION: oss
@@ -23,7 +23,7 @@ x-app-env: &podbay-env
   PODBAY_LOCAL_PROVIDER: "1"
   PODBAY_DEFAULT_PROVIDER: local
   PODBAY_LOCAL_NETWORK: podbay-pods
-  PODBAY_LOCAL_IMAGE: ${PODBAY_POD_IMAGE:-ghcr.io/velsa/pod-base:latest}
+  PODBAY_LOCAL_IMAGE: ${PODBAY_POD_IMAGE:-ghcr.io/podbay-cloud/pod-base:latest}
   PODBAY_ENVIRONMENTS_ROOT: /app/environments
   # Reachability mode (self-host-public-previews): LocalProvider (in web + serve) reads these so a
   # pod's preview URL is the front-door subdomain in ip/domain mode, not a host loopback. Default
@@ -102,7 +102,7 @@ services:
   # Pulls the pod-base image at `up` so the FIRST pod launch is instant (LocalProvider `docker run`s
   # it on the HOST daemon). Runs `true` and exits — its only job is caching the image on the host.
   podbase:
-    image: ${PODBAY_POD_IMAGE:-ghcr.io/velsa/pod-base:latest}
+    image: ${PODBAY_POD_IMAGE:-ghcr.io/podbay-cloud/pod-base:latest}
     command: ["true"]
     restart: "no"
 

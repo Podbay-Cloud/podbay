@@ -1,0 +1,43 @@
+# DCO (Developer Certificate of Origin) check for the public repo (Podbay-Cloud/podbay). Runs on
+# GitHub-hosted runners (FREE for public repos). Fails a PR if any of its commits lacks a
+# `Signed-off-by:` line matching the commit author — keeping contributions license-clean and
+# BSL→Apache relicensable (see CONTRIBUTING.md). Self-contained: no third-party action.
+#
+# Only runs on pull_request, so the mirror's own direct pushes to main are never blocked.
+name: dco
+
+on:
+  pull_request:
+
+jobs:
+  dco:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need the full PR commit range
+      - name: Verify Signed-off-by on every commit
+        run: |
+          base='${{ github.event.pull_request.base.sha }}'
+          head='${{ github.event.pull_request.head.sha }}'
+          fail=0
+          for c in $(git rev-list "$base..$head"); do
+            # Merge commits (2+ parents) are exempt — they aren't authored contributions.
+            if [ "$(git show -s --format='%P' "$c" | wc -w)" -gt 1 ]; then continue; fi
+            author="$(git show -s --format='%an <%ae>' "$c")"
+            if git show -s --format='%B' "$c" | grep -qiF "Signed-off-by: $author"; then
+              echo "ok   $c  $author"
+            else
+              echo "::error::Commit $c is missing 'Signed-off-by: $author' (DCO)."
+              fail=1
+            fi
+          done
+          if [ "$fail" = 1 ]; then
+            echo ""
+            echo "Fix: sign your commits, e.g."
+            echo "  git commit --amend -s        # last commit"
+            echo "  git rebase --signoff origin/main   # a whole branch"
+            echo "See CONTRIBUTING.md."
+            exit 1
+          fi
+          echo "All commits carry a matching Signed-off-by. ✓"

@@ -45,9 +45,9 @@ the database or copied into the Compose volumes.
 
 ## Images
 
-- `ghcr.io/velsa/pod-app` contains the dashboard, self-host entrypoint, control plane, gateway, and
+- `ghcr.io/podbay-cloud/pod-app` contains the dashboard, self-host entrypoint, control plane, gateway, and
   their workspace dependencies.
-- `ghcr.io/velsa/pod-base` is the development environment launched for each pod. It contains the
+- `ghcr.io/podbay-cloud/pod-base` is the development environment launched for each pod. It contains the
   pod agent, Claude Code, Codex pilot support, development tools, and environment templates.
 
 Both images are published for AMD64 and ARM64. The current installer pulls `latest`; digest pins
