@@ -11,6 +11,10 @@ use the managed service at [podbay.cloud](https://podbay.cloud).
 [![License: BSL 1.1](https://img.shields.io/badge/license-BSL%201.1-blue.svg)](LICENSE)
 [![Self-host](https://img.shields.io/badge/self--host-one%20command-brightgreen.svg)](#quickstart-self-host)
 
+<br>
+
+<img src="docs/images/dashboard.png" alt="podbay dashboard — your pods at a glance, each showing its agent's live state, previews, and a one-click open" width="900">
+
 </div>
 
 ## Why podbay

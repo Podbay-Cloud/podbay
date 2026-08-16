@@ -104,6 +104,26 @@ case "$0" in
   install.sh|*/install.sh) SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)" ;;
 esac
 mkdir -p "$DIR"
+
+# ── Guard: one podbay per host ────────────────────────────────────────────────────────────────
+# compose.yaml pins a fixed project name (`name: podbay`), so `docker compose up` targets the SAME
+# project no matter which directory it runs from. If a podbay project already exists on this host
+# managed from a DIFFERENT directory, running here would silently RECONFIGURE (and can break) it.
+# Refuse rather than clobber. (Same dir = a normal update, allowed.)
+here="$(cd "$DIR" && pwd)"
+existing="$(docker compose ls --all 2>/dev/null | awk '$1=="podbay"{print $NF; exit}')"
+if [ -n "$existing" ]; then
+  first_cfg="$(printf '%s' "$existing" | cut -d, -f1)"
+  existing_dir="$(cd "$(dirname "$first_cfg")" 2>/dev/null && pwd || dirname "$first_cfg")"
+  if [ "$existing_dir" != "$here" ]; then
+    die "podbay is already installed on this host, managed from:
+      $existing_dir
+    A second install from here ($here) would reconfigure that one (the compose project name is fixed).
+      • To UPDATE it:   run  PODBAY_DIR='$existing_dir'  with this installer (or: cd '$existing_dir' && docker compose pull && docker compose up -d)
+      • To run ANOTHER: use a separate host — one podbay per host."
+  fi
+fi
+
 if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/compose.yaml" ]; then
   cp "$SELF_DIR/compose.yaml" "$DIR/compose.yaml"; say "Using compose.yaml from $SELF_DIR"
 else
