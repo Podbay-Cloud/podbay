@@ -1,0 +1,25 @@
+node_modules/
+.next/
+.source/
+out/
+dist/
+dist-bundle/
+build/
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+.turbo/
+coverage/
+data/
+*.local
+
+# TypeScript incremental build info
+*.tsbuildinfo
+test-results/
+
+# Pod-agent durable runtime state (scheduler ops-jobs, etc.) — lives on the
+# persistent volume under the repo dir by design; never track it (it dirties deploys).
+/.podbay/
+.podbay-selfhost/

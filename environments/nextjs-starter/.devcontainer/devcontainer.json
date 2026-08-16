@@ -1,0 +1,8 @@
+{
+  "name": "nextjs-starter",
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:22",
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {}
+  },
+  "forwardPorts": [3000]
+}

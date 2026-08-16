@@ -1,0 +1,120 @@
+# Survey — GROWTH / marketing / SEO / outreach / copy (install-ranked via `npx skills find`)
+# Surveyed 2026-07-16. installs = popularity, NOT safety. Decision vocab: use-now/future/undecided/not-useful.
+# HEADLINE: coreyhaines31/marketingskills (MIT) dominates every marketing category by installs — a
+# suite of individually-installable sub-skills. It is the core sourced growth set for Playbook A
+# (subject to the security review — it may carry scripts).
+
+category: growth-marketing
+surveyedAt: 2026-07-16
+primary_source: coreyhaines31/marketingskills   # MIT, install-dominant
+skills:
+  - id: seo-audit
+    ref: coreyhaines31/marketingskills@seo-audit
+    installs: 162900
+    license: MIT
+    decision: use-now
+    why: SEO for A's landing (highest-install marketing skill overall).
+    for: [first-10-customers]
+
+  - id: copywriting
+    ref: coreyhaines31/marketingskills@copywriting
+    installs: 153000
+    license: MIT
+    decision: use-now
+    why: Landing + outreach copy — core to A's outcome.
+    for: [first-10-customers]
+
+  - id: marketing-psychology
+    ref: coreyhaines31/marketingskills@marketing-psychology
+    installs: 112200
+    license: MIT
+    decision: use-now
+    why: Persuasion/positioning for outreach + landing (pairs with the no-spam rule — honest persuasion).
+    for: [first-10-customers]
+
+  # Re-surveyed 2026-07-17 for the market/leads-RESEARCH gap (finding/understanding prospects).
+  - id: customer-research
+    ref: coreyhaines31/marketingskills@customer-research
+    installs: 65100
+    license: MIT
+    decision: use-now
+    why: >-
+      Top "customer/market research" hit + same trusted MIT repo. Prompt-only WORKFLOW (Reddit/G2
+      review-mining, transcript/survey synthesis → ICP/persona/JTBD). Fills A's gap: the playbook
+      asked for 10 real prospects but nothing helped FIND/understand them. Vendored 2026-07-17.
+    for: [first-10-customers]
+  - id: prospecting
+    ref: coreyhaines31/marketingskills@prospecting
+    installs: 0   # not install-ranked in the research survey; added while finishing the playbook
+    license: MIT
+    decision: use-now
+    why: >-
+      The find-leads half of A (customer-research understands prospects; this finds/qualifies them).
+      Prompt-only + ships its OWN anti-scraping compliance layer — stricter than average. Vendored
+      2026-07-17, guarded by no-spam.
+    for: [first-10-customers]
+  - id: cro
+    ref: coreyhaines31/marketingskills@cro
+    installs: 0
+    license: MIT
+    decision: use-now
+    why: Conversion optimization for the campaign landing — lifts the "10 conversations" number. Prompt-only. Vendored 2026-07-17.
+    for: [first-10-customers]
+  # Rejected for A (scraper/tool-coupled — violates our prompt-only, no-scraping posture):
+  #   firecrawl/firecrawl-workflows@firecrawl-{market,lead}-research (29K) — Firecrawl scraping API.
+  #   apify/agent-skills@apify-market-research (3.4K) — Apify scraping platform.
+  #   composiohq/…@lead-research-assistant (4.1K) — Composio integrations/tools.
+  # Runner-up (t1, kept in reserve): anthropics/knowledge-work-plugins@customer-research (2.2K,
+  #   Apache) — official + prompt-only, but lower installs + plugin-shaped; coreyhaines fits our suite.
+
+  - id: cold-email
+    ref: coreyhaines31/marketingskills@cold-email
+    installs: 81200
+    license: MIT
+    decision: use-now
+    why: >-
+      A's outreach engine. Beats growthenginenowoslawski/coldoutboundskills on installs AND avoids
+      that repo's lead-scraping scripts — prefer this. Bind under the no-spam guardrail.
+    for: [first-10-customers]
+
+  - id: content-strategy
+    ref: coreyhaines31/marketingskills@content-strategy
+    installs: 107600
+    license: MIT
+    decision: future
+    why: Content plan — A-adjacent; add if the pilot needs ongoing content, not for the first slice.
+    for: []
+
+  - id: programmatic-seo
+    ref: coreyhaines31/marketingskills@programmatic-seo
+    installs: 103400
+    license: MIT
+    decision: future
+    why: Scaled SEO pages — powerful later; overkill for winning the first 10.
+    for: []
+
+  - id: ai-seo
+    ref: coreyhaines31/marketingskills@ai-seo
+    installs: 91700
+    license: MIT
+    decision: future
+    why: GEO / get-cited-by-LLMs — increasingly relevant; not first-slice.
+    for: []
+
+  - id: analytics-tracking
+    ref: coreyhaines31/marketingskills@analytics-tracking
+    installs: 58300
+    license: MIT
+    decision: future
+    why: Measure funnel/conversions — pairs with the "then KPI the conversion" goal; add post-first-slice.
+    for: []
+
+# Weak/fragmented categories — no dominant skill, DON'T source one:
+# - outreach (grab-bag): top is anthropics/knowledge-work-plugins@draft-outreach (Apache, 2.3K).
+#   coreyhaines cold-email (above) covers A's need better.
+# - CRM: top is ~4K (crm-automation); customware-ai@crm-builder 1.2K; hubspot skills = HubSpot-specific.
+#   CONFIRMS authoring our own crm-lite (t0) — no strong reusable source.
+# - forms / charts / dashboard: framework-specific or low-install; shadcn table + crm-lite suffice.
+notes:
+  crm: author-own (no strong source; validates crm-lite)
+  outreach: covered by cold-email (no dedicated skill)

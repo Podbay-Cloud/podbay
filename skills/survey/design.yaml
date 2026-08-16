@@ -1,0 +1,58 @@
+# Survey — DESIGN / frontend / landing (install-ranked via `npx skills find`, skills.sh)
+# Surveyed 2026-07-16. installs = popularity, NOT safety (skills.sh is uncurated) — the
+# vetting gate still decides what ships. Decision vocab: use-now / future / undecided / not-useful.
+
+category: design
+surveyedAt: 2026-07-16
+skills:
+  - id: frontend-design
+    ref: anthropics/skills@frontend-design
+    installs: 670600
+    license: Apache-2.0            # anthropics/skills README: non-document skills are Apache-2.0
+    decision: use-now
+    why: >-
+      The most-installed design skill; anti-slop "make deliberate aesthetic choices" — exactly the
+      GUIDED-BRANDING taste layer for A's landing. RESOLVES the earlier license block: this copy is
+      Apache-2.0 (the claude-code copy is Commercial ToS — do NOT use that one). Confirm the
+      per-skill LICENSE at vendor time.
+    for: [web-app, first-10-customers]
+
+  - id: web-design-guidelines
+    ref: vercel-labs/agent-skills@web-design-guidelines
+    installs: 467700
+    license: MIT
+    decision: use-now            # already vels-approved
+    why: Quality/a11y/UX review layer (100+ rules). Pairs with frontend-design (taste vs. review).
+    for: [web-app, first-10-customers]
+
+  - id: taste-design-taste-frontend
+    ref: leonxlnx/taste-skill@design-taste-frontend
+    installs: 261300
+    license: MIT
+    decision: undecided
+    why: >-
+      Strong community taste skill; likely OVERLAPS frontend-design. Evaluate head-to-head before
+      adding a second design skill (two taste skills can fight). Pick one primary.
+    for: []
+
+  - id: taste-redesign-existing-projects
+    ref: leonxlnx/taste-skill@redesign-existing-projects
+    installs: 200800
+    license: MIT
+    decision: future
+    why: Redesign an EXISTING app — fits a future repo-onboard/byo playbook, not greenfield A.
+    for: []
+
+  - id: codebase-design
+    ref: mattpocock/skills@codebase-design
+    installs: 177600
+    license: MIT
+    decision: future
+    why: Code architecture/legibility (reputable author, Matt Pocock) — engine-quality, not A-critical.
+    for: [web-app]
+
+# Landing-page-specific skills are IMMATURE (top install only ~11K:
+# 101-skills/skills@landing-page-design). Decision: NO dedicated landing skill — A's landing is
+# served by frontend-design (taste) + web-design-guidelines (quality) + copywriting (below).
+notes:
+  landing: no-dedicated-skill (immature; compose design + copywriting instead)

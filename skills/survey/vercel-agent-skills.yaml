@@ -1,0 +1,83 @@
+# Survey — vercel-labs/agent-skills (what's available to choose from)
+# Source: https://github.com/vercel-labs/agent-skills · License: MIT (redistributable)
+# Surveyed 2026-07-16 (enumerated via `gh api .../git/trees` — 9 SKILL.md, authoritative).
+# Decision vocab: use-now (bind to a current env/playbook) · future (useful for later
+# envs/playbooks) · undecided · not-useful (+ why).
+# last_updated: per-skill upstream date is captured when we pin a SHA (verify-at-pin).
+# This is a SHOPPING LIST, not the approved registry — approved skills graduate to
+# skills/registry.yaml via the vetting gate (docs/plans/skills-management.md).
+# NOTE: agent-skills is only ONE of ~10 vercel-labs skill repos — see the survey
+# README for the broader vercel-labs landscape (next-skills, design-systems generator,
+# migration-skills, etc.). The overall skills universe is thousands; we survey by
+# relevance, per source, not exhaustively.
+
+source: vercel-labs/agent-skills
+license: MIT
+surveyedAt: 2026-07-16
+skills:
+  - id: web-design-guidelines
+    purpose: Review UI code against 100+ web-interface best practices (accessibility, UX, forms).
+    decision: use-now
+    why: >-
+      Quality/compliance layer for the web-app engine's landing + CRM-lite dashboard. MIT, official,
+      review-oriented (safe). Pairs with a generative "taste" skill for anti-slop.
+    for: [web-app, first-10-customers]
+    last_updated: verify-at-pin
+
+  - id: writing-guidelines
+    purpose: Audit prose/docs against Vercel's writing handbook (80+ rules).
+    decision: use-now
+    why: Landing copy + outreach message quality — directly serves Playbook A's outcome.
+    for: [first-10-customers]
+    last_updated: verify-at-pin
+
+  - id: react-best-practices
+    purpose: React/Next.js performance guidelines from Vercel Engineering (40+ rules).
+    decision: future
+    why: General web-app engine quality; not A-critical but good baseline for any Next.js env.
+    for: [web-app]
+    last_updated: verify-at-pin
+
+  - id: composition-patterns
+    purpose: React component architecture patterns (avoid prop proliferation).
+    decision: future
+    why: Keeps growing pod codebases legible; engine-level, not A-specific.
+    for: [web-app]
+    last_updated: verify-at-pin
+
+  - id: react-view-transitions
+    purpose: Smooth animations via React View Transitions API + Next.js.
+    decision: undecided
+    why: Nice polish; not essential and can encourage over-animation. Revisit if design asks for it.
+    for: []
+    last_updated: verify-at-pin
+
+  - id: vercel-optimize
+    purpose: Audit Vercel projects for cost/performance/reliability.
+    decision: undecided
+    why: Valuable once apps deploy to Vercel; we host previews ourselves, so lower relevance now.
+    for: []
+    last_updated: verify-at-pin
+
+  - id: vercel-cli-with-tokens
+    purpose: Drive the Vercel CLI non-interactively with access tokens.
+    decision: not-useful
+    why: For Vercel-hosted deploys; we run pods + host previews ourselves. Out of scope.
+    for: []
+    last_updated: verify-at-pin
+
+  - id: deploy-to-vercel
+    purpose: Deploy to Vercel with framework detection + ownership transfer.
+    decision: not-useful
+    why: >-
+      Conflicts with our model — podbay hosts the live preview; a Vercel deploy-and-transfer is a
+      different "ship" story. Reconsider only for a future "graduate to Vercel" flow.
+    for: []
+    last_updated: verify-at-pin
+
+  - id: react-native-skills
+    purpose: React Native / Expo mobile best practices (16 rules).
+    decision: not-useful
+    why: Web-app engine is web, not React Native. Out of scope.
+    for: []
+    last_updated: verify-at-pin

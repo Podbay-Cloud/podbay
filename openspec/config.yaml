@@ -1,0 +1,34 @@
+schema: spec-driven
+
+context: |
+  Podbay (podbay.cloud): marketplace of one-click agent environments delivered as persistent
+  cloud pods running the UNMODIFIED official Claude Code / Codex CLIs on the user's own
+  subscription. Terminology: "environment" = shareable definition (image + Claude config +
+  repo + network policy); "pod" = running instance (container + persistent volume + lifecycle).
+
+  Tech stack: TypeScript everywhere; pnpm workspaces monorepo; Next.js (App Router) on Fly for
+  landing/dashboard/terminal; xterm.js custom terminal frontend (OSC52 clipboard, link chips
+  via `tmux capture-pane -J`, mobile key bar); Postgres on Neon + Drizzle; better-auth
+  (GitHub OAuth + magic link); Fly Machines + volumes behind a SandboxProvider interface
+  (packages/provider); in-pod Node PTY bridge + sidecar (packages/pod-agent); environment spec
+  v0 = podbay.yaml + Dockerfile/devcontainer + .claude/ dir.
+
+  Hard constraints (ToS, decided): never wrap/proxy model auth; never modify official CLIs;
+  never pool subscriptions across users; per-user login inside their own pod. Security
+  posture: "open box, guarded exits" — container is the boundary; guard credential
+  exfiltration (deny rules now, egress allowlist at MVP, scoped-token proxy later),
+  irreversible external actions (ask on git push), and workspace destruction.
+
+  Key design docs: docs/strategy/roadmap.md (MVP scope + sequence), docs/strategy/analysis.md (market/ToS),
+  docs/runbooks/architecture-topology.md (pods, multi-device, Remote Control), docs/
+  terminal-frontend-plan.md (frontend), docs/runbooks/claude-config.md (permissions). smoke/ is the
+  working smoke-test reference (Fly app podbay-smoke) — mine it, don't extend it.
+
+rules:
+  proposal:
+    - Always include a "Non-goals" section
+    - Note any ToS-sensitive surface (auth, CLI invocation, subscription) explicitly
+  specs:
+    - Use Given/When/Then scenarios
+  tasks:
+    - Each task independently verifiable; prefer vertical slices over layers

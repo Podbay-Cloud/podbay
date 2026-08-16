@@ -1,0 +1,53 @@
+---
+title: Self-hosting
+description: Run the early-alpha single-owner edition on a Docker host you control.
+---
+
+Podbay Self-Hosted gives Claude a persistent workspace on your own computer or server. You still work
+from the official Claude apps; Docker on your host keeps the project, services, and Podbay dashboard
+running.
+
+Choose it when control of the host matters more than a polished, managed setup and you are willing to
+help test an early release.
+
+## What you can do with it
+
+- give Claude a durable workspace for a real project;
+- use your existing Claude Pro or Max subscription from desktop or mobile;
+- run an application with local databases and workers;
+- keep declared services and recurring work available while the host is online;
+- manage project secrets and health from a local dashboard.
+
+The current self-hosted edition is for one owner. It works best for local experiments, homelabs, and
+private-network use.
+
+## Install
+
+You need Docker Desktop or Docker Engine with Compose v2, at least 8 GB of memory, about 6 GB of free
+disk space, and a Claude Pro or Max subscription.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/podbay-cloud/install/main/install.sh | sh
+```
+
+Open `http://localhost:8080` on the Docker host, create the owner login, and launch your first pod.
+After Claude is signed in, continue from the official Claude desktop or mobile app.
+
+## Decide whether the trade-off fits
+
+- Your Docker host must stay awake and online for Claude, services, and scheduled work to continue.
+- App previews currently open only from a browser on that host.
+- Remote deployment needs Docker-aware network filtering and is still experimental.
+- The built-in login is for one owner, not a team or public multi-user service.
+- Deleting a pod deletes its workspace; important code and data need an external backup.
+- Updates may include breaking changes during the alpha.
+
+The public [Podbay install repository](https://github.com/Podbay-Cloud/install) contains installation,
+deployment, operations, architecture, and security guides. The buildable source release and its
+license are still being prepared; the install repository is not yet the source distribution.
+
+<Callout type="warning" title="Early alpha means participation">
+  Early adopters should expect rough edges and be comfortable reporting a reproducible problem. The
+  goal is a useful self-hosted edition, but it does not yet carry production support or availability
+  guarantees.
+</Callout>

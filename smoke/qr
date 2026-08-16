@@ -1,0 +1,15 @@
+#!/bin/bash
+# Extract the most recent URL from the tmux scrollback (with wrapped lines
+# joined) and show it as a QR code + a single copyable line.
+url=$(tmux capture-pane -pJ -S -300 -t main 2>/dev/null | grep -oE 'https://[^[:space:]]+' | tail -1)
+if [ -z "$url" ]; then
+  echo "No URL found in scrollback."
+else
+  qrencode -t ANSIUTF8 -m 1 "$url"
+  echo
+  echo "$url"
+  echo
+  echo "Scan with your phone camera, or select the URL above and copy."
+fi
+echo "(press Enter to close)"
+read -r

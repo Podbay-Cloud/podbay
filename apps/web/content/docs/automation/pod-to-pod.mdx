@@ -1,0 +1,41 @@
+---
+title: Let your pods work together
+description: Ask Claude in one project to hand work to another of your pods and bring the result back.
+---
+
+Separate pods are useful when projects need different tools, access, or context. They do not have to
+be isolated from one another: Claude in one pod can ask Claude in another of your pods to do a task
+and report back.
+
+## When this helps
+
+- A research pod prepares approved source material and asks a website pod to update a page.
+- A product pod asks a documentation pod to check whether a shipped change needs new guidance.
+- A coordinator pod asks several project pods for status and combines their answers.
+- A monitoring pod reports a finding to the pod that owns the affected application.
+
+> Ask the docs pod to check whether the new account flow is documented. Have it make a local draft
+> if needed, then bring me its summary. Do not publish anything.
+
+You can address a pod by the name you gave it. Claude handles delivery and the reply; there is no
+inbox you need to operate during normal use.
+
+## What happens if the other pod is unavailable
+
+If the receiving pod is running, the message wakes its agent with a new task. If it is suspended,
+the message waits and is delivered after that pod resumes. Delivery is durable, but work cannot run
+while the receiving pod is stopped.
+
+## The safety boundary
+
+Pod-to-pod messages can only travel between pods owned by the same account. One of your pods cannot
+discover or contact another person's pod.
+
+A message also does not inherit your authority. The receiving agent treats it as information and
+still asks for the approvals it would normally need before pushing code, publishing content,
+contacting someone, spending money, or changing an external account.
+
+<Callout title="Give each pod a clear job">
+  Name pods by the project or responsibility they own, and ask for a result that is local to that
+  workspace. Clear ownership makes handoffs easier to understand and reduces duplicated work.
+</Callout>

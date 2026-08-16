@@ -1,0 +1,1 @@
+ALTER TABLE "user_agent_credentials" ADD COLUMN "holder_pod_id" text;

@@ -1,0 +1,37 @@
+#!/bin/bash
+# Connection entry point.
+#
+# Onboarding (no credentials yet): run `claude /login` OUTSIDE tmux so the OAuth
+# link soft-wraps and stays clickable. A watcher ends this throwaway session as
+# soon as credentials land, handing off to the persistent tmux session — so the
+# non-resumable window covers only the login screen, where nothing can be lost.
+#
+# Regular flow: persistent tmux session booting straight into Claude.
+cd ~/work || cd ~
+
+CREDS=~/.claude/.credentials.json
+
+if [ ! -f "$CREDS" ]; then
+  clear
+  echo
+  echo "  Welcome to podbay. Pick a login method (Enter for subscription),"
+  echo "  then click the sign-in link."
+  echo
+  (
+    while [ ! -f "$CREDS" ]; do sleep 1; done
+    sleep 2
+    pkill -TERM -f "claude /login" 2>/dev/null
+  ) &
+  watcher=$!
+  claude /login
+  kill "$watcher" 2>/dev/null
+  stty sane
+  clear
+  if [ -f "$CREDS" ]; then
+    echo "  Signed in — starting your persistent session..."
+    sleep 1
+  fi
+fi
+
+# Exiting Claude drops to a shell in the same tmux session instead of closing it.
+exec tmux new -A -s main 'claude; exec bash'

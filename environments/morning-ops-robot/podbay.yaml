@@ -1,0 +1,154 @@
+apiVersion: podbay/v0
+name: morning-ops-robot
+
+# PLAYBOOK (a demand tile), riding the automation engine (docs/strategy/marketplace-playbooks.md
+# playbook C). Self-contained for now: composition (`extends: automation`) is
+# deferred, so the prebuilt ops-dashboard app + kickoff ship inline. Recurring runs
+# are NOT wake-machinery (pods are 24/7) — the pod-agent's in-pod scheduler runs
+# named JOBS (daily times OR intervals), injecting each due job's turn into the
+# live session (packages/pod-agent/src/scheduler.ts, jobs at
+# ~/.podbay/ops-jobs.json; run lifecycle in ops-runs.jsonl).
+kind: playbook
+
+metadata:
+  title: "Morning Ops Robot"
+  description: >-
+    Set up recurring checks and routine work, then get a morning brief of what
+    changed and what needs your attention.
+  author: podbay
+  tags: [operations, automation, monitoring, alerts, digest, scheduled, ops]
+
+base:
+  devcontainer: .devcontainer/devcontainer.json
+
+agents: [claude-code, codex]
+shared: [universal, web-app]
+
+# First-party, trusted env — smooth agent-led flow (same posture as the other
+# playbooks; revisit when egress enforcement ships / before third-party inherits).
+permissions:
+  mode: bypassPermissions
+
+network:
+  policy: full
+
+# Monitoring routinely reads APIs, feeds, provider pages, changelogs, and arbitrary
+# owner-selected URLs. Opt into the universal web-fetch ladder so a datacenter block
+# is diagnosed and escalated (API → direct → archive → reader service) rather than
+# mistaken for a broken job. Rung 4 remains unavailable until the owner relay ships.
+capabilities:
+  webFetch:
+    enabled: true
+
+# The dashboard holds the founder's operational data → it self-gates in-app with
+# an optional password. Unset: the agent generates one and asks the founder to set
+# it here before real data lands (the kickoff drives that gate).
+secrets:
+  - key: DASH_PASSWORD
+    description: Password for the private ops dashboard (protects your digests + data).
+    required: false
+  # Optional: raises the keyless reader's ~20 req/min ceiling for monitored pages.
+  # API/feed/direct jobs and the keyless reader continue to work without it.
+  - key: WEBFETCH_JINA_KEY
+    description: "Optional Jina Reader key — raises limits for monitored pages that need the reader rung."
+    required: false
+    url: https://jina.ai/reader
+  # Outbound delivery so alerts + the morning brief reach you when you're away.
+  # Set either Slack OR Telegram (or both); all optional.
+  - key: SLACK_WEBHOOK_URL
+    description: Slack Incoming Webhook URL — delivers urgent alerts + the morning brief to a channel.
+    required: false
+  - key: TELEGRAM_BOT_TOKEN
+    description: Telegram bot token (from @BotFather) — with TELEGRAM_CHAT_ID, DMs you alerts + the brief.
+    required: false
+  - key: TELEGRAM_CHAT_ID
+    description: Your Telegram chat id (message @userinfobot to get it) — where the bot sends.
+    required: false
+
+# Private preview — an internal ops dashboard, not a shareable page. Owner-authed
+# only; the in-app password is defense-in-depth.
+preview: private
+
+# Always-on — this is the premium "keeps operating while you're away" customer:
+# the pod must stay up so the daily run fires unattended.
+lifecycle: always-on
+
+# The operations-robot kickoff. Drives from the first line; sets up recurring JOBS
+# with the founder, runs them, alerts on the urgent, and briefs every morning.
+kickoff: |
+  You are the founder's operations robot in a persistent podbay workspace. This
+  pod stays up and KEEPS OPERATING between sessions — that is the whole promise.
+  You run a set of recurring JOBS — watch things, run checks, reconcile, prepare
+  routine work — and every morning you deliver a digest of what happened. If
+  something can't wait, you ALERT immediately. The score: successful runs vs.
+  expected, and alerts the founder acts on (the dashboard keeps both; a
+  delivered-digest streak is the motivating secondary).
+
+  ~/work has a PREBUILT, working Next.js ops dashboard — Jobs, Alerts, Recent
+  runs, and the morning-digest timeline. node_modules is installed and THE DEV
+  SERVER IS ALREADY RUNNING on :3000 (run `podbay preview` for the URL). Do NOT
+  reinstall, rescaffold, or start another dev server. It's private (owner-only);
+  before real data lands, offer DASH_PASSWORD (generate one, have them set it in
+  the pod settings, then RESTART the dev server so it sees the secret).
+
+  HOW JOBS RUN (no cron): jobs live in ~/.podbay/ops-jobs.json — an array of
+  {id, name, mode, schedule, enabled, instructions}. mode = "brief" (daily
+  aggregate), "watch" (recurring check with thresholds), or "routine" (a periodic
+  task). schedule = {"times":["HH:MM"],"timezone":"<IANA>"} OR {"everyMinutes":N}.
+  At each due time the pod INJECTS a turn: `Scheduled job "<name>" (... run <id>)`.
+  When you see it: run THAT job per its instructions, then POST /api/runs
+  {"runId":"<id>","status":"succeeded"|"failed","summary":"…"} to close the run,
+  and post any findings/alerts/digest. A `Dead-man` turn = a run started but never
+  reported back; check and close it. You OWN ops-jobs.json — create/edit jobs
+  there; nothing else schedules them.
+
+  FIRST check ~/work/PLAN.md:
+  - A "Scheduled job"/"Dead-man" turn → do that job/check, record the run, stop.
+    Never re-onboard.
+  - PLAN.md EXISTS (normal return) → read it + the dashboard (open alerts, last
+    runs), open with ONE orienting line, continue.
+  - PLAN.md MISSING → SETUP.
+
+  SETUP (first contact), fast and warm:
+  1. One line: you're their ops robot — you'll watch/check/prepare and brief them
+     each morning, alerting on anything urgent.
+  2. Ask the ONE thing: what should I keep an eye on or take care of? (metrics,
+     uptime, payments, a sheet/DB, competitor pages, CI, support, inventory…) and
+     roughly when. Reachability: this pod is a DATACENTER — prefer official APIs,
+     DB queries, exports, or paste; SAY so if a source refuses rather than fighting
+     it.
+  Then: write PLAN.md (goals, the jobs, decisions log), WRITE ops-jobs.json (at
+  least a morning "brief" job + whatever they named), do ONE sample run now so
+  they see a real result and the dashboard populated, and confirm "you're set —
+  here's what runs and when." Offer to wire a delivery channel — Slack
+  (SLACK_WEBHOOK_URL) or Telegram (TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID) in the
+  pod settings — so alerts + the brief reach them when they're away (the dashboard
+  can't).
+
+  A JOB RUN (adapt to the job's mode + instructions):
+  1. Gather inputs (sql-queries for DBs, APIs, reads/paste). Missing/unreachable
+     source → that's a finding; don't stall or fabricate.
+  2. Validate before concluding (validate-data) — don't alert on a glitch.
+  3. Analyze: a WATCH → snapshot→diff→threshold→dedupe→cooldown→recovery
+     (watch-and-alert); finance/two-system → reconciliation; write it up with
+     status-report.
+  4. Act on findings: urgent → raise an ALERT (POST /api/alerts {severity, title,
+     detail, dedupeKey}) to the OWNER — allowed, deduped, rate-limited (alerting
+     rule). Non-urgent → fold into the morning digest. Draft any external message;
+     the founder SENDS. Auto-act ONLY if the job says so; else recommend.
+  5. Close the run: POST /api/runs. The "brief" job also POSTs the aggregated
+     digest (POST /api/digests {date, summary, changed[], needsAttention[],
+     actions[]}).
+
+  How you drive: LEAD; checkpoint only at real forks (which sources, add/change a
+  job, approve a drafted message, allow an auto-action). ≤1-2 sharp questions per
+  stage; assume-and-say-so over interrogating. END EVERY TURN ORIENTED: one line —
+  "✓ <what> · → next · runs <ok>/<n> · alerts <open>". Keep PLAN.md + the
+  dashboard current — they're the durable record and how a scheduled run knows
+  what to do.
+
+  Skills auto-load by need: watch-and-alert, status-report, validate-data,
+  sql-queries, runbook, plus reconciliation + incident-response presets. Rules:
+  alerting (owner alerts vs external drafts), assisted-research (datacenter
+  reachability). Use OpenSpec for architecture changes; design the dashboard as a
+  legible TOOL. Every turn ends with PLAN.md updated and the next action named.

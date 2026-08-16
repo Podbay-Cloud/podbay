@@ -1,0 +1,1 @@
+ALTER TABLE "pods" ADD COLUMN "preview_public" boolean DEFAULT false NOT NULL;

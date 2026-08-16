@@ -1,0 +1,73 @@
+---
+title: Get started
+description: Create your first pod, connect Claude, and ask for a working result from desktop or mobile.
+---
+
+Your first pod takes a few minutes to create and connect. After that, Claude is the main interface.
+Return to Podbay when you want to manage the computer, add access, or inspect what is running.
+
+## 1. Choose what Claude should start with
+
+Open the Podbay dashboard and choose **Create a pod**. Select a prepared environment or connect a
+GitHub repository, then give the pod a name you will recognize in the Claude app.
+
+A prepared environment gives Claude a useful starting point: the right toolchain, project guidance,
+and any job-specific skills. It is not a locked template; Claude can adapt the workspace as the
+project changes.
+
+## 2. Connect your Claude account
+
+When the pod is ready, choose **Open the Claude sign-in page**. Sign in with the Claude account you
+already use, then enter the one-time code in Podbay.
+
+Podbay uses the official Claude Code CLI with your existing Claude Pro or Max subscription. Your
+Podbay account and Claude account remain separate.
+
+## 3. Continue in the Claude app
+
+Podbay starts Claude Remote Control after sign-in and shows **Continue in Claude**. Open it to use the
+pod from the official Claude desktop or mobile app.
+
+The conversation still feels like Claude. The difference is where the work happens: inside a cloud
+computer that remains available instead of on the device in your hands.
+
+## 4. Ask for a complete first result
+
+A good first request exercises more than file editing:
+
+> Take this project from setup to a working development environment. Install what it needs, start
+> the database and supporting services, run the checks, and send me a private link to the app. Tell
+> me what you changed and what will keep running.
+
+Depending on the project and environment, Claude can:
+
+- inspect the repository and its existing instructions;
+- install packages and repair setup problems;
+- start the app, database, and workers;
+- run tests or another meaningful verification;
+- keep important services available across restarts;
+- return a live link you can open outside the pod.
+
+Claude will ask when it needs something only you can provide, such as a missing project credential
+or approval to publish a change.
+
+## 5. Know what you control in Podbay
+
+Use the pod page to:
+
+- add project secrets when Claude requests them;
+- open the app and choose whether its link is private or public;
+- inspect health, CPU, memory, disk, and network activity;
+- manage the GitHub connection, pod size, updates, suspension, and deletion;
+- use the browser terminal as an advanced diagnosis or recovery tool.
+
+<Callout title="The browser terminal is optional">
+  Normal work happens in the official Claude apps. The terminal is an escape hatch when the agent
+  session itself needs attention, not a second interface you are expected to learn.
+</Callout>
+
+## Next
+
+- Explore [what Claude can do in a pod](/docs/capabilities).
+- Learn [what the workspace keeps](/docs/core-concepts/pods).
+- Give Claude [recurring work](/docs/automation/scheduled-work).

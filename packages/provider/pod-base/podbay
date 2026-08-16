@@ -1,0 +1,802 @@
+#!/usr/bin/env bash
+# podbay — the in-pod, self-documenting runtime CLI (read-only; v0). Prints this
+# pod's LIVE facts from the provider-injected pod-spec, so nothing is hardcoded
+# or drifts. The agent calls it via Bash; the user runs it in the terminal.
+set -euo pipefail
+
+SPEC=${PODBAY_SPEC:-/etc/podbay/pod-spec.json}
+DEFAULT_PORT=3000
+
+die() { echo "podbay: $*" >&2; exit 1; }
+need_spec() { [ -f "$SPEC" ] || die "no pod metadata at $SPEC (not inside a podbay pod?)"; }
+field() { jq -r "$1 // empty" "$SPEC" 2>/dev/null || true; }
+
+# The raw previewPublic boolean — read WITHOUT `field`'s `// empty`, because in jq
+# `false // empty` yields empty, which would collapse a legitimately-PRIVATE pod
+# ("false") into "unknown". Returns literally "true" / "false" / "null" (absent).
+# The control plane keeps this fresh in the spec on every toggle, so it is the
+# authoritative in-pod source (no longer the launch-time value).
+previewpublic_raw() { jq -r '.previewPublic' "$SPEC" 2>/dev/null || echo null; }
+
+# Preview visibility straight from the spec (previewPublic) — never assume.
+visibility() {
+  case "$(previewpublic_raw)" in
+    true) echo "public — anyone with the link can view" ;;
+    false) echo "owner-only — make public in the dashboard to share" ;;
+    *) echo "unknown" ;;
+  esac
+}
+
+# `podbay visibility` — a focused read of the preview's public/owner-only state, the
+# one security-load-bearing field an agent must not guess. Setting it is the owner's
+# call in the dashboard (a pod cannot flip its own exposure); this reports the truth.
+cmd_visibility() {
+  need_spec
+  case "$(previewpublic_raw)" in
+    true)  echo "public"; echo "  Anyone with the preview link can view this pod's app. To make it private, use the dashboard." ;;
+    false) echo "owner-only"; echo "  Only you (the signed-in owner) can view the preview. Make it public in the dashboard to share." ;;
+    *)     echo "unknown"; echo "  No previewPublic in the pod metadata — treat as owner-only until confirmed in the dashboard." ;;
+  esac
+}
+
+# The owner's dashboard/control page for THIS pod — where secrets & settings live.
+# Prefer the spec's cockpitUrl; if an OLDER spec lacks it (created before the field
+# existed), DERIVE it from the preview URL (…<id>.preview.<root> → https://<root>/…)
+# so a user is NEVER left without a link to hand to. Empty only with no preview base
+# at all (local/dev), where there is genuinely no dashboard to point at.
+cockpit_url() {
+  local c; c=$(field '.cockpitUrl')
+  [ -n "$c" ] && { echo "$c"; return; }
+  local pv slug root; pv=$(field '.previewUrl'); slug=$(field '.slug')
+  [ -n "$pv" ] && [ -n "$slug" ] || return 0
+  root=$(printf '%s' "$pv" | sed -E 's#^https?://[^.]+\.##; s#^preview\.##; s#/.*$##')
+  [ -n "$root" ] && echo "https://${root}/dashboard/pods/${slug}"
+}
+
+cmd_info() {
+  need_spec
+  local slug env preview policy agent lifecycle
+  slug=$(field '.slug'); env=$(field '.envName')
+  preview=$(field '.previewUrl'); policy=$(field '.network.policy')
+  lifecycle=$(field '.lifecycle')
+  agent=$(jq -r '(.agents | if type=="array" then join(", ") else (keys | join(", ")) end) // empty' "$SPEC" 2>/dev/null || true)
+  local cockpit
+  cockpit=$(cockpit_url)
+  echo "pod:      ${slug:-unknown}"
+  echo "env:      ${env:-unknown}"
+  echo "agent:    ${agent:-claude}"
+  if [ -n "$cockpit" ]; then
+    echo "cockpit:  ${cockpit}  (the owner's control page for THIS pod — resize, secrets, settings)"
+  fi
+  if [ -n "$preview" ]; then
+    echo "preview:  ${preview}  (serve on port ${DEFAULT_PORT})"
+    echo "          $(visibility)"
+  else
+    echo "preview:  (not configured on this deployment)"
+  fi
+  echo "egress:   ${policy:-full}"
+  # The owner's residential relay is the sanctioned egress — surface it here so an agent
+  # reaching for a tunnel sees it exists (and whether it's live) without hunting.
+  if [ -f "$RELAY_STATE" ]; then
+    local rconn; rconn=$(jq -r 'if .connected then "connected" else "configured, offline" end' "$RELAY_STATE" 2>/dev/null || echo "?")
+    echo "relay:    ${rconn} — the owner's residential egress; route via \$PODBAY_RELAY_PROXY (not tailscale/VPN)"
+  else
+    echo "relay:    not connected — ask the owner to run their relay; then route via \$PODBAY_RELAY_PROXY (not tailscale/VPN)"
+  fi
+  echo "lifecycle:${lifecycle:+ }${lifecycle:-auto} — runs 24/7; only an explicit suspend stops it"
+  echo "persists: ~ (incl. ~/work) is on a volume — survives restart, suspend/resume, image updates"
+  echo "          outside ~: system packages, /tmp, running processes all reset"
+  echo "tools:    podbay msg | relay status | fetch get <url> | secrets list | schedule | startup | dev restart | doctor  (podbay --help)"
+}
+
+cmd_preview() {
+  need_spec
+  local port="${1:-$DEFAULT_PORT}" preview
+  preview=$(field '.previewUrl')
+  [ -n "$preview" ] || die "previews are not configured on this deployment"
+  echo "$preview"
+  if [ "$port" != "$DEFAULT_PORT" ]; then
+    echo "note: only port ${DEFAULT_PORT} is auto-forwarded in v0 (you asked for ${port})." >&2
+  fi
+  echo "visibility: $(visibility)" >&2
+}
+
+# doctor lives in its own script (it is long, and has fixes with real consequences);
+# `podbay doctor` is the verb people and agents reach for.
+cmd_doctor() { exec /usr/local/bin/podbay-doctor "$@"; }
+
+# ── fetch memory ────────────────────────────────────────────────────────────
+#
+# The pod NEVER calls the control plane. That is not a limitation to work around —
+# it is how everything else here already works (the control plane polls the pod and
+# drains what it finds; see ingestRepairs). Following it means no per-pod credential
+# to mint, rotate or leak.
+#
+# So: the plan arrives as a FILE the control plane pushes, and reports accumulate in
+# a local buffer the control plane drains on its next pass. `podbay fetch plan` reads
+# the file, which also means it works when the control plane is unreachable — a stale
+# plan degrades gracefully, an absent one just means "climb the ladder as usual".
+FETCH_PLAN=${PODBAY_FETCH_PLAN:-/etc/podbay/fetch-memory.json}
+FETCH_REPORTS=${PODBAY_FETCH_REPORTS:-/home/dev/.podbay-fetch-reports.jsonl}
+FETCH_REPORTS_MAX=${PODBAY_FETCH_REPORTS_MAX:-500}
+
+fetch_domain() { # strip scheme/userinfo/path/port/www — the boundary is enforced
+  printf '%s' "$1" | tr 'A-Z' 'a-z' \
+    | sed -E 's#^[a-z][a-z0-9+.-]*://##; s#^[^/@]*@##; s#[/?\#].*$##; s#:[0-9]+$##; s#^www\.##'
+}
+
+cmd_fetch_plan() {
+  local d; d=$(fetch_domain "${1:-}")
+  [ -n "$d" ] || die "usage: podbay fetch plan <domain-or-url>"
+  if [ ! -f "$FETCH_PLAN" ]; then
+    echo "{\"domain\":\"$d\",\"good\":[],\"bad\":[],\"lastVerified\":null,\"source\":\"no-plan-yet\"}"
+    return 0
+  fi
+  jq -c --arg d "$d" '
+    (.domains[$d] // {good:[],bad:[],lastVerified:null})
+    | {domain:$d, good:(.good//[]), bad:(.bad//[]), lastVerified:(.lastVerified//null), source:"pushed"}
+  ' "$FETCH_PLAN" 2>/dev/null || echo "{\"domain\":\"$d\",\"good\":[],\"bad\":[],\"lastVerified\":null,\"source\":\"unreadable\"}"
+}
+
+cmd_fetch_report() {
+  local d r o; d=$(fetch_domain "${1:-}"); r="${2:-}"; o="${3:-}"
+  [ -n "$d" ] && [ -n "$r" ] && [ -n "$o" ] || die "usage: podbay fetch report <domain-or-url> <rung> <ok|blocked|challenged|login|empty>"
+  case "$o" in ok|blocked|challenged|login|empty) ;; *) die "unknown outcome '$o'" ;; esac
+  case "$r" in api|direct|browser|archive|reader|relay) ;; *) die "unknown rung '$r'" ;; esac
+  printf '{"domain":"%s","rung":"%s","outcome":"%s","at":"%s"}\n' \
+    "$d" "$r" "$o" "$(date -Is)" >> "$FETCH_REPORTS"
+  # Bounded: this buffer is drained by the control plane, and a pod that never gets
+  # drained must not grow a file forever.
+  local n; n=$(wc -l < "$FETCH_REPORTS" 2>/dev/null || echo 0)
+  if [ "$n" -gt "$FETCH_REPORTS_MAX" ]; then
+    tail -n "$FETCH_REPORTS_MAX" "$FETCH_REPORTS" > "$FETCH_REPORTS.tmp" && mv "$FETCH_REPORTS.tmp" "$FETCH_REPORTS"
+  fi
+  echo "recorded: $d $r $o"
+}
+
+# The ladder runs in the pod-agent, not here: the verifier is already bundled with
+# that process, and a route can ENFORCE the ladder where a shell script could only
+# suggest it. This stays a thin client so there is one implementation, not two.
+cmd_fetch_get() {
+  local url="${1:-}"
+  [ -n "$url" ] || die "usage: podbay fetch get <url>"
+  local agent="${PODBAY_AGENT_URL:-http://localhost:8080}"
+  curl -fsS -m 120 -X POST "$agent/fetch" \
+    -H 'content-type: application/json' \
+    --data "$(jq -nc --arg u "$url" '{url:$u}')" \
+    || die "the pod agent could not run the fetch (is it running? try: podbay doctor)"
+}
+
+# ── relay + secrets ─────────────────────────────────────────────────────────
+RELAY_STATE=${PODBAY_RELAY_STATE:-/etc/podbay/relay-state.json}
+SECRETS_ENV=${PODBAY_SECRETS_ENV:-/etc/podbay/secrets.env}
+
+# Whether a relay is available for THIS pod, so an agent knows to queue rather than
+# discovering it mid-task. Reported from a file the control plane pushes, same
+# mechanism as the fetch plan — the pod never calls out.
+cmd_relay_status() {
+  if [ ! -f "$RELAY_STATE" ]; then
+    echo "relay:    not configured"
+    echo "          the owner has not set one up — fetches needing a different"
+    echo "          network origin will report as pending, not fail silently"
+    return 0
+  fi
+  local connected domains since
+  connected=$(jq -r '.connected // false' "$RELAY_STATE" 2>/dev/null)
+  domains=$(jq -r '(.domains // []) | join(", ")' "$RELAY_STATE" 2>/dev/null)
+  since=$(jq -r '.since // empty' "$RELAY_STATE" 2>/dev/null)
+  if [ "$connected" = "true" ]; then
+    echo "relay:    connected${since:+ since $since}"
+    echo "          verify the LIVE exit identity (residential vs datacenter): podbay relay check"
+  else
+    echo "relay:    configured but not connected (the owner's machine is offline)"
+  fi
+  echo "domains:  ${domains:-none allowlisted}"
+}
+
+# The identity a relay is FOR: verify the pod's REAL exit IP is actually diverted through the
+# owner's residential network — not silently exiting the datacenter. `relay status` only knows
+# what the control plane pushed ("connected"); this MEASURES the live egress end-to-end, so it
+# catches every way the identity can degrade (owner's machine offline, a VPN/exit-node on their
+# box, a client that fell back to direct). Exit 0 ONLY when egress is genuinely diverted — so a
+# workload that REQUIRES residential can gate on it: `podbay relay check && run-the-crawl`.
+RELAY_ECHO=${PODBAY_RELAY_ECHO:-https://api.ipify.org}
+cmd_relay_check() {
+  local json=""; [ "${1:-}" = "--json" ] && json=1
+  local proxy="${PODBAY_RELAY_PROXY:-}"
+  local via_relay="" via_direct="" hosting="" isp=""
+  # `if` (not `[ … ] && …`) + `|| true`: under `set -euo pipefail` a bare `&&` whose left is false
+  # exits the script, and a failing curl in a pipeline would trip pipefail.
+  if [ -n "$proxy" ]; then
+    via_relay=$(curl -s -m 15 --proxy "$proxy" "$RELAY_ECHO" 2>/dev/null | tr -dc '0-9a-fA-F.:' || true)
+  fi
+  via_direct=$(curl -s -m 15 "$RELAY_ECHO" 2>/dev/null | tr -dc '0-9a-fA-F.:' || true)
+  # Live relay CAPACITY from the pod-agent (streams in use vs the per-pod cap), so a workload can
+  # size its own concurrency to the ceiling instead of discovering it by failing closed.
+  local cap_json inuse cap owner_cap rate
+  cap_json=$(curl -s -m 5 "http://127.0.0.1:${PODBAY_AGENT_PORT:-8080}/relay" 2>/dev/null || true)
+  inuse=$(printf '%s' "$cap_json" | jq -r '.streamsInUse // empty' 2>/dev/null || true)
+  cap=$(printf '%s' "$cap_json" | jq -r '.streamsMax // empty' 2>/dev/null || true)
+  owner_cap=$(printf '%s' "$cap_json" | jq -r '.maxPerOwner // empty' 2>/dev/null || true)
+  rate=$(printf '%s' "$cap_json" | jq -r '.ratePerDomainPerMin // empty' 2>/dev/null || true)
+  local verdict reason
+  if [ -z "$via_relay" ]; then
+    verdict="fail-closed"
+    reason="a CONNECT through \$PODBAY_RELAY_PROXY is refused (fail-closed, by design) — the relay is not serving. Requests through the proxy FAIL rather than silently exit the datacenter. Is the owner's relay connected? (podbay relay status)"
+  elif [ -n "$via_direct" ] && [ "$via_relay" = "$via_direct" ]; then
+    verdict="degraded"
+    reason="the relay's exit IP ($via_relay) is IDENTICAL to this pod's datacenter egress — traffic is NOT being diverted through the owner's network. A residential-required workload should PAUSE until this clears."
+  else
+    # Exit differs from our DC egress — classify residential vs still-a-datacenter.
+    local info; info=$(curl -s -m 10 "http://ip-api.com/json/${via_relay}?fields=hosting,isp,org" 2>/dev/null)
+    # NOTE the `has()` guard: `.hosting // empty` would swallow a boolean `false` (jq treats
+    # false as absent), so it could never distinguish "confirmed residential" from "lookup failed".
+    hosting=$(printf '%s' "$info" | jq -r 'if has("hosting") then (.hosting|tostring) else empty end' 2>/dev/null)
+    isp=$(printf '%s' "$info" | jq -r '.isp // .org // empty' 2>/dev/null)
+    if [ "$hosting" = "true" ]; then
+      verdict="degraded"
+      reason="the relay exit IP ($via_relay${isp:+, $isp}) is a HOSTING/datacenter address, not residential — the owner's egress has degraded (a VPN or exit-node on their machine?). Residential-required workloads should PAUSE."
+    elif [ "$hosting" = "false" ]; then
+      verdict="diverted"
+      reason="confirmed residential — exit IP $via_relay${isp:+ ($isp)}, not a hosting/datacenter network, and distinct from this pod's datacenter egress${via_direct:+ ($via_direct)}. (A residential IP can still ROTATE — that's normal, not a degradation.)"
+    else
+      verdict="diverted"
+      reason="egress is diverted (exit IP $via_relay, distinct from this pod's datacenter egress${via_direct:+ ($via_direct)}). NOTE: couldn't reach the IP classifier to positively confirm 'residential', but it is NOT the datacenter path."
+    fi
+  fi
+  if [ -n "$json" ]; then
+    jq -cn --arg v "$verdict" --arg r "$via_relay" --arg d "$via_direct" --arg h "${hosting:-unknown}" --arg i "$isp" \
+      --arg iu "${inuse:-}" --arg im "${cap:-}" --arg oc "${owner_cap:-}" --arg rt "${rate:-}" \
+      '{verdict:$v, exitIpViaRelay:$r, datacenterEgress:$d, hosting:$h, isp:$i,
+        streamsInUse:(if $iu=="" then null else ($iu|tonumber) end),
+        streamsMax:(if $im=="" then null else ($im|tonumber) end),
+        maxPerOwner:(if $oc=="" then null else ($oc|tonumber) end),
+        ratePerDomainPerMin:(if $rt=="" then null else ($rt|tonumber) end),
+        ok:($v=="diverted")}'
+  else
+    echo "relay egress: $verdict"
+    echo "  exit IP via relay:  ${via_relay:-<none — fail-closed>}"
+    echo "  datacenter egress:  ${via_direct:-<unknown>}"
+    [ -n "$isp" ] && echo "  exit network:       $isp"
+    if [ -n "$cap" ]; then
+      echo "  streams in use:     ${inuse:-?} of $cap  (per-pod cap · ${owner_cap:-64}/owner · ${rate:-120} reqs/domain/min)"
+    fi
+    echo "  $reason"
+  fi
+  [ "$verdict" = "diverted" ] && return 0 || return 1
+}
+
+# Secret NAMES and whether each is set — never a value. Agents routinely need to know
+# which keys exist (to pick a rung, or to explain what is missing) and never need to
+# read one: the value is already in their environment when they actually use it.
+cmd_secrets_list() {
+  if [ ! -r "$SECRETS_ENV" ]; then
+    echo "(no secrets file readable at $SECRETS_ENV)"
+    return 0
+  fi
+  local n=0
+  while IFS= read -r line; do
+    case "$line" in \#*|"") continue ;; esac
+    local k="${line%%=*}"; k="${k#export }"
+    case "$k" in *[!A-Za-z0-9_]*|"") continue ;; esac
+    # Set-ness comes from the file having a non-empty value; the value itself is
+    # never printed, never captured, never logged.
+    local v="${line#*=}"
+    if [ -n "$v" ] && [ "$v" != '""' ] && [ "$v" != "''" ]; then
+      printf '%-32s set\n' "$k"
+    else
+      printf '%-32s EMPTY\n' "$k"
+    fi
+    n=$((n+1))
+  done < "$SECRETS_ENV"
+  [ "$n" -gt 0 ] || echo "(no secrets set for this pod)"
+}
+
+# Print ONE secret's value, for the agent to consume a freshly-added key without a
+# restart: export OPENAI_API_KEY="$(podbay secrets get OPENAI_API_KEY)". Sourcing the
+# file in a subshell handles its KEY='value' quoting correctly; the key is validated
+# first so indirect expansion can't be turned against us.
+cmd_secrets_get() {
+  local key="${1:-}"
+  [ -n "$key" ] || die "usage: podbay secrets get <KEY>"
+  case "$key" in *[!A-Za-z0-9_]*) die "invalid key '$key'" ;; esac
+  [ -r "$SECRETS_ENV" ] || die "no secrets file at $SECRETS_ENV"
+  local val
+  val=$( set -a; . "$SECRETS_ENV" 2>/dev/null; printf '%s' "${!key-}" )
+  if [ -z "$val" ]; then
+    local url; url=$(cockpit_url)
+    die "no secret '$key' set — add it in the pod dashboard, then re-run${url:+:
+  $url}"
+  fi
+  printf '%s\n' "$val"
+}
+
+# Emit `export K='v'` lines so the RUNNING agent can load everything a push just wrote:
+#   source <(podbay secrets env)
+# The already-running shell doesn't see /etc/podbay/secrets.env until it does this.
+cmd_secrets_env() {
+  [ -r "$SECRETS_ENV" ] || { echo "# no secrets file at $SECRETS_ENV" >&2; return 0; }
+  while IFS= read -r line; do
+    case "$line" in \#*|"") continue ;; esac
+    local k="${line%%=*}"; k="${k#export }"
+    case "$k" in *[!A-Za-z0-9_]*|"") continue ;; esac
+    case "$line" in export\ *) printf '%s\n' "$line" ;; *) printf 'export %s\n' "$line" ;; esac
+  done < "$SECRETS_ENV"
+}
+
+# Ask the owner for a secret this pod needs. Records the request (name + why) so it
+# surfaces in the pod dashboard as an input; prints the link to hand the user.
+cmd_secrets_request() {
+  local key="${1:-}"; shift || true; local desc="${*:-}"
+  [ -n "$key" ] || die "usage: podbay secrets request <KEY> [why it is needed]"
+  case "$key" in [A-Z]*) ;; *) die "key must be UPPER_SNAKE_CASE (start with a letter), e.g. OPENAI_API_KEY" ;; esac
+  case "$key" in *[!A-Z0-9_]*) die "key must be UPPER_SNAKE_CASE, e.g. OPENAI_API_KEY" ;; esac
+  local port="${PODBAY_AGENT_PORT:-8080}"
+  local payload; payload=$(jq -cn --arg k "$key" --arg d "$desc" '{key:$k, description:$d}')
+  curl -fsS -m 8 -X POST -H 'content-type: application/json' \
+    --data "$payload" "http://127.0.0.1:${port}/secret-request" >/dev/null \
+    || die "could not record the request (is the pod-agent up?)"
+  local slug url; slug=$(field '.slug'); url=$(cockpit_url)
+  echo "requested '$key'. Ask the owner to add it in the pod dashboard:"
+  echo "  ${url:-https://podbay.cloud/dashboard/pods/${slug:-your-pod}}"
+}
+
+cmd_secrets() {
+  case "${1:-list}" in
+    list) cmd_secrets_list ;;
+    get) shift; cmd_secrets_get "${1:-}" ;;
+    env) cmd_secrets_env ;;
+    request) shift; cmd_secrets_request "$@" ;;
+    set|add|put|create)
+      die "there is no 'podbay secrets $1' — a pod cannot write its own secrets (only the owner can, in the dashboard).
+To ask the owner for one, use:  podbay secrets request KEY \"why it's needed\"
+That records the request AND prints the dashboard link to hand them." ;;
+    *) die "usage: podbay secrets <list | get KEY | env | request KEY [why]>
+To ask the owner for a secret, use:  podbay secrets request KEY \"why\"" ;;
+  esac
+}
+
+cmd_relay() {
+  case "${1:-status}" in
+    status) cmd_relay_status ;;
+    check) shift; cmd_relay_check "$@" ;;
+    *) die "usage: podbay relay <status | check [--json]>" ;;
+  esac
+}
+
+cmd_fetch() {
+  case "${1:-}" in
+    get) shift; cmd_fetch_get "${1:-}" ;;
+    plan) shift; cmd_fetch_plan "${1:-}" ;;
+    report) shift; cmd_fetch_report "${1:-}" "${2:-}" "${3:-}" ;;
+    *) die "usage: podbay fetch <get|plan|report>" ;;
+  esac
+}
+
+# ── durable schedule ──────────────────────────────────────────────────────────
+#
+# A recurring turn that SURVIVES restarts. Writes a job the in-pod pod-agent scheduler
+# fires on time by waking the agent (see scheduler.ts). This is the durable answer to
+# "run X every week" — unlike CronCreate, which is session-only and dies on any restart.
+SCHED_JOBS=${PODBAY_OPS_JOBS:-$HOME/.podbay/ops-jobs.json}
+# The scheduler's append-only run log (must match main.ts runsLogPath). The scheduler writes
+# `started`; the agent MUST write the terminal `succeeded`/`failed` to close the run — else the
+# dead-man fires on a cleanly-finished run. `podbay schedule done` is that close (below).
+SCHED_RUNS=${PODBAY_OPS_RUNS:-$HOME/.podbay/ops-runs.jsonl}
+
+sched_ensure() {
+  mkdir -p "$(dirname "$SCHED_JOBS")"
+  # Migrate off the git working tree: state used to live in ~/work/.podbay, where a git
+  # reset/checkout/clean could clobber it (BYO repos don't gitignore it). Move it into home
+  # (same volume, outside git) if an old copy is still there and the new one isn't. The agent
+  # does this too on boot; harmless if already done.
+  for f in ops-jobs.json ops-state.json ops-runs.jsonl; do
+    [ -f "$HOME/work/.podbay/$f" ] && [ ! -f "$HOME/.podbay/$f" ] && mv "$HOME/work/.podbay/$f" "$HOME/.podbay/$f"
+  done
+  [ -f "$SCHED_JOBS" ] || echo '{"jobs":[]}' > "$SCHED_JOBS"
+}
+
+# Close a scheduled run so it isn't flagged as stalled. Every scheduled turn ends with this
+# (the run-trigger tells the agent to). Universal — works on ANY pod, not just a playbook env
+# that happens to define its own report rules.
+cmd_schedule_done() {
+  local runId="${1:-}" outcome="${2:-ok}"
+  [ -n "$runId" ] || die "usage: podbay schedule done <runId> [ok|fail]  (close a scheduled run so the dead-man doesn't fire)"
+  local ev
+  case "$outcome" in ok|success|succeeded) ev="succeeded" ;; fail|failed|error) ev="failed" ;; *) die "outcome must be ok or fail" ;; esac
+  mkdir -p "$(dirname "$SCHED_RUNS")"
+  local line
+  line=$(jq -cn --arg r "$runId" --arg e "$ev" --arg at "$(date -Is)" '{runId:$r, jobId:"", event:$e, at:$at}' 2>/dev/null) \
+    || line=$(printf '{"runId":"%s","jobId":"","event":"%s","at":"%s"}' "$runId" "$ev" "$(date -Is)")
+  printf '%s\n' "$line" >> "$SCHED_RUNS"
+  echo "run $runId closed ($ev)"
+}
+
+cmd_schedule_list() {
+  sched_ensure
+  local n; n=$(jq '.jobs | length' "$SCHED_JOBS")
+  if [ "$n" = "0" ]; then echo "no scheduled jobs (add one: podbay schedule add --name … --at HH:MM --do \"…\")"; return 0; fi
+  jq -r '.jobs[] | "\(if .enabled then "on " else "off" end)  \(.id)\t\(.name)\t" +
+    (.schedule | if .times then (.times|join(",")) + (if .timezone then " "+.timezone else " UTC" end)
+      + (if .days then " on " + ([.days[] | ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][.]] | join(",")) else "" end)
+      else "every \(.everyMinutes)m" end)' "$SCHED_JOBS"
+}
+
+cmd_schedule_add() {
+  sched_ensure
+  local name="" tz="" mode="routine" instr="" every="" id="" days_raw=""
+  local -a times=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) name="${2:-}"; shift 2 ;;
+      --at) times+=("${2:-}"); shift 2 ;;
+      --every) every="${2:-}"; shift 2 ;;
+      --tz) tz="${2:-}"; shift 2 ;;
+      --days | --on) days_raw="${2:-}"; shift 2 ;;
+      --do | --instructions) instr="${2:-}"; shift 2 ;;
+      --mode) mode="${2:-}"; shift 2 ;;
+      --id) id="${2:-}"; shift 2 ;;
+      *) die "unknown flag '$1' (see: podbay schedule)" ;;
+    esac
+  done
+  [ -n "$name" ] || die "usage: podbay schedule add --name NAME (--at HH:MM [--at …] [--tz IANA] [--days mon,wed|weekdays|weekends] | --every MINUTES) --do \"what to do\""
+  [ ${#times[@]} -gt 0 ] || [ -n "$every" ] || die "give --at HH:MM (one or more) or --every MINUTES"
+  [ ${#times[@]} -eq 0 ] || [ -z "$every" ] || die "use either --at or --every, not both"
+  case "$mode" in brief | watch | routine) ;; *) die "mode must be brief|watch|routine" ;; esac
+  local t; for t in "${times[@]}"; do case "$t" in [0-2][0-9]:[0-5][0-9]) ;; *) die "bad --at '$t' (want HH:MM, 24h)" ;; esac; done
+  # --days/--on: restrict daily times to weekdays (0=Sun..6=Sat). Names + aliases.
+  local days_json=""
+  if [ -n "$days_raw" ]; then
+    [ ${#times[@]} -gt 0 ] || die "--days only applies with --at (daily times), not --every"
+    local dl; dl=$(printf '%s' "$days_raw" | tr 'A-Z' 'a-z' | tr -d ' ')
+    case "$dl" in
+      daily | everyday | all) days_json="" ;;
+      weekdays) days_json="[1,2,3,4,5]" ;;
+      weekends) days_json="[0,6]" ;;
+      *)
+        local -a dnums=(); local tok n oldifs="$IFS"; IFS=','
+        for tok in $dl; do
+          case "$tok" in
+            sun | sunday) n=0 ;; mon | monday) n=1 ;; tue | tues | tuesday) n=2 ;;
+            wed | weds | wednesday) n=3 ;; thu | thur | thurs | thursday) n=4 ;;
+            fri | friday) n=5 ;; sat | saturday) n=6 ;;
+            *) IFS="$oldifs"; die "bad --days '$tok' (use sun..sat, or weekdays/weekends/daily)" ;;
+          esac
+          dnums+=("$n")
+        done
+        IFS="$oldifs"
+        days_json=$(printf '%s\n' "${dnums[@]}" | sort -nu | jq -s -c .)
+        ;;
+    esac
+  fi
+  if [ -z "$id" ]; then
+    local slug; slug=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
+    id="${slug:-job}-$(date +%s)"
+  fi
+  local schedule
+  if [ ${#times[@]} -gt 0 ]; then
+    local times_json; times_json=$(printf '%s\n' "${times[@]}" | jq -R . | jq -s .)
+    schedule=$(jq -cn --argjson t "$times_json" '{times:$t}')
+    [ -n "$tz" ] && schedule=$(jq -cn --argjson s "$schedule" --arg tz "$tz" '$s + {timezone:$tz}')
+    [ -n "$days_json" ] && schedule=$(jq -cn --argjson s "$schedule" --argjson d "$days_json" '$s + {days:$d}')
+  else
+    case "$every" in '' | *[!0-9]*) die "--every wants a whole number of minutes" ;; esac
+    schedule=$(jq -cn --argjson m "$every" '{everyMinutes:$m}')
+  fi
+  ! jq -e --arg id "$id" '.jobs | any(.id==$id)' "$SCHED_JOBS" >/dev/null 2>&1 \
+    || die "a job with id '$id' already exists (use --id to override, or 'podbay schedule remove $id')"
+  local job; job=$(jq -cn --arg id "$id" --arg name "$name" --arg mode "$mode" --argjson sched "$schedule" --arg instr "$instr" \
+    '{id:$id,name:$name,mode:$mode,schedule:$sched,enabled:true} + (if $instr=="" then {} else {instructions:$instr} end)')
+  local tmp; tmp=$(mktemp)
+  jq --argjson job "$job" '.jobs += [$job]' "$SCHED_JOBS" > "$tmp" && mv "$tmp" "$SCHED_JOBS"
+  echo "scheduled '$name' (id $id) — survives restarts; the pod-agent runs it on schedule."
+  [ ${#times[@]} -eq 0 ] || echo "note: times are ${tz:-UTC}; a due time catches up after a suspend, and fires only while you're idle."
+}
+
+cmd_schedule_set() { # enable|disable <id>
+  sched_ensure
+  local want="$1" id="${2:-}"; [ -n "$id" ] || die "usage: podbay schedule $want <id>"
+  jq -e --arg id "$id" '.jobs | any(.id==$id)' "$SCHED_JOBS" >/dev/null 2>&1 || die "no job with id '$id' (see: podbay schedule list)"
+  local en; [ "$want" = "enable" ] && en=true || en=false
+  local tmp; tmp=$(mktemp)
+  jq --arg id "$id" --argjson en "$en" '.jobs |= map(if .id==$id then .enabled=$en else . end)' "$SCHED_JOBS" > "$tmp" && mv "$tmp" "$SCHED_JOBS"
+  echo "job '$id' ${want}d"
+}
+
+cmd_schedule_remove() {
+  sched_ensure
+  local id="${1:-}"; [ -n "$id" ] || die "usage: podbay schedule remove <id>"
+  jq -e --arg id "$id" '.jobs | any(.id==$id)' "$SCHED_JOBS" >/dev/null 2>&1 || die "no job with id '$id' (see: podbay schedule list)"
+  local tmp; tmp=$(mktemp)
+  jq --arg id "$id" '.jobs |= map(select(.id != $id))' "$SCHED_JOBS" > "$tmp" && mv "$tmp" "$SCHED_JOBS"
+  echo "removed job '$id'"
+}
+
+cmd_schedule() {
+  case "${1:-list}" in
+    list) cmd_schedule_list ;;
+    add) shift; cmd_schedule_add "$@" ;;
+    remove | rm) shift; cmd_schedule_remove "${1:-}" ;;
+    enable) shift; cmd_schedule_set enable "${1:-}" ;;
+    disable) shift; cmd_schedule_set disable "${1:-}" ;;
+    done) shift; cmd_schedule_done "$@" ;;
+    *) die "usage: podbay schedule <list | add --name … --at HH:MM [--tz IANA] --do \"…\" | remove ID | enable ID | disable ID | done <runId> [ok|fail]>" ;;
+  esac
+}
+
+# ── durable startup commands ──────────────────────────────────────────────────
+#
+# A long-running process that SURVIVES restarts. Registers a command that init.sh
+# relaunches on every boot (see run_startup_commands). This is the durable answer to
+# "keep this server running" — a bare `nohup &` dies on the next restart.
+STARTUP_JSON=${PODBAY_STARTUP_JSON:-$HOME/.podbay/startup.json}
+
+startup_ensure() {
+  mkdir -p "$(dirname "$STARTUP_JSON")"
+  [ -f "$STARTUP_JSON" ] || echo '{"commands":[]}' > "$STARTUP_JSON"
+}
+
+cmd_startup_list() {
+  startup_ensure
+  # The dev server is supervised too (not in startup.json) — surface it FIRST so it isn't
+  # invisible (first10 couldn't tell anything was managing it). Best-effort: skip if the
+  # agent isn't reachable.
+  local devout
+  devout=$(curl -fsS -m 5 "http://127.0.0.1:${PODBAY_AGENT_PORT:-8080}/dev" 2>/dev/null || true)
+  if [ -n "$devout" ] && [ "$(printf '%s' "$devout" | jq -r '.present // false' 2>/dev/null)" = "true" ]; then
+    printf '%s' "$devout" | jq -r '
+      "\(if .serving then "on " else "off" end)  dev-server\tpnpm dev  (supervised by podbay"
+      + (if .capped then " — STOPPED RETRYING; run: podbay dev restart"
+         elif .paused then " — restarting"
+         else "; restart with: podbay dev restart" end) + ")"'
+  fi
+  local n; n=$(jq '.commands | length' "$STARTUP_JSON")
+  if [ "$n" = "0" ]; then
+    [ -n "$devout" ] || echo "no startup commands (add one: podbay startup add --do \"…\")"
+    return 0
+  fi
+  jq -r '.commands[] | "\(if .enabled==false then "off" else "on " end)  \(.slug)\t\(.command)"' "$STARTUP_JSON"
+}
+
+cmd_startup_add() {
+  startup_ensure
+  local slug="" cmd=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --slug | --name) slug="${2:-}"; shift 2 ;;
+      --do | --command) cmd="${2:-}"; shift 2 ;;
+      *) die "unknown flag '$1' (see: podbay startup)" ;;
+    esac
+  done
+  [ -n "$cmd" ] || die "usage: podbay startup add --do \"command to keep running\" [--slug NAME]"
+  if [ -z "$slug" ]; then
+    slug=$(printf '%s' "$cmd" | awk '{print $1}' | sed -E 's#.*/##; s/[^a-zA-Z0-9]+/-/g; s/^-+//; s/-+$//')
+    slug="${slug:-cmd}"
+  fi
+  case "$slug" in *[!a-zA-Z0-9_-]*) die "slug must be [a-zA-Z0-9_-] (it names a pid/log file)" ;; esac
+  ! jq -e --arg s "$slug" '.commands | any(.slug==$s)' "$STARTUP_JSON" >/dev/null 2>&1 \
+    || die "a startup command with slug '$slug' already exists (remove it first, or pass --slug)"
+  local entry; entry=$(jq -cn --arg s "$slug" --arg c "$cmd" '{slug:$s,command:$c,enabled:true}')
+  local tmp; tmp=$(mktemp)
+  jq --argjson e "$entry" '.commands += [$e]' "$STARTUP_JSON" > "$tmp" && mv "$tmp" "$STARTUP_JSON"
+  echo "startup command '$slug' registered — relaunched on every boot (log: ~/.podbay/startup/$slug.log)."
+  echo "note: it starts on the NEXT boot; start it yourself if you need it running this session."
+}
+
+cmd_startup_remove() {
+  startup_ensure
+  local slug="${1:-}"; [ -n "$slug" ] || die "usage: podbay startup remove <slug>"
+  jq -e --arg s "$slug" '.commands | any(.slug==$s)' "$STARTUP_JSON" >/dev/null 2>&1 || die "no startup command '$slug' (see: podbay startup list)"
+  local tmp; tmp=$(mktemp)
+  jq --arg s "$slug" '.commands |= map(select(.slug != $s))' "$STARTUP_JSON" > "$tmp" && mv "$tmp" "$STARTUP_JSON"
+  echo "removed startup command '$slug' (a process already running from a prior boot is left alone)"
+}
+
+cmd_startup() {
+  case "${1:-list}" in
+    list) cmd_startup_list ;;
+    add) shift; cmd_startup_add "$@" ;;
+    remove | rm) shift; cmd_startup_remove "${1:-}" ;;
+    *) die "usage: podbay startup <list | add --do \"…\" [--slug NAME] | remove SLUG>" ;;
+  esac
+}
+
+# ── dev server (supervised) ───────────────────────────────────────────────────
+#
+# The dev server (`pnpm dev` on :3000) is SUPERVISED by Podbay — if it dies, the pod-agent
+# restarts it. That means you must NOT hand-kill it to restart (pkill/kill): the supervisor
+# races your kill, you end up fighting a ghost, and hard-kills mid-build corrupt `.next`.
+# Use these instead. `restart` reloads secrets too (a fresh login shell re-sources them) — so
+# it's also the fix for "the API is open because a secret was added after the server booted".
+DEV_LOG=${PODBAY_DEV_LOG:-/home/dev/.podbay-dev.log}
+AGENT_URL="http://127.0.0.1:${PODBAY_AGENT_PORT:-8080}"
+
+cmd_dev() {
+  case "${1:-status}" in
+    restart | stop | start)
+      local action="$1" out
+      out=$(curl -fsS -m 30 -X POST -H 'content-type: application/json' \
+        --data "$(jq -nc --arg a "$action" '{action:$a}')" "$AGENT_URL/dev" 2>/dev/null) \
+        || die "the pod-agent could not $action the dev server (is it up? try: podbay doctor)"
+      printf '%s\n' "$(printf '%s' "$out" | jq -r '.message // .error // "done"')"
+      ;;
+    logs)
+      [ -f "$DEV_LOG" ] || { echo "(no dev-server log yet at $DEV_LOG)"; return 0; }
+      tail -n "${2:-40}" "$DEV_LOG"
+      ;;
+    status | "")
+      local out
+      out=$(curl -fsS -m 8 "$AGENT_URL/dev" 2>/dev/null) \
+        || die "the pod-agent is not reachable (try: podbay doctor)"
+      printf '%s' "$out" | jq -r '
+        if (.present|not) then "dev server: not supervised (no `dev` script in this workspace)"
+        else
+          "dev server: " + (if .serving then "serving on :3000" else "NOT serving" end)
+          + (if .pid then " (pid " + (.pid|tostring) + ")" else "" end)
+          + (if .paused then "  [restart in progress]" else "" end)
+          + (if .capped then "\n  ⚠ Podbay stopped auto-restarting it (it kept failing). Fix the error, then: podbay dev restart" else "" end)
+          + (if ((.failedServes // 0) > 0) then "\n  " + (.failedServes|tostring) + " recent respawn(s) came up but did not serve" else "" end)
+          + "\n  Podbay-managed — to restart, use: podbay dev restart  (do NOT hand-kill it)"
+        end'
+      ;;
+    *) die "usage: podbay dev <restart | stop | start | logs [N] | status>" ;;
+  esac
+}
+
+# ── agent messaging ───────────────────────────────────────────────────────────
+#
+# Message another of YOUR OWN pods. Same rail as fetch memory: the pod never calls the
+# control plane — a send appends to a local outbox the poll drains, and the inbox is a
+# file the poll populates. Addressing is by anything human: exact slug, display name, an
+# abbreviation, "cheerful donkey" for cheerful-donkey-6bc4. Resolution is done here
+# against the fleet roster the control plane pushes (fleet.json), and the SERVER
+# re-resolves as the authority — a message can only ever reach a pod you own.
+MSG_OUTBOX=${PODBAY_MSG_OUTBOX:-/home/dev/.podbay/msg-outbox.jsonl}
+MSG_INBOX=${PODBAY_MSG_INBOX:-/home/dev/.podbay/msg-inbox.jsonl}
+MSG_FLEET=${PODBAY_MSG_FLEET:-/home/dev/.podbay/fleet.json}
+MSG_OUTBOX_MAX=${PODBAY_MSG_OUTBOX_MAX:-500}
+
+# Resolve a human reference to matching pod slugs (one per line). The SAME ladder the
+# server uses (agent-messages.ts resolvePodRef): exact → prefix → substring, first tier
+# that matches wins; excludes this pod. Prints nothing when nothing matches; prints the
+# sentinel __noroster__ when the roster has not been pushed yet.
+msg_resolve() {
+  local ref; ref=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | sed -E 's/^-+//; s/-+$//')
+  [ -n "$ref" ] || return 0
+  [ -f "$MSG_FLEET" ] || { echo "__noroster__"; return 0; }
+  jq -r --arg r "$ref" '
+    map({id, nid:(.id|ascii_downcase), nname:((.name // "")|ascii_downcase|gsub(" ";"-")), self:(.self // false)})
+    | map(select(.self|not))
+    | (map(select(.nid==$r or (.nname!="" and .nname==$r)))) as $exact
+    | (if ($exact|length)>0 then $exact
+       else (map(select((.nid|startswith($r)) or (.nname!="" and (.nname|startswith($r)))))) as $pre
+       | (if ($pre|length)>0 then $pre
+          else map(select((.nid|contains($r)) or (.nname!="" and (.nname|contains($r)))))
+          end)
+       end)
+    | .[].id
+  ' "$MSG_FLEET" 2>/dev/null
+}
+
+cmd_msg_pods() {
+  if [ ! -f "$MSG_FLEET" ]; then
+    echo "(no fleet roster yet — the control plane pushes it on its next poll)"
+    return 0
+  fi
+  jq -r '.[] | "  " + .id
+    + (if .name and .name != "" then "  (" + .name + ")" else "" end)
+    + (if .self then "   ← this pod" else "" end)' "$MSG_FLEET" 2>/dev/null || cat "$MSG_FLEET"
+}
+
+cmd_msg_send() {
+  local to="${1:-}"; shift || true; local body="$*"
+  [ -n "$to" ] && [ -n "$body" ] || die "usage: podbay msg send <pod> <message>"
+  local ids; ids=$(msg_resolve "$to")
+  if [ "$ids" = "__noroster__" ]; then
+    die "no fleet roster yet (the control plane pushes it on its next poll — try again shortly)."
+  fi
+  local n; n=$(printf '%s' "$ids" | grep -c . || true)
+  if [ "$n" -eq 0 ]; then
+    { echo "No pod matches \"$to\". Your pods:"; cmd_msg_pods; } >&2; exit 1
+  elif [ "$n" -gt 1 ]; then
+    { echo "\"$to\" is ambiguous — it matches:"; printf '  %s\n' $ids
+      echo "Resend with a more specific name or the exact slug."; } >&2; exit 1
+  fi
+  local target; target=$(printf '%s\n' "$ids" | head -1)
+  local id; id=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "m$(date +%s%N)")
+  mkdir -p "$(dirname "$MSG_OUTBOX")"
+  # jq builds the JSON so a body with quotes/newlines/metacharacters is encoded, not escaped by hand.
+  jq -nc --arg id "$id" --arg to "$target" --arg body "$body" --arg at "$(date -Is)" \
+    '{id:$id, to:$to, body:$body, at:$at}' >> "$MSG_OUTBOX"
+  local c; c=$(wc -l < "$MSG_OUTBOX" 2>/dev/null || echo 0)
+  [ "$c" -gt "$MSG_OUTBOX_MAX" ] && { tail -n "$MSG_OUTBOX_MAX" "$MSG_OUTBOX" > "$MSG_OUTBOX.tmp" && mv "$MSG_OUTBOX.tmp" "$MSG_OUTBOX"; }
+  echo "queued → $target (delivered on the next poll, usually within a minute)"
+}
+
+cmd_msg_inbox() {
+  [ -f "$MSG_INBOX" ] || { echo "(inbox empty)"; return 0; }
+  jq -r '"[" + (.at // "?") + "] from " + (.from // "?") + "  id=" + .id + "\n    " + .body' \
+    "$MSG_INBOX" 2>/dev/null || cat "$MSG_INBOX"
+}
+
+cmd_msg_reply() {
+  local mid="${1:-}"; shift || true; local body="$*"
+  [ -n "$mid" ] && [ -n "$body" ] || die "usage: podbay msg reply <message-id> <message>"
+  [ -f "$MSG_INBOX" ] || die "no inbox yet — nothing to reply to"
+  local from; from=$(jq -r --arg id "$mid" 'select(.id==$id) | .from' "$MSG_INBOX" 2>/dev/null | head -1)
+  [ -n "$from" ] || die "no message with id \"$mid\" in your inbox (see: podbay msg inbox)"
+  cmd_msg_send "$from" "$body"
+}
+
+# ── link ────────────────────────────────────────────────────────────────────
+# Turn a repo file into a GitHub URL the USER CAN ACTUALLY OPEN. A raw pod path
+# (/home/dev/… or repo-relative) is a DEAD link on the user's device — they're not on
+# this box. A committed+pushed file's GitHub blob URL is a live link, reachable from
+# their browser/app. This makes "hand the user a working link" a one-liner. For a file
+# that is NOT in a git repo (or not pushed), it says so and points at the file-send tool.
+cmd_link() {
+  local f="${1:-}"
+  [ -n "$f" ] || die "usage: podbay link <file>   — prints a GitHub URL the user can open (pod paths are dead links)"
+  local abs; abs=$(readlink -f "$f" 2>/dev/null || realpath "$f" 2>/dev/null)
+  [ -n "$abs" ] && [ -e "$abs" ] || die "no such file: $f"
+  local root; root=$(git -C "$(dirname "$abs")" rev-parse --show-toplevel 2>/dev/null) \
+    || die "'$f' is not in a git repo — hand it over with the file-send tool or paste it inline instead"
+  local rel="${abs#"$root"/}"
+  local origin; origin=$(git -C "$root" remote get-url origin 2>/dev/null) \
+    || die "this repo has no 'origin' remote — push it first, or use the file-send tool"
+  local base; base=$(printf '%s' "$origin" \
+    | sed -E 's#^git@github\.com:#https://github.com/#; s#^(ssh://)?git@github\.com/#https://github.com/#; s#\.git$##')
+  case "$base" in https://github.com/*) ;; *) die "origin isn't GitHub ($origin) — use the file-send tool to hand over the file" ;; esac
+  local sha branch ref note=""
+  sha=$(git -C "$root" rev-parse HEAD 2>/dev/null)
+  branch=$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null)
+  if git -C "$root" branch -r --contains HEAD 2>/dev/null | grep -q 'origin/'; then
+    ref="$sha"   # HEAD is on origin — a permalink that won't drift
+  else
+    ref="$branch"; note="push $branch first — the link 404s until you do"
+  fi
+  if ! git -C "$root" diff --quiet -- "$rel" 2>/dev/null || ! git -C "$root" diff --cached --quiet -- "$rel" 2>/dev/null; then
+    note="${note:+$note; }file has uncommitted changes the link won't show — commit+push to include them"
+  fi
+  echo "${base}/blob/${ref}/${rel}"
+  [ -n "$note" ] && echo "note: $note" >&2
+  return 0
+}
+
+cmd_msg() {
+  case "${1:-inbox}" in
+    send) shift; cmd_msg_send "$@" ;;
+    inbox) cmd_msg_inbox ;;
+    reply) shift; cmd_msg_reply "$@" ;;
+    pods) cmd_msg_pods ;;
+    *) die "usage: podbay msg <send <pod> <text> | inbox | reply <id> <text> | pods>" ;;
+  esac
+}
+
+case "${1:-info}" in
+  info) cmd_info ;;
+  preview) shift || true; cmd_preview "${1:-}" ;;
+  doctor) shift || true; cmd_doctor "$@" ;;
+  fetch) shift || true; cmd_fetch "$@" ;;
+  relay) shift || true; cmd_relay "$@" ;;
+  secrets) shift || true; cmd_secrets "$@" ;;
+  schedule) shift || true; cmd_schedule "$@" ;;
+  startup) shift || true; cmd_startup "$@" ;;
+  dev) shift || true; cmd_dev "$@" ;;
+  msg) shift || true; cmd_msg "$@" ;;
+  link) shift || true; cmd_link "${1:-}" ;;
+  visibility) shift || true; cmd_visibility "${1:-}" ;;
+  -h | --help | help)
+    echo "usage: podbay [info | preview [port] | doctor [--fix] [--json]"
+    echo "              | fetch get <url> | fetch plan <domain>"
+    echo "              | fetch report <domain> <rung> <outcome>"
+    echo "              | relay status"
+    echo "              | secrets list | secrets get KEY | secrets env | secrets request KEY [why]"
+    echo "              | schedule list | schedule add --name … --at HH:MM [--tz IANA] [--days mon,wed|weekdays] --do \"…\" | schedule remove ID"
+    echo "              | startup list | startup add --do \"…\" [--slug NAME] | startup remove SLUG"
+    echo "              | dev restart | dev stop | dev start | dev logs [N] | dev status  (the SUPERVISED dev server — never hand-kill it)"
+    echo "              | msg send <pod> <text> | msg inbox | msg reply <id> <text> | msg pods"
+    echo "              | link <file>  (a GitHub URL the user can open — pod paths are dead links)"
+    echo "              | visibility  (is this pod's preview public or owner-only? — the owner sets it in the dashboard)]" ;;
+  *) die "unknown command '$1' (try: podbay info | podbay preview | podbay doctor | podbay fetch | podbay schedule | podbay startup | podbay msg)" ;;
+esac

@@ -1,0 +1,55 @@
+---
+title: Choose a starting point
+description: Pick an environment that gives Claude the right tools and working methods for the job.
+---
+
+The environment you choose answers a practical question: **what should Claude already know and have
+available when this pod starts?**
+
+A good starting point removes the first round of setup. Claude can begin with the right language,
+framework, repository, project rules, and repeatable workflows instead of discovering all of them
+from scratch.
+
+## Choose by the work you want done
+
+Use a general development environment when you are bringing your own application and want Claude to
+follow the repository. Choose a more focused environment when the job has a repeatable shape, such
+as monitoring sources, maintaining a particular stack, or producing a known kind of report.
+
+Look for:
+
+- a toolchain that matches the project;
+- a starter project or connection to the repository you care about;
+- clear boundaries for network access and external actions;
+- skills that match the work you expect to repeat;
+- an initial task that produces something useful, not merely a configured machine.
+
+You are choosing a head start, not making a permanent commitment. The workspace can be inspected and
+changed after launch.
+
+## What a skill changes
+
+A skill gives Claude a tested way to handle a particular kind of work. It may include instructions,
+templates, checks, or small supporting tools. For example, a monitoring skill might teach Claude how
+to save a baseline, decide whether a change matters, avoid duplicate alerts, and report recovery.
+
+Skills can come from three places:
+
+- **Podbay foundations** for behavior useful across pods;
+- **the selected environment** for its stack or job;
+- **your project** for conventions unique to your team or repository.
+
+Project guidance can refine the broader defaults. Ask Claude what instructions and skills it is
+using when you want to understand why it chose a particular workflow.
+
+## What is available everywhere
+
+Every current pod has the common runtime abilities described in [What Claude can do in a
+pod](/docs/capabilities): persistent project storage, health information, secrets handoff, recurring
+work, long-running services, and supported web access. Prepared workflows and specialist knowledge
+vary by environment.
+
+<Callout title="A useful question before launch">
+  Ask “Does this environment already support the outcome I want, and which parts will Claude still
+  need to build?” That makes the difference between built-in behavior and project work explicit.
+</Callout>

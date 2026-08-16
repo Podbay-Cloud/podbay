@@ -1,0 +1,35 @@
+{
+  "name": "@podbay/pod-agent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "pod-agent": "./dist/main.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:bundle": "esbuild src/main.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist-bundle/main.js --banner:js='import { createRequire } from \"module\"; const require = createRequire(import.meta.url);' --external:node-pty --external:ws",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@podbay/shared": "workspace:*",
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "@types/ws": "^8.5.13",
+    "esbuild": "^0.21.5",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

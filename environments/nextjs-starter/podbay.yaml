@@ -1,0 +1,77 @@
+apiVersion: podbay/v0
+name: nextjs-starter
+
+# ENGINE (invisible substrate), not a demand tile. This is the "web-app" engine
+# that playbooks (e.g. first-10-customers) ride; it is hidden from the demand
+# catalog and surfaced only to creators/devs. See docs/strategy/marketplace-playbooks.md.
+# (Directory rename nextjs-starter -> web-app is deferred — see the postponed
+# list in docs/plans/pre-alpha-plan.md.)
+kind: engine
+
+metadata:
+  title: "Next.js Starter"
+  description: A prepped Next.js + TypeScript workspace with the agent briefed to build features.
+  author: podbay
+  tags: [nextjs, typescript, web]
+
+# Portable base: a standard devcontainer, runnable by any devcontainer tooling.
+base:
+  devcontainer: .devcontainer/devcontainer.json
+
+# claude-code is the default (agents[0]); codex is offered as a launch choice
+# (multi-agent-plan.md slice 3). A Codex pod boots + logs in, runs the kickoff, gets
+# the env's skills (translated into ~/.codex/skills) and the runtime + env rules
+# (assembled into ~/.codex/AGENTS.md) — no directory-trust gate.
+agents: [claude-code, codex]
+shared: [universal, web-app]
+
+# First-party, trusted env: skip permission prompts for a smooth agent-led
+# demo. Removes the sensitive-file / irreversible-action guards — acceptable
+# for a single-user first-party pod; revisit when egress allowlist ships and
+# before any third-party env inherits this.
+permissions:
+  mode: bypassPermissions
+
+# Agent-led onboarding: the CLI is started with this prompt once authenticated.
+# Shown verbatim on the env's catalog page (disclosed, first-party).
+kickoff: |
+  You are opening a fresh podbay workspace for this user. ~/work contains a
+  PREBUILT Next.js + TypeScript (App Router) + Tailwind + shadcn/ui starter with
+  node_modules already installed at image build time - do NOT reinstall,
+  rebuild, or investigate the setup. shadcn components live in
+  src/components/ui (add more with `pnpm dlx shadcn@latest add <name>`); build UI
+  with them for a consistent look. pnpm is preinstalled. Only if something seems
+  genuinely broken, glance at ~/.podbay-setup.log.
+  Take the lead, fast:
+  1. Greet the user warmly in ONE short line - they just launched this pod.
+  2. Offer three concrete, distinct things you could build right now (e.g. a
+     landing page, a small full-stack feature with a server action, an API
+     route with a typed client) - one line each. Do not run commands first;
+     you already know the stack.
+  3. Tell them they can also just describe anything else they want.
+  4. When they pick, start immediately; run `pnpm dev` in the background when
+     it is useful to see the result.
+  Your first reply must appear within seconds - no exploration before it.
+
+# DORMANT: the transparent-SNI egress proxy is built and verified, but its
+# REJECT-all rules (Fly's kernel has no iptables owner/cgroup match to scope
+# them to the agent) break fresh inbound connections into the pod — confirmed
+# for `fly ssh`, unconfirmed for the web terminal. Until that's solved (likely
+# per-agent netns isolation), keep enforcement OFF. Flip to `trusted` to enable.
+# See openspec/changes/egress-allowlist and docs/plans/egress-plan.md.
+# Assisted research: the web-fetch ladder (official API → direct → archive → reader).
+# Enabling it is what puts the skill on the pod, and what allows the reader/archive
+# hosts through when egress is enforced.
+capabilities:
+  webFetch:
+    enabled: true
+
+network:
+  policy: full
+
+# No NODE_ENV here: Next.js sets it per command (development for `next dev`,
+# production for `next build`). Forcing NODE_ENV=development breaks `next build`
+# (a dev/prod React mismatch crashes prerendering).
+
+# No repo / no setup steps: the workspace is a prebuilt template baked into
+# the pod image (/opt/env-templates/nextjs-starter) and copied at first boot.

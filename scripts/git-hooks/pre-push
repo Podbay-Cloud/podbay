@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Enforce "specs stay current" (.claude/rules/spec-driven.md): block a push whose
+# behavior changes (packages/**/src, apps/**) touch ZERO openspec/specs/. This is
+# the guard that keeps OpenSpec the source of truth instead of drifting under fire.
+#
+# Bypass (a conscious choice, not a silent skip):
+#   git push --no-verify           # genuinely spec-irrelevant work
+#   ... [no-spec] in a commit msg   # marker in any commit being pushed
+#
+# Activated via:  git config core.hooksPath scripts/git-hooks   (run once per clone)
+set -uo pipefail
+Z=0000000000000000000000000000000000000000
+flagged=""
+stale_registry=""
+audit_bad=""
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$Z" ] && continue                       # branch delete — skip
+  if [ "$remote_sha" = "$Z" ]; then
+    base=$(git rev-parse origin/main 2>/dev/null || echo "${local_sha}~20")
+  else
+    base="$remote_sha"
+  fi
+  git rev-parse "$base" >/dev/null 2>&1 || base="${local_sha}~20"
+
+  files=$(git diff --name-only "$base" "$local_sha" 2>/dev/null) || continue
+  [ -z "$files" ] && continue
+
+  # 0audit hygiene: keep the register from drifting back into a changelog. Runs on the
+  # PUSHED content, and is deliberately BEFORE the [no-spec] bypass — [no-spec] is about
+  # specs, not a license to bloat 0audit. Only `git push --no-verify` skips it.
+  if printf '%s\n' "$files" | grep -qx '0audit.md'; then
+    tmp=$(mktemp)
+    git show "${local_sha}:0audit.md" > "$tmp" 2>/dev/null \
+      && { bash scripts/check-0audit.sh "$tmp" || audit_bad="yes"; }
+    rm -f "$tmp"
+  fi
+
+  # explicit bypass marker in any pushed commit message
+  git log --format=%B "${base}..${local_sha}" 2>/dev/null | grep -q '\[no-spec\]' && continue
+
+  behavior=$(printf '%s\n' "$files" \
+    | grep -E '^(packages/[^/]+/src/|apps/[^/]+/(app|components|lib|src)/)' \
+    | grep -vE '(\.test\.|/test/|/e2e/|\.md$)' || true)
+  specs=$(printf '%s\n' "$files" | grep -E '^openspec/specs/' || true)
+
+  [ -n "$behavior" ] && [ -z "$specs" ] && flagged="yes"
+
+  # Skills registry must stay in sync with the skill files (skills-registry spec).
+  if printf '%s\n' "$files" | grep -qE '^(environments/.*/\.claude/skills/|skills/registry\.yaml|apps/web/lib/skills-registry\.generated\.ts|scripts/skills/)'; then
+    if command -v node >/dev/null 2>&1 && ! node scripts/skills/build-registry.mjs --check >/dev/null 2>&1; then
+      stale_registry="yes"
+    fi
+  fi
+done
+
+if [ -n "$flagged" ]; then
+  cat >&2 <<'MSG'
+
+  ⛔ pre-push blocked: behavior changed (packages/**/src or apps/**) but NO
+     openspec/specs/ was touched. Specs are the source of truth and must stay
+     current — see .claude/rules/spec-driven.md.
+
+     → update the affected openspec/specs/<capability>/spec.md in this push, or
+     → bypass for genuinely spec-irrelevant work:  git push --no-verify
+        (or put [no-spec] in a commit message)
+
+MSG
+  exit 1
+fi
+
+if [ -n "$stale_registry" ]; then
+  cat >&2 <<'MSG'
+
+  ⛔ pre-push blocked: skills changed but the generated skills index is out of date
+     — see the skills-registry spec. (skills/registry.yaml is the hand-edited audit
+     ledger and is never machine-written; only the index is regenerated.)
+
+     → regenerate + stage:  pnpm skills:registry && git add apps/web/lib/skills-registry.generated.ts
+
+MSG
+  exit 1
+fi
+
+if [ -n "$audit_bad" ]; then
+  cat >&2 <<'MSG'
+     (0audit hygiene guard — see /CLAUDE.md "Audit register". Emergency bypass: git push --no-verify)
+
+MSG
+  exit 1
+fi
+exit 0

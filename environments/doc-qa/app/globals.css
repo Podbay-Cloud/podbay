@@ -1,0 +1,472 @@
+/* Self-contained styling for the chat — no Tailwind utilities, so it renders the
+   same regardless of config. Restyle freely; the structure maps to app/page.tsx. */
+
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --panel-2: #f1f3f6;
+  --text: #14161a;
+  --muted: #6b7280;
+  --border: #e6e8ec;
+  --accent: #6d4aff;
+  --accent-ink: #ffffff;
+  --assistant: #f1f3f6;
+  --shadow: 0 1px 2px rgba(16, 18, 22, 0.04), 0 8px 30px rgba(16, 18, 22, 0.06);
+  --radius: 18px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0c0d10;
+    --panel: #16181d;
+    --panel-2: #1d2026;
+    --text: #eef0f4;
+    --muted: #9aa1ac;
+    --border: #262a31;
+    --accent: #8b6dff;
+    --accent-ink: #0c0d10;
+    --assistant: #1d2026;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 12px 40px rgba(0, 0, 0, 0.45);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Solve mobile input-zoom once: iOS Safari zooms the page when a focused field's
+   font is under 16px. Force every form control to >=16px on phones (keeps
+   pinch-zoom, unlike user-scalable=no) so any input added later is covered too. */
+@media (max-width: 640px) {
+  input,
+  textarea,
+  select,
+  [contenteditable] {
+    font-size: 16px !important;
+  }
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  /* Lock the page: only the chat area scrolls, so the composer can't drift with
+     the message list and the keyboard can't push the page around. */
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  /* --app-h / --app-y are set from the VISUAL viewport (page.tsx): height shrinks
+     to the space above the keyboard, and translateY follows iOS's pan so the app
+     stays glued to what's actually visible. 100dvh is the pre-JS/desktop fallback. */
+  height: 100dvh;
+  height: var(--app-h, 100dvh);
+  transform: translateY(var(--app-y, 0px));
+  max-width: 820px;
+  margin: 0 auto;
+}
+
+/* ---- Header ---- */
+.topbar {
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  backdrop-filter: blur(8px);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.docs-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 7px 12px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text, inherit);
+  background: color-mix(in srgb, var(--panel) 60%, transparent);
+  white-space: nowrap;
+}
+.docs-btn:hover {
+  background: color-mix(in srgb, var(--accent, #6366f1) 12%, transparent);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mark {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  background: linear-gradient(140deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #ff8bd0));
+  color: var(--accent-ink);
+  font-size: 18px;
+  box-shadow: var(--shadow);
+}
+
+.brand-text h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.status {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #34d399 22%, transparent);
+}
+
+/* ---- Chat area ---- */
+.chat {
+  flex: 1;
+  overflow-y: auto;
+  padding: 22px 20px 8px;
+}
+
+.messages {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.row {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  max-width: 100%;
+}
+
+.row.user {
+  justify-content: flex-end;
+}
+
+.avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  background: linear-gradient(140deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #ff8bd0));
+  color: var(--accent-ink);
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+
+.bubble {
+  max-width: min(76%, 620px);
+  padding: 11px 15px;
+  border-radius: var(--radius);
+  line-height: 1.55;
+  font-size: 15px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  box-shadow: var(--shadow);
+}
+
+.row.assistant .bubble {
+  background: var(--assistant);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 6px;
+}
+
+.row.user .bubble {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-bottom-right-radius: 6px;
+}
+
+.caret {
+  display: inline-block;
+  width: 7px;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: 0.55;
+  animation: blink 1s steps(2, start) infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* ---- Empty state ---- */
+.empty {
+  height: 100%;
+  min-height: 320px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 6px;
+  padding: 24px;
+}
+
+.empty-mark {
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  border-radius: 16px;
+  background: linear-gradient(140deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #ff8bd0));
+  color: var(--accent-ink);
+  font-size: 24px;
+  margin-bottom: 10px;
+  box-shadow: var(--shadow);
+}
+
+.empty h2 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: -0.02em;
+}
+
+.empty p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 16px;
+}
+
+.chip {
+  padding: 9px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: transform 0.08s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.chip:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: var(--panel-2);
+  transform: translateY(-1px);
+}
+
+/* ---- Error banner ---- */
+.banner {
+  margin: 16px auto 0;
+  max-width: 620px;
+  padding: 11px 14px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, #ef4444 35%, var(--border));
+  background: color-mix(in srgb, #ef4444 10%, var(--panel));
+  color: var(--text);
+  font-size: 13.5px;
+}
+
+.banner code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+/* ---- Composer ---- */
+.composer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.composer input {
+  flex: 1;
+  min-width: 0;
+  padding: 13px 16px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  /* 16px: iOS Safari zooms the page when a focused input's font is smaller. */
+  font-size: 16px;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.composer input:focus {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.send {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 13px;
+  border: none;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 16px;
+  cursor: pointer;
+  transition: opacity 0.15s ease, transform 0.08s ease;
+}
+
+.send:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.send:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.send.stop {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.square {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  background: currentColor;
+}
+
+@media (max-width: 560px) {
+  .bubble {
+    max-width: 84%;
+  }
+}
+
+/* Inline source citations rendered in answers (see the Answer component in
+   page.tsx). Small accent-tinted chips so the source of each claim is visible. */
+.cite {
+  font-size: 0.8em;
+  line-height: 1;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
+  border-radius: 6px;
+  padding: 1px 5px;
+  margin: 0 2px;
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* ---- Owner console (/admin) ---- */
+.admin {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 28px 20px 80px;
+  color: var(--text);
+}
+.admin h1 { font-size: 22px; font-weight: 650; margin: 0 0 18px; }
+.admin-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.admin-actions { display: flex; align-items: center; gap: 14px; }
+.admin .link { color: var(--accent); text-decoration: none; font-size: 14px; }
+.admin .link:hover { text-decoration: underline; }
+.admin .muted { color: var(--muted); }
+.admin .card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 20px;
+  margin: 0 0 18px;
+  box-shadow: var(--shadow);
+}
+.admin .card h2 { font-size: 15px; font-weight: 600; margin: 0 0 4px; display: flex; align-items: center; gap: 8px; }
+.admin .count {
+  font-size: 12px; font-weight: 500; color: var(--muted);
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 999px; padding: 1px 8px;
+}
+.admin .count.warn { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.admin .card p { margin: 0 0 14px; font-size: 13.5px; }
+.admin .locked h2 { color: var(--muted); }
+.admin code { background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 1px 5px; font-size: 0.9em; }
+
+.admin .login { display: flex; flex-direction: column; gap: 10px; max-width: 360px; }
+.admin .login label { font-size: 13px; color: var(--muted); }
+.admin input, .admin textarea {
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 12px; font: inherit; width: 100%;
+}
+.admin input:focus, .admin textarea:focus { outline: none; border-color: var(--accent); }
+.admin .err { color: #e5484d; font-size: 13px; margin: 0; }
+
+.admin button {
+  font: inherit; cursor: pointer; border-radius: 10px; padding: 9px 14px;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+}
+.admin button:disabled { opacity: 0.5; cursor: default; }
+.admin button.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 550; }
+.admin button.danger { background: transparent; color: #e5484d; border-color: color-mix(in srgb, #e5484d 30%, transparent); padding: 5px 10px; font-size: 13px; }
+.admin button.ghost { background: transparent; }
+
+.admin .uploads { margin-bottom: 8px; }
+.admin .paste { margin: 8px 0 4px; }
+.admin .paste summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.admin .paste input, .admin .paste textarea { margin-top: 8px; }
+.admin .paste button { margin-top: 8px; }
+
+.admin .doclist, .admin .qlist { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.admin .doclist li { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; }
+.admin .doc-name { flex: 1; font-size: 13.5px; word-break: break-word; }
+.admin .doc-chunks { font-size: 12px; color: var(--muted); white-space: nowrap; }
+
+.admin .qlist li { display: flex; align-items: baseline; gap: 8px; padding: 7px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; font-size: 13.5px; }
+.admin .qlist li.un { border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.admin .q-badge { font-size: 12px; color: #3aa76d; }
+.admin .qlist li.un .q-badge { color: var(--accent); }
+.admin .q-text { flex: 1; word-break: break-word; }
+.admin .q-src { font-size: 11.5px; color: var(--muted); white-space: nowrap; max-width: 40%; overflow: hidden; text-overflow: ellipsis; }

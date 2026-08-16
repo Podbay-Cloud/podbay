@@ -1,0 +1,91 @@
+apiVersion: podbay/v0
+name: byo-project
+
+# WORKSPACE — open-ended development in a repo the user already owns. The agent's
+# guided orientation makes the workspace safe to enter, but the ongoing job is not
+# a finite outcome playbook. Contributing to someone ELSE's repo via PR remains the
+# separate OSS-contribution playbook (docs/strategy/oss-contribution-playbook.md).
+kind: engine
+
+metadata:
+  title: "BYO Project"
+  description: >-
+    Bring an existing GitHub repo. Your agent learns the codebase, verifies the
+    test loop, and gets ready to work safely.
+  author: podbay
+  tags: [dev, byo, repo, codebase]
+
+# Portable base: a standard devcontainer. No prebuilt app and no baked deps — the
+# workspace IS the user's cloned repo (BYO-repo flow), so setup is dynamic.
+base:
+  devcontainer: .devcontainer/devcontainer.json
+
+# claude-code is the default (agents[0]); codex is offered as a launch choice.
+# Both work here: this is general dev on the user's OWN repo, and a Codex pod now
+# gets the env's skills (copied into ~/.codex/skills) and the runtime + env rules
+# (assembled into the global ~/.codex/AGENTS.md, which never dirties the repo).
+agents: [claude-code, codex]
+shared: [universal]
+
+# First-party, single-user dev pod: skip permission prompts so the code/test/git
+# loop is smooth (matches nextjs-starter). The dangerous git ops are gated at the
+# PROMPT level by the finishing-a-development-branch + open-pr skills (never
+# force-push; confirm before any push / PR), not by the permission mode.
+permissions:
+  mode: bypassPermissions
+
+# Egress: full (the transparent-SNI proxy is DORMANT until per-agent netns
+# isolation lands — see docs/plans/egress-plan.md), same as the other engines.
+# Assisted research: the web-fetch ladder (official API → direct → archive → reader).
+# Enabling it is what puts the skill on the pod, and what allows the reader/archive
+# hosts through when egress is enforced.
+capabilities:
+  webFetch:
+    enabled: true
+
+network:
+  policy: full
+
+# The whole point of this env: accept the user's own repo at launch (the "Bring a
+# GitHub repo" picker). Without this, the picker is hidden and ~/work is empty.
+byoRepo: true
+
+# No repo / no setup / no prebuilt template. The user's repo is cloned into
+# ~/work at first boot by the BYO-repo flow (they connect GitHub + pick it at
+# launch). The env's .claude skills are seeded at USER level (~/.claude) for a
+# BYO pod so they never dirty the user's git tree (init.sh handles this).
+
+# Agent-led onboarding. The agent DRIVES: orient itself, then hand back. Shown
+# verbatim on the env's catalog page (disclosed, first-party).
+kickoff: |
+  You are opening a fresh podbay workspace for this user. ~/work is a GitHub repo
+  THEY brought in — their OWN existing codebase, cloned fresh (NOT a template you
+  scaffolded, NOT greenfield). Your job is to help them work on it, and the first
+  job is to orient YOURSELF so you don't flail or guess.
+
+  Take the lead, fast — your first reply must appear within seconds:
+  1. Greet in ONE short line: say you're looking at their repo and getting oriented.
+  2. Run the `codebase-onboarding` skill: read README / CONTRIBUTING / AGENTS.md /
+     CLAUDE.md, map the structure, detect the stack, and FIND the install, dev, and
+     test commands. The repo's OWN docs and conventions WIN over any default.
+  3. Get it runnable: install dependencies and VERIFY the test loop (or dev
+     server) actually works. If setup is non-obvious, glance at ~/.podbay-setup.log.
+  4. OFFER to capture what you verified into the repo's CLAUDE.md/AGENTS.md — the
+     verified install/run/test/build commands + a short architecture map — so no
+     future session re-discovers it. These are the user's files: SHOW the exact
+     text + file, ASK, and only write on a yes (the codebase-onboarding skill
+     defines this). Never write unsolicited, never commit it yourself.
+  5. Report back concisely: what the project is, how it's structured, how to run
+     and test it — then ask what they want to work on.
+
+  Never assume greenfield — this is an existing project with its own history and
+  conventions. Make focused, tested changes. IMPORTANT: never delete or rewrite
+  the user's existing code just because it lacks tests — the `test-driven-
+  development` skill's "start fresh" advice is for NEW code you write; for their
+  legacy code, add tests AROUND it, don't replace it. Lean on your skills as you
+  work: `test-driven-development` and
+  `webapp-testing` for tests, `systematic-debugging` when something breaks,
+  `requesting-code-review` to self-review before you propose a change. When it's
+  time to land work, use `finishing-a-development-branch` and the `open-pr` skill
+  — both of which ALWAYS confirm with the user before pushing or opening a PR.
+  Your first reply must appear within seconds — a one-line greeting, THEN orient.

@@ -1,0 +1,92 @@
+apiVersion: podbay/v0
+name: doc-qa
+
+# PLAYBOOK "Ask Your Docs" — outcome: turn the user's documents into a PUBLIC
+# chatbot people can ask, with grounded, cited answers. A reframe of the old
+# ai-chat env into a real outcome (docs/plans/ai-chat-to-doc-qa.md).
+kind: playbook
+
+metadata:
+  title: "Ask Your Docs"
+  description: >-
+    Turn your documents into a public assistant that answers from them with
+    citations and says when the answer is not there.
+  author: podbay
+  tags: [ai, rag, docs, chatbot, support, knowledge]
+
+# Portable base: a standard devcontainer, runnable by any devcontainer tooling.
+base:
+  devcontainer: .devcontainer/devcontainer.json
+
+agents: [claude-code, codex]
+shared: [universal, web-app]
+
+# First-party, trusted env: skip permission prompts for a smooth agent-led build.
+permissions:
+  mode: bypassPermissions
+
+# The bot is a SHAREABLE PUBLIC asset — its preview URL is reachable by anyone with
+# the link from launch. The owner/admin surface gates itself in-app.
+preview: public
+
+# The bot calls an LLM at runtime — that needs an API key (distinct from the CLI
+# login). The user supplies it per-pod in the dashboard; it lands as
+# $ANTHROPIC_API_KEY in the pod. Never part of the env definition.
+secrets:
+  - key: ANTHROPIC_API_KEY
+    description: Anthropic API key for the bot's model calls (the app's runtime key, not your CLI login).
+    required: true
+    url: https://platform.claude.com/settings/workspaces/default/keys
+  - key: ADMIN_PASSWORD
+    description: Password for the owner console (/admin) — set it before sharing, since the bot's page is public. Until set, the console is locked.
+    required: false
+
+# Egress dormant (see docs/plans/egress-plan.md) — keep full until per-agent netns lands.
+# Assisted research: the web-fetch ladder (official API → direct → archive → reader).
+# Enabling it is what puts the skill on the pod, and what allows the reader/archive
+# hosts through when egress is enforced.
+capabilities:
+  webFetch:
+    enabled: true
+
+network:
+  policy: full
+
+# Agent-led onboarding. The agent DRIVES a staged engagement toward the outcome
+# (a live, grounded, shareable doc bot) and writes a living ~/work/PLAN.md.
+kickoff: |
+  You are opening "Ask Your Docs" for this user. ~/work is a PREBUILT, working
+  Next.js app: an OWNER console + a PUBLIC ask page that answers questions ONLY from
+  uploaded documents, WITH CITATIONS, backed by the pod's Postgres. Do NOT rebuild or
+  reinstall — node_modules + pnpm are ready; if something seems genuinely broken,
+  glance at ~/.podbay-setup.log. Your job is to turn THEIR docs into a live, grounded
+  bot they can share — and to LEAD them through it. Write a short ~/work/PLAN.md that
+  tracks the stage so a later session resumes oriented.
+
+  Move fast — your first reply lands within seconds:
+  1. Greet in ONE line and frame the outcome ("let's turn your docs into a bot people
+     can ask"). Start the dev server (`pnpm dev`) in the background and get the live
+     URL with `podbay preview` — never invent a URL.
+  2. The bot calls the model with $ANTHROPIC_API_KEY. If answering errors, that key
+     isn't set — tell them to add it in the dashboard under this pod's secrets, then
+     RESTART `pnpm dev` (the server reads secrets only at startup). Never echo the key.
+  3. Understand: what docs, who will ask, public or internal? Get their docs in and
+     report what got indexed. A small DEMO doc set ships so the bot answers immediately
+     — clear it once theirs are in. The OWNER CONSOLE is at `/admin` (upload, docs list,
+     and a questions log with UNANSWERED flags); it's gated by an `ADMIN_PASSWORD` secret
+     — since the bot's page is PUBLIC, have them set `ADMIN_PASSWORD` in the dashboard +
+     restart `pnpm dev` before sharing. You can also upload via `POST /api/docs`. Use the
+     `doc-ingestion` skill.
+  4. VERIFY GROUNDING together: ask 2–3 real questions; confirm the answers are
+     correct, CITED, and that it says "I don't know" when the answer isn't in the docs.
+     Lean on `ground-and-cite` and `rag-quality` — grounding quality IS the product,
+     not "a chat exists."
+  5. Make it theirs: persona/tone + scope ("answer only from these docs"), the title,
+     suggested questions, branding (see src/app). Check in on real choices.
+  6. PUBLISH: the preview is already public — hand over the share URL so anyone can ask.
+  7. Suggest next: add more docs, tighten refusals, branding, review which questions
+     went UNANSWERED (→ what docs to add), embed on a site, or capture leads. Offer a
+     concrete menu and let them pick. The `ask-your-docs-onboarding` skill has the flow.
+
+  Keep TypeScript strict; run `pnpm build` before calling a change done. Lead, don't
+  assume — this is their bot.

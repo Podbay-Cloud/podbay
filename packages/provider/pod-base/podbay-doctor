@@ -1,0 +1,417 @@
+#!/usr/bin/env bash
+# podbay doctor — check this pod, and fix what is safely fixable.
+#
+# Runs as `dev`, deliberately: everything it repairs lives in the home volume or
+# the tmux session, and anything needing root is the "restart/update the pod"
+# escalation the owner performs from the dashboard. A doctor that needed root
+# would be a doctor that could break the pod.
+#
+# Each check is: id | severity | title | probe | (optional) fix. A check that
+# passes prints nothing in --json (green is empty, same rule as /healthz).
+#
+#   podbay doctor            human report
+#   podbay doctor --json     machine-readable
+#   podbay doctor --fix      apply the safe fixes, then re-probe
+#   podbay doctor --report   bounded diagnostics for support (see REPORT BOUNDARY)
+set -uo pipefail
+
+SPEC=${PODBAY_SPEC:-/etc/podbay/pod-spec.json}
+HOME_DIR=${PODBAY_HOME:-/home/dev}
+CODEX_SA_STAGING=${CODEX_SA_STAGING:-/opt/podbay/codex-standalone/packages/standalone}
+CODEX_SA_DEST=${CODEX_SA_DEST:-$HOME_DIR/.codex/packages/standalone}
+CODEX_AUTH=${CODEX_AUTH:-$HOME_DIR/.codex/auth.json}
+AGENT_URL=${PODBAY_AGENT_URL:-http://localhost:8080}
+SESSION=${PODBAY_SESSION:-main}
+DISK_WARN_PCT=${DISK_WARN_PCT:-15}
+
+JSON=0; FIX=0; INVASIVE=0; REPORT=0
+for a in "$@"; do
+  case "$a" in
+    --json) JSON=1 ;;
+    --fix) FIX=1 ;;
+    # Tier 2: repairs that REPLACE state on the home volume. Separate flag on
+    # purpose — "fix what is safe" must never quietly reinstall or overwrite.
+    --fix-invasive) FIX=1; INVASIVE=1 ;;
+    --report) REPORT=1; JSON=1 ;;
+    -h|--help) echo "usage: podbay doctor [--json] [--fix] [--fix-invasive] [--report]"; exit 0 ;;
+  esac
+done
+
+
+# ── REPORT BOUNDARY ──────────────────────────────────────────────────────────
+#
+# --report exists so support can diagnose novel breakage WITHOUT a shell on
+# someone's pod. That is only worth having if the boundary is real, so it is
+# stated here and enforced by what each collector runs:
+#
+#   IN  — facts about the MACHINE: disk by directory, listening ports, process
+#         NAMES, service state, our own init/agent logs, package-manager state,
+#         and zero-byte files (the 2026-07-29 power-cut damage).
+#   OUT — anything about the USER: file contents, environment VALUES, the app's
+#         own logs (their app prints their data), ~/.claude and ~/.codex session
+#         transcripts, git history, anything under ~/work beyond names and sizes.
+#
+# Process COMMAND LINES are deliberately excluded: an argument can carry a token
+# ("node server.js --key=…"), and a report that leaks a secret is worse than the
+# outage it was collecting. Names only, via ps -o comm.
+#
+# Every section is named and printed, so a reader can see exactly what was taken.
+
+# Generic credential redaction. Not vendor prefixes (a literal token shape in this
+# file would trip our own leak scan) — the SHAPES that carry secrets: URL
+# userinfo, and long opaque values after an assignment or auth header.
+redact() {
+  sed -E \
+    -e 's#://[^/@[:space:]]+:[^/@[:space:]]+@#://REDACTED@#g' \
+    -e 's#((token|key|secret|password|passwd|auth)[=:"[:space:]]+)[A-Za-z0-9_./+-]{16,}#\1REDACTED#gI' \
+    -e 's#(Authorization:[[:space:]]*[A-Za-z]+[[:space:]]+)[A-Za-z0-9_./+=-]{16,}#\1REDACTED#gI'
+}
+
+report_section() { # report_section <name> <command…>
+  local name="$1"; shift
+  local out; out=$("$@" 2>/dev/null | redact | head -c 8000)
+  python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1], "text": sys.argv[2]}))' \
+    "$name" "$out"
+}
+
+r_disk() { du -xh -d1 "$HOME_DIR" 2>/dev/null | sort -h | tail -15; }
+r_dfree() { df -Ph "$HOME_DIR"; }
+# Names only — never the command line. See the boundary note above.
+r_procs() { ps -eo comm= | sort | uniq -c | sort -rn | head -20; }
+r_ports() { ss -lntp 2>/dev/null || ss -lnt; }
+r_services() { systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | head -20; }
+# OUR setup log only. The first version read the system journal, which on a real
+# pod returned sudo lines carrying full COMMAND LINES — the exact thing the
+# boundary above excludes, arriving through a section that claimed to be our log.
+# The app's own dev log is excluded too: it is the user's program printing the
+# user's data, and the owner can already read it in their cockpit.
+r_setuplog() { tail -40 "$HOME_DIR/.podbay-setup.log" 2>/dev/null || echo "(no setup log)"; }
+r_tmux() { tmux -S /tmp/podbay-tmux list-windows -t "$SESSION" 2>/dev/null || tmux list-windows -t "$SESSION" 2>/dev/null; }
+r_pkg() {
+  local work="$HOME_DIR/work"
+  [ -d "$work" ] || return 0
+  for f in package.json pnpm-lock.yaml package-lock.json yarn.lock node_modules; do
+    [ -e "$work/$f" ] && echo "present: $f" || echo "absent:  $f"
+  done
+  [ -d "$work/node_modules/.bin" ] && echo "bin shims: $(ls -1 "$work/node_modules/.bin" 2>/dev/null | wc -l)"
+}
+# Zero-byte files are the fingerprint of the update power-cut fixed 2026-07-29:
+# metadata survived, contents did not. Names and counts only.
+r_zero() {
+  find "$HOME_DIR/work" -type f -size 0 \
+    -not -path "*/.git/*" -not -path "*/node_modules/.pnpm/*" 2>/dev/null | head -40
+}
+
+emit_report() {
+  local secs
+  secs=$( {
+    report_section "disk-by-directory" r_disk
+    report_section "disk-free" r_dfree
+    report_section "processes" r_procs
+    report_section "listening-ports" r_ports
+    report_section "services" r_services
+    report_section "podbay-setup-log" r_setuplog
+    report_section "agent-windows" r_tmux
+    report_section "package-state" r_pkg
+    report_section "zero-byte-files" r_zero
+  } | paste -sd, - )
+  printf '{"collectedAt":"%s","sections":[%s]}\n' "$(date -Is)" "$secs"
+}
+
+spec_agents() {
+  python3 -c 'import json,sys
+try: print(" ".join(json.load(open(sys.argv[1])).get("agents") or []))
+except Exception: print("")' "$SPEC" 2>/dev/null
+}
+has_agent() { case " $(spec_agents) " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+# Never destroy the evidence of a failure: whatever we replace is kept alongside,
+# timestamped, so the owner (or we) can still see what was actually wrong.
+# Same as add(), but flags the finding as one only --fix-invasive will touch, so a
+# surface can ask for explicit consent instead of lumping it in with safe repairs.
+add_invasive() { add "$1" "$2" "$3" "$4" "$5" true; }
+
+backup_path() { printf '%s.broken-%s' "$1" "$(date +%Y%m%d-%H%M%S)"; }
+backup_then() { # backup_then <path> -> 0 when the path is now free to replace
+  [ -e "$1" ] || return 0
+  local b; b=$(backup_path "$1")
+  cp -a "$1" "$b" 2>/dev/null || return 1
+  echo "podbay doctor: kept a copy at $b" >&2
+  return 0
+}
+
+FOUND=()   # id|severity|title|detail|fixed|invasive
+# Replace an imported finding with the same id: OUR version knows whether a fix
+# ran, so it must win — otherwise a repaired problem still reads as outstanding.
+add() {
+  local out=() f
+  for f in "${FOUND[@]:-}"; do
+    [ -z "$f" ] && continue
+    case "$f" in "$1|"*) continue ;; esac
+    out+=("$f")
+  done
+  FOUND=("${out[@]:-}")
+  FOUND+=("$1|$2|$3|$4|$5|${6:-false}")
+}
+
+# ---- checks ---------------------------------------------------------------
+
+check_codex_runtime() {
+  has_agent codex || return 0
+  [ -f "$CODEX_AUTH" ] || return 0                       # not signed in: nothing to run
+  [ -x "$CODEX_SA_DEST/current/codex" ] && return 0      # present: pass
+  local fixed=false
+  if [ "$FIX" = 1 ] && [ -d "$CODEX_SA_STAGING" ]; then
+    mkdir -p "$(dirname "$CODEX_SA_DEST")"
+    if cp -a "$CODEX_SA_STAGING" "$CODEX_SA_DEST" 2>/dev/null; then
+      local rel; rel=$(ls -1 "$CODEX_SA_DEST/releases/" 2>/dev/null | head -1)
+      [ -n "$rel" ] && ln -sfn "releases/$rel" "$CODEX_SA_DEST/current"
+      [ -x "$CODEX_SA_DEST/current/codex" ] && fixed=true
+    fi
+  fi
+  add "codex-runtime-missing" "warn" "Codex remote control can't start" \
+      "The daemon Codex pairing needs isn't installed on this pod." "$fixed"
+}
+
+check_codex_daemon() {
+  has_agent codex || return 0
+  [ -f "$CODEX_AUTH" ] || return 0
+  [ -x "$CODEX_SA_DEST/current/codex" ] || return 0      # covered by the check above
+  [ -f "$HOME_DIR/.podbay/codex-rc-off" ] && return 0    # owner switched it off
+  pgrep -f "app-server --remote-control" >/dev/null 2>&1 && return 0
+  local fixed=false
+  if [ "$FIX" = 1 ]; then
+    ( CODEX_HOME="$HOME_DIR/.codex" HOME="$HOME_DIR" \
+      "$CODEX_SA_DEST/current/codex" remote-control start >/dev/null 2>&1 & ) || true
+    sleep 3
+    pgrep -f "app-server --remote-control" >/dev/null 2>&1 && fixed=true
+  fi
+  add "codex-rc-down" "warn" "Codex remote control isn't running" \
+      "Paired devices can't reach this pod until it starts." "$fixed"
+}
+
+check_agent_windows() {
+  local agents; agents=$(spec_agents)
+  [ -n "$agents" ] || return 0
+  tmux has-session -t "$SESSION" 2>/dev/null || {
+    add "session-dead" "critical" "The pod's terminal session is gone" \
+        "Nothing is running. Restart or update the pod from the dashboard." false
+    return 0
+  }
+  local windows; windows=$(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null)
+  local primary=1
+  for a in $agents; do
+    if [ "$primary" = 1 ]; then primary=0; continue; fi   # primary owns window 0, named by its shell
+    printf '%s\n' "$windows" | grep -qx "$a" && continue
+    local fixed=false
+    if [ "$FIX" = 1 ]; then
+      # Reuse the pod-agent's own add path — idempotent by window name, and it
+      # knows the right boot command. Never hand-roll the invocation here.
+      curl -fsS -m 20 -X POST "$AGENT_URL/agent/add" -H 'Content-Type: application/json' \
+        -d "{\"agent\":\"$a\"}" >/dev/null 2>&1 && sleep 2
+      printf '%s\n' "$(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null)" \
+        | grep -qx "$a" && fixed=true
+    fi
+    add "agent-not-running:$a" "warn" "$a isn't running" \
+        "Its terminal window is gone." "$fixed"
+  done
+}
+
+check_dev_server() {
+  # The dev server is Podbay-supervised; surface it when it isn't serving, and let --fix
+  # restart it (which also reloads secrets). first10 reached for `podbay doctor` and found
+  # nothing about the managed dev server — this closes that gap.
+  local json state
+  json=$(curl -fsS -m 5 "$AGENT_URL/dev" 2>/dev/null) || return 0
+  state=$(printf '%s' "$json" | python3 -c '
+import json,sys
+try: d=json.load(sys.stdin)
+except Exception: print("skip"); sys.exit(0)
+if not d.get("present"): print("skip")
+elif d.get("serving"): print("serving")
+elif d.get("capped"): print("capped")
+else: print("down")' 2>/dev/null)
+  case "$state" in serving | skip | "") return 0 ;; esac
+  local fixed=false
+  if [ "$FIX" = 1 ]; then
+    curl -fsS -m 30 -X POST "$AGENT_URL/dev" -H 'Content-Type: application/json' \
+      -d '{"action":"restart"}' >/dev/null 2>&1 && sleep 3
+    local s2; s2=$(curl -fsS -m 5 "$AGENT_URL/dev" 2>/dev/null | python3 -c '
+import json,sys
+try: print("yes" if json.load(sys.stdin).get("serving") else "no")
+except Exception: print("no")' 2>/dev/null)
+    [ "$s2" = "yes" ] && fixed=true
+  fi
+  if [ "$state" = "capped" ]; then
+    # The capped banner already arrives via import_agent_issues; only add ours if a restart FIXED it.
+    [ "$fixed" = true ] && add "dev-server" "warn" "Dev server was stopped, now restarted" \
+        "Podbay had given up restarting it; a clean restart brought it back." true
+    return 0
+  fi
+  add "dev-server-down" "warn" "The dev server isn't serving on :3000" \
+      "It's Podbay-supervised — restart it with 'podbay dev restart' (that also reloads secrets)." "$fixed"
+}
+
+check_stale_setup_lock() {
+  # The REAL stale case is running-WITHOUT-done: setup crashed, and every agent boot
+  # then burns up to 10 minutes waiting for a marker that will never arrive.
+  # (Both-present is the normal post-setup state and waits for nothing — an earlier
+  # version of this check flagged it and would have cried wolf on every healthy pod.)
+  local lock="$HOME_DIR/.podbay-setup-running" done_marker="$HOME_DIR/.podbay-setup-done"
+  [ -f "$lock" ] || return 0
+  [ -f "$done_marker" ] && return 0
+  # Young means setup is genuinely in progress; don't interrupt it.
+  local age; age=$(( $(date +%s) - $(stat -c %Y "$lock" 2>/dev/null || echo 0) ))
+  [ "$age" -lt 900 ] && return 0
+  local fixed=false
+  if [ "$FIX" = 1 ]; then touch "$done_marker" && fixed=true; fi
+  add "setup-never-finished" "warn" "First-boot setup never finished" \
+      "Agents wait up to 10 minutes for it on every start." "$fixed"
+}
+
+check_env_layer() {
+  # The env's skills/rules are staged in the image at /etc/podbay/claude and copied
+  # onto the volume at first boot. When that copy is missing the pod LOOKS fine and
+  # the agent silently has none of its environment's skills — invisible until
+  # someone tries to use one.
+  local src=/etc/podbay/claude
+  [ -d "$src/skills" ] || return 0
+  local want; want=$(find "$src/skills" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)
+  [ "${want:-0}" -gt 0 ] || return 0
+  local dest="$HOME_DIR/.claude"
+  [ -d "$HOME_DIR/work/.claude/skills" ] && dest="$HOME_DIR/work/.claude"
+  local have; have=$(find "$dest/skills" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)
+  [ "${have:-0}" -ge "$want" ] && return 0
+  local fixed=false
+  if [ "$INVASIVE" = 1 ]; then
+    mkdir -p "$dest"
+    if backup_then "$dest/skills"; then
+      cp -r "$src/." "$dest/" 2>/dev/null
+      have=$(find "$dest/skills" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)
+      [ "${have:-0}" -ge "$want" ] && fixed=true
+    fi
+  fi
+  add_invasive "env-layer-incomplete" "warn" "This pod is missing its environment's skills" \
+      "$have of $want present. Restoring replaces the skills folder (the old one is kept)." "$fixed"
+}
+
+check_credentials() {
+  # Deliberately NOT fixable: a damaged sign-in is re-authenticated by the OWNER,
+  # never "repaired" by us. Reporting it is the whole job.
+  for a in $(spec_agents); do
+    local f
+    case "$a" in
+      codex) f="$CODEX_AUTH" ;;
+      *) f="$HOME_DIR/.claude/.credentials.json" ;;
+    esac
+    [ -f "$f" ] || continue                       # absent = not signed in yet, not damaged
+    [ -s "$f" ] && python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f" 2>/dev/null && continue
+    add "credentials-damaged:$a" "warn" "$a's sign-in file is unreadable" \
+        "Sign in again from the pod's card in the dashboard; this is not something to repair by hand." false
+  done
+}
+
+check_dependencies() {
+  local work="$HOME_DIR/work"
+  [ -f "$work/package.json" ] || return 0
+  [ -d "$work/node_modules" ] && return 0
+  local fixed=false
+  if [ "$INVASIVE" = 1 ]; then
+    ( cd "$work" && (pnpm install --frozen-lockfile >/dev/null 2>&1 || npm install >/dev/null 2>&1) )
+    [ -d "$work/node_modules" ] && fixed=true
+  fi
+  add_invasive "dependencies-missing" "warn" "The project's dependencies aren't installed" \
+      "package.json is present but node_modules is not, so the app can't start." "$fixed"
+}
+
+check_disk() {
+  local pct free_pct
+  pct=$(df -P "$HOME_DIR" 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $5}')
+  [ -n "${pct:-}" ] || return 0
+  free_pct=$((100 - pct))
+  [ "$free_pct" -ge "$DISK_WARN_PCT" ] && return 0
+  local fixed=false
+  if [ "$FIX" = 1 ]; then
+    # Caches only — never anything under ~/work, which is the user's work.
+    rm -rf "$HOME_DIR/.npm/_cacache" "$HOME_DIR/.cache/ms-playwright-tmp" 2>/dev/null
+    find "$HOME_DIR" -maxdepth 4 -type d -name ".next" -prune -exec rm -rf {} + 2>/dev/null
+    local after; after=$(df -P "$HOME_DIR" | awk 'NR==2{gsub("%","",$5); print $5}')
+    [ $((100 - after)) -ge "$DISK_WARN_PCT" ] && fixed=true
+  fi
+  local sev="warn"; [ "$free_pct" -lt 5 ] && sev="critical"
+  add "disk-low" "$sev" "Disk is low (${free_pct}% free)" \
+      "Installs, builds and repairs start failing when this runs out." "$fixed"
+}
+
+# The pod-agent already computes a set of health findings (session, agent windows,
+# disk, capped repairs). Pull them in rather than re-deriving them here: two
+# implementations of "what is wrong" WILL drift, and when they did, "Run doctor"
+# appeared to clear a finding that came back on the next page load (owner,
+# 2026-07-29). Doctor is a SUPERSET of /healthz, never a competing opinion.
+import_agent_issues() {
+  local json; json=$(curl -fsS -m 5 "$AGENT_URL/healthz" 2>/dev/null) || return 0
+  local lines; lines=$(printf '%s' "$json" | python3 -c '
+import json,sys
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(0)
+for i in d.get("issues") or []:
+    print("|".join([i.get("id",""), i.get("severity","warn"),
+                    (i.get("title") or "").replace("|"," "),
+                    (i.get("detail") or "").replace("|"," "), "false", "false"]))' 2>/dev/null)
+  [ -n "$lines" ] || return 0
+  while IFS= read -r l; do [ -n "$l" ] && FOUND+=("$l"); done <<<"$lines"
+}
+
+# Findings the pod already knows about come first; our own checks add to them and
+# may mark theirs fixed by id.
+import_agent_issues
+check_codex_runtime
+check_codex_daemon
+check_agent_windows
+check_dev_server
+check_stale_setup_lock
+check_env_layer
+check_credentials
+check_dependencies
+check_disk
+
+# ---- report ---------------------------------------------------------------
+
+# --report carries the findings too: whoever is reading a diagnostic bundle wants
+# "what is wrong" and "what the machine looks like" in one artefact, not two.
+if [ "$REPORT" = 1 ]; then
+  emit_report
+  exit 0
+fi
+
+if [ "$JSON" = 1 ]; then
+  printf '{"checked":%d,"issues":[' "${#FOUND[@]}"
+  first=1
+  for f in "${FOUND[@]:-}"; do
+    [ -z "$f" ] && continue
+    IFS='|' read -r id sev title detail fixed invasive <<<"$f"
+    [ "$first" = 1 ] || printf ','
+    first=0
+    printf '{"id":"%s","severity":"%s","title":"%s","detail":"%s","fixed":%s,"invasive":%s}' \
+      "$id" "$sev" "$title" "$detail" "${fixed:-false}" "${invasive:-false}"
+  done
+  printf ']}\n'
+  exit 0
+fi
+
+if [ "${#FOUND[@]}" -eq 0 ]; then
+  echo "podbay doctor: no problems found."
+  exit 0
+fi
+echo "podbay doctor: ${#FOUND[@]} finding(s)$([ "$FIX" = 1 ] && echo ' (fixes applied where possible)')"
+for f in "${FOUND[@]}"; do
+  IFS='|' read -r id sev title detail fixed invasive <<<"$f"
+  mark=" "
+  [ "$fixed" = true ] && mark="✓"
+  printf '  %s [%s] %s\n      %s\n' "$mark" "$sev" "$title" "$detail"
+done
+if [ "$FIX" = 0 ]; then
+  echo "  run 'podbay doctor --fix' to apply the safe fixes"
+  printf '%s\n' "${FOUND[@]}" | grep -q '|true$' &&
+    echo "  some findings REPLACE files — 'podbay doctor --fix-invasive' (the old copy is kept)"
+fi

@@ -1,0 +1,22 @@
+# Build-from-source overlay. Use ONLY when you can't (or don't want to) pull the published images
+# — local development, an air-gapped host, or an unpublished branch:
+#
+#   docker compose -f compose.yaml -f compose.build.yaml up -d --build
+#   docker compose -f compose.yaml -f compose.build.yaml build podbase   # the pod image, once
+#
+# Adds a `build:` to each image-backed service so compose builds locally instead of pulling. The
+# pod-base build is HEAVY (~20 min, many network fetches) and fails on an SSL-inspecting network
+# (VPN/corp) — prefer the pulled image there. Names match compose.yaml so `image:` is reused.
+services:
+  migrate:
+    build: &app-build
+      context: ..
+      dockerfile: selfhost/Dockerfile
+  web:
+    build: *app-build
+  serve:
+    build: *app-build
+  podbase:
+    build:
+      context: ..
+      dockerfile: packages/provider/pod-base/Dockerfile

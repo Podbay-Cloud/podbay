@@ -1,0 +1,49 @@
+---
+title: Claude on desktop and mobile
+description: Use the official Claude apps to direct work happening inside your pod.
+---
+
+The official Claude apps are the normal way to work with a Podbay pod. Podbay runs Claude Code in
+the cloud and connects that session through Claude Remote Control after you sign in.
+
+## What this gives you
+
+- Start a task from Claude on desktop.
+- Close the laptop while the pod keeps its workspace and services.
+- Check in or continue the same pod session from Claude on mobile.
+- Return later to the existing project, tools, and working state instead of preparing your machine
+  again.
+
+Your phone or laptop is the interface; it is not where the project runs. Builds, databases, services,
+and scheduled work use the pod's resources.
+
+## Open the pod's session
+
+From the Podbay dashboard, open the pod and choose **Continue in Claude** or **Open in Claude**. If
+Claude has not been connected on that pod yet, Podbay guides you through the one-time sign-in first.
+
+Suspending a pod stops the active session and its background work. The workspace and Claude login
+remain stored; resume the pod before opening it from Claude again.
+
+## What happens while you are away
+
+A running pod can keep declared application services available and perform scheduled agent work even
+when the Claude app is closed. An ordinary interactive request does not automatically become a
+background job, so tell Claude when something should continue or run again later.
+
+> Keep the app and worker running after we finish this conversation. If either one fails, bring it
+> back and leave enough information to diagnose the failure.
+
+> Run this report every Friday at 16:00 Europe/Paris and keep the result in the project.
+
+## When to open Podbay
+
+Use the dashboard for machine-level decisions: adding secrets, changing preview visibility,
+inspecting health and resources, updating, suspending, or deleting a pod. The browser terminal is
+available when direct shell access is useful for diagnosis or recovery.
+
+<Callout type="info" title="Claude is a separate service">
+  Claude app availability and Remote Control behavior are provided by Anthropic and may change
+  independently of Podbay. Your Claude subscription is billed by Anthropic; Podbay does not resell
+  tokens for this flow.
+</Callout>

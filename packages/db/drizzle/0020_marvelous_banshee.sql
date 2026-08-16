@@ -1,0 +1,1 @@
+ALTER TABLE "pod_base_images" ALTER COLUMN "size_bytes" SET DATA TYPE bigint;

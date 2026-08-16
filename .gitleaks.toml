@@ -1,0 +1,15 @@
+# gitleaks config — used by the OSS mirror's secret gate (scripts/oss-mirror.sh) and, once it
+# ships in the mirror, the public repo's CI. Extends gitleaks' default rules; the allowlist covers
+# OBVIOUS test-fixture placeholders ONLY, scoped tightly so a real secret in a test still trips.
+title = "podbay"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Obvious non-secret placeholders used in tests."
+# Tight patterns — clearly-fake fixture values, not a blanket path exemption (a real secret
+# pasted into a test must still fail the gate).
+regexes = [
+  '''test-secret-[0-9]+''',
+]

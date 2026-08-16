@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "skills": {
+    "incident-response": {
+      "source": "anthropics/knowledge-work-plugins",
+      "sourceType": "github",
+      "skillPath": "engineering/skills/incident-response/SKILL.md",
+      "computedHash": "7bca2a38e630dae90f022997b6a50754f6e9d83ca85f9134f677cfcde9c703a6"
+    },
+    "reconciliation": {
+      "source": "anthropics/knowledge-work-plugins",
+      "sourceType": "github",
+      "skillPath": "finance/skills/reconciliation/SKILL.md",
+      "computedHash": "554678d84090b2435035a2a2a714d7da691f2752abbbddce3f01b8f6d1ed941e"
+    },
+    "runbook": {
+      "source": "anthropics/knowledge-work-plugins",
+      "sourceType": "github",
+      "skillPath": "operations/skills/runbook/SKILL.md",
+      "computedHash": "f23987e7c978f2b08ebcba07401ae46e616cfbb186b56c0f412b82987874268a"
+    },
+    "sql-queries": {
+      "source": "anthropics/knowledge-work-plugins",
+      "sourceType": "github",
+      "skillPath": "data/skills/sql-queries/SKILL.md",
+      "computedHash": "d0c75aada6c7920f568cbe313a0228802d171635a5f39be328d29f49c6393097"
+    },
+    "status-report": {
+      "source": "anthropics/knowledge-work-plugins",
+      "sourceType": "github",
+      "skillPath": "operations/skills/status-report/SKILL.md",
+      "computedHash": "b7de4a8b2bb02a8adee4f8c7a41ae7e20edb8529dae3997bd5ff86b8a9ecf0e7"
+    },
+    "validate-data": {
+      "source": "anthropics/knowledge-work-plugins",
+      "sourceType": "github",
+      "skillPath": "data/skills/validate-data/SKILL.md",
+      "computedHash": "352a628a430896ad0b2cbe5f4f28409b0a9db406f947dc545d8610d5ed9ed217"
+    }
+  },
+  "_note": "Provenance for SOURCED skills only. watch-and-alert is authored in-house (rebuilt from anthropics daily-product-digest) and lives in .claude/skills/ with its SOURCE.md; nothing consumes this lockfile yet (see 0audit.md)."
+}

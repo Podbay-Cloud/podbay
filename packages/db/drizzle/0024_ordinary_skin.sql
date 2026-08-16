@@ -1,0 +1,1 @@
+ALTER TABLE "pods" ADD COLUMN "codex_devices" jsonb;

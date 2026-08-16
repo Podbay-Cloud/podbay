@@ -1,0 +1,62 @@
+---
+title: Research the web with Relay
+description: Help Claude reach permitted websites that reject cloud datacenters, while keeping visibility and control on your computer.
+---
+
+Claude can research most public websites directly from a pod. Some sites reject all cloud datacenter
+traffic, require a real browser, or show useful content only after you sign in. Podbay Relay gives
+you a controlled way to help with those cases.
+
+## Start with the outcome
+
+Ask Claude for the research you need, not a particular access method:
+
+> Compare these sources and prepare a brief with links. Use official APIs or public pages where
+> possible. Tell me if a source requires my relay or signed-in access.
+
+Claude first uses supported public routes and reports honestly when a site refuses access. It does
+not disguise bulk scraping or keep retrying a site that has said no.
+
+## When Relay helps
+
+Relay is an optional program that runs on a computer you control. It lets selected pod traffic leave
+through your normal internet connection instead of the pod's datacenter connection.
+
+This can help Claude:
+
+- read a permitted public page that blocks datacenter addresses;
+- use a real browser for a page that depends on JavaScript;
+- read a site through your signed-in session after you explicitly enable that site;
+- run a permitted project tool whose requests need your network identity.
+
+Open **Settings → Relay** in Podbay to generate the setup command. Run that command on your own
+computer and leave Relay running while Claude needs it. One relay can serve all of your pods.
+
+## What you can see and control
+
+The local Relay dashboard lets you:
+
+- see which of your pods used it and which sites they reached;
+- pause one pod without stopping the others;
+- block a site;
+- allow or revoke signed-in use for a specific site;
+- stop Relay immediately.
+
+Detailed activity stays on your computer. Podbay stores only coarse domain-level success or failure
+information needed to improve future access decisions.
+
+## What Relay does not expose
+
+Your home files and private network are not available to the pod. Requests to local devices, private
+IP addresses, or LAN names are refused. Sites are opened signed out by default; your browser session
+is used only for domains you explicitly sign in to through Relay.
+
+Traffic that is configured to require Relay fails when your computer is offline instead of silently
+falling back to the datacenter. Your computer must therefore be awake and Relay connected while that
+work runs.
+
+<Callout type="warning" title="Your network, your responsibility">
+  Relay is not an anonymous proxy or a scraping bypass. Traffic looks like it came from your
+  connection. Use it only for access you are allowed to make, and respect site terms, rate limits,
+  and access controls.
+</Callout>

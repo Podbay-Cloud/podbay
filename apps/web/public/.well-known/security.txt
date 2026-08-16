@@ -1,0 +1,10 @@
+# Security contact for podbay.cloud
+# RFC 9116. Served statically from apps/web/public/.well-known/.
+#
+# NOTE: Expires is a REQUIRED field and this file is ignored once it passes.
+# Bump it when renewing (keep it under a year out).
+
+Contact: mailto:security@podbay.cloud
+Expires: 2027-06-30T23:59:59.000Z
+Preferred-Languages: en
+Canonical: https://podbay.cloud/.well-known/security.txt

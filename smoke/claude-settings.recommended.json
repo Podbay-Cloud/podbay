@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "defaultMode": "acceptEdits",
+  "permissions": {
+    "allow": [
+      "Read(~/**)",
+      "Edit(~/**)",
+      "Write(~/**)",
+      "Bash(*)"
+    ],
+    "deny": [
+      "Read(~/.claude/.credentials.json)",
+      "Bash(rm -rf ~)",
+      "Bash(rm -rf ~/*)",
+      "Bash(rm -rf /home/dev*)",
+      "Bash(git push --force*)",
+      "Bash(git push -f*)"
+    ],
+    "ask": [
+      "Bash(git push*)"
+    ],
+    "additionalDirectories": ["/home/dev"]
+  },
+  "env": {
+    "DISABLE_AUTOUPDATER": "1",
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "0"
+  }
+}

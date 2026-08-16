@@ -1,0 +1,5 @@
+.e2e-state.json
+test-results/
+playwright-report/
+apps/web/test-results/
+.env.local

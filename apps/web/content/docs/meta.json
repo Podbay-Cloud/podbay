@@ -1,0 +1,14 @@
+{
+  "title": "Podbay",
+  "pages": [
+    "index",
+    "getting-started",
+    "claude-apps",
+    "capabilities",
+    "automation",
+    "connectivity",
+    "core-concepts",
+    "reference",
+    "self-hosting"
+  ]
+}

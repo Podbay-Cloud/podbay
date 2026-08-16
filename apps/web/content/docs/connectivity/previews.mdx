@@ -1,0 +1,48 @@
+---
+title: See and share a running app
+description: Open what Claude built through a private live link and make it public only when you choose.
+---
+
+A working result is easier to trust when you can open it. Podbay gives a running web application a
+live link, so Claude can build, run, and show you the project without asking you to reproduce the
+setup on your own computer.
+
+## Ask Claude for the link
+
+> Run the project, verify the main flow in a browser, and send me the private preview link. Keep the
+> development server available while we review it.
+
+Claude handles the port, network binding, and service setup inside the pod. If the application uses
+an unusual fixed port, ask Claude to adapt it to Podbay's preview rather than changing your local
+machine.
+
+Previews work well for:
+
+- websites and web applications;
+- internal dashboards and reports;
+- API explorers or small administrative tools;
+- reviewing live changes with development hot reload.
+
+## Check access before you use the link
+
+Preview visibility comes from the environment used to create the pod. General development
+workspaces are normally owner-only, while some prepared public-facing environments intentionally
+start with a public preview. Check the access indicator on the pod page before putting private data
+in the app or sending its link.
+
+You can change preview access on the pod page. Before sharing, test the link in a signed-out browser.
+A public preview exposes everything the application serves, so add application-level authentication
+before sharing private data or administrative controls.
+
+## If the link does not open
+
+Tell Claude what you see and ask it to diagnose the preview. Claude can check whether the application
+is running, inspect its logs, confirm the pod's live configuration, and apply supported repairs.
+
+If Claude itself is unavailable, open the pod page to confirm the pod is running and healthy. The
+browser terminal is the advanced recovery path when the normal session cannot help.
+
+<Callout type="info" title="Self-hosted previews are currently local">
+  In the early self-hosted edition, a preview opens from a browser on the Docker host. It is not yet
+  a managed public link for remote viewers.
+</Callout>

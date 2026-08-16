@@ -1,0 +1,17 @@
+{
+  "name": "@podbay/selfhost",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "OSS/self-host entrypoint — `podbay up` boots one pod locally via Docker (spike)",
+  "bin": {
+    "podbay": "./podbay.mjs"
+  },
+  "dependencies": {
+    "@podbay/control-plane": "workspace:*",
+    "@podbay/provider": "workspace:*",
+    "@podbay/gateway": "workspace:*",
+    "@podbay/db": "workspace:*",
+    "@podbay/auth": "workspace:*"
+  }
+}

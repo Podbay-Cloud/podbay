@@ -1,0 +1,47 @@
+---
+title: Your workspace and data
+description: Understand what Claude has in a pod, what survives a restart, and what still needs a backup.
+---
+
+A pod is a private, project-scoped cloud computer. It gives Claude enough of a real machine to build
+and operate useful software without giving it your entire laptop.
+
+## What Claude can keep together
+
+- **The project:** source code, working notes, configuration, and repository history.
+- **The toolchain:** project packages and the language or framework tools supplied by the chosen
+  environment.
+- **Supporting software:** development servers, workers, Postgres, and other local services.
+- **Working data:** development databases, generated reports, and files stored in the persistent
+  workspace.
+- **The agent's context:** project instructions, skills, and the Claude session attached to the pod.
+
+Keeping these parts in one place is what lets Claude verify a complete result instead of handing you
+code that still needs to be assembled elsewhere.
+
+## What survives
+
+Files in the pod's home workspace survive a restart, suspension, and image update. Claude keeps the
+repository and important local data there.
+
+Running processes do not survive by themselves. Tell Claude which application, worker, or helper
+must come back automatically; Podbay can supervise those services and relaunch them after a restart.
+Scheduled work is stored durably as well, but it only runs while the pod is on.
+
+Temporary files and changes to the underlying operating-system image may disappear after an update.
+Claude has live information about these boundaries and should choose a durable project-level setup
+when the result needs to last.
+
+## What to put in Git or another backup
+
+The persistent workspace is convenient state, not an independent backup. Commit and push valuable
+source changes. Export databases, uploaded files, generated reports, or other data that would be
+costly to recreate.
+
+Deleting a pod removes its persistent workspace. Suspension does not.
+
+<Callout type="warning" title="A pod is not production hosting by default">
+  A pod is excellent for development, prototypes, internal tools, and small always-on workflows.
+  Use independently backed-up services when the application needs production availability,
+  compliance, or data guarantees beyond one project machine.
+</Callout>

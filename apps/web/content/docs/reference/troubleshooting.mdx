@@ -1,0 +1,77 @@
+---
+title: Troubleshooting and limits
+description: Recover common Podbay problems without learning the agent's internal commands.
+---
+
+Start by telling Claude what failed and what you expected. Claude can inspect the pod's live state,
+run Podbay's diagnostics, read service logs, and apply supported safe repairs.
+
+> The preview stopped loading after the last change. Diagnose it, restore the app if safe, and tell
+> me what failed.
+
+> This morning's report never arrived. Check whether the job ran, preserve the evidence, and fix the
+> schedule if the cause is clear.
+
+You do not need to know the underlying diagnostic commands. The exceptions below cover cases where
+Claude itself cannot respond.
+
+## Claude does not open from the app
+
+1. Open the pod in the Podbay dashboard.
+2. Confirm the pod is running rather than suspended or updating.
+3. Check whether the Claude card asks you to finish sign-in.
+4. Resume or restart the pod if the dashboard recommends it, then choose **Open in Claude** again.
+5. Use the browser terminal only if the guided controls cannot recover the session.
+
+## The app link is blank or unavailable
+
+Ask Claude to check the application process, its recent logs, and the preview configuration. If
+Claude is unavailable too, confirm that the pod is running and inspect the health notices on its
+dashboard page.
+
+Managed Podbay exposes one application preview per pod today. A self-hosted preview currently opens
+only from the Docker host.
+
+## A worker or database disappeared
+
+A process started for a quick test is not automatically permanent. Ask Claude to restore it, verify
+that it works, and mark it as a service that should return after a crash or pod restart.
+
+Important local data must also live in the persistent workspace. If it was written only to temporary
+storage, it may not be recoverable after an update.
+
+## Scheduled work did not happen
+
+Check whether the pod was suspended at the scheduled time. A stopped pod cannot work in the
+background. Daily work may catch up after a same-day resume, but a pod that must report on time needs
+to remain running.
+
+Ask Claude to inspect the run history. Podbay can distinguish a task that never started from one
+that started without reporting a result. A run interrupted by a pod restart is recorded but does not
+currently raise a stalled-run warning after the restart.
+
+## Claude cannot reach a website
+
+Cloud datacenter access differs from access on your laptop. Ask Claude to use Podbay's supported web
+research path and explain which source refused access. If the request is permitted and needs your
+normal network or signed-in browser, connect [Podbay Relay](/docs/connectivity/web-access-and-relay).
+
+Do not add an improvised VPN or proxy inside the pod. It may disappear on restart and can make the
+source of network traffic unclear.
+
+## Before updating or deleting
+
+Commit and push valuable source changes. Export databases, uploads, generated reports, and other
+data you cannot recreate. Updating keeps the persistent workspace; deleting a pod removes it.
+
+## Current product limits
+
+- Podbay is in private alpha and pod images may include breaking changes.
+- Suspending a pod stops Claude, schedules, services, and previews until the pod resumes.
+- A pod's persistent workspace is not an independent backup.
+- Specialist skills and prepared monitors vary by environment.
+- Managed previews currently expose one application endpoint per pod.
+- Self-hosted networking and preview behavior differ from the managed service.
+
+If a problem remains reproducible, report what you asked for, what happened, and any diagnosis Claude
+can provide. Remove secrets, private repository content, and authentication links before sharing it.

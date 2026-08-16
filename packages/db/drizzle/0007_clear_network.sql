@@ -1,0 +1,1 @@
+ALTER TABLE "pods" ADD COLUMN "lifecycle" text DEFAULT 'auto' NOT NULL;

@@ -1,0 +1,1 @@
+ALTER TABLE "pods" ADD COLUMN "provider" text DEFAULT 'fly' NOT NULL;

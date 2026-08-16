@@ -1,0 +1,71 @@
+---
+title: Scheduled work and monitors
+description: Ask Claude to repeat useful work, keep a run history, and surface jobs that stop reporting.
+---
+
+Some tasks are valuable because they happen again: a morning brief, a source check, a weekly report,
+or a data refresh. Podbay lets Claude turn that request into recurring work that uses the same
+project, tools, and context as your normal session.
+
+## What to ask for
+
+Tell Claude the outcome, timing, timezone, and reporting threshold:
+
+> Every weekday at 08:30 Europe/London, check our configured sources and update the research brief.
+> Tell me what changed and flag only items that could affect this week's launch.
+
+> Every Friday afternoon, review open project risks, test the current build, and leave a short report
+> in the repository. Do not publish or message anyone.
+
+> Check this page every two hours. Alert me when the price or availability changes, not when the
+> surrounding layout changes.
+
+Claude can create the schedule, verify it, and explain when the next run will happen. You do not need
+to translate the request into a cron expression or a Podbay command.
+
+## What makes recurring work useful
+
+Include:
+
+- **when:** local time, timezone, days, or interval;
+- **where to look:** the sources, inbox, database, or project files involved;
+- **what matters:** a threshold or definition of meaningful change;
+- **where the result belongs:** the Claude session, a project file, database, or private dashboard;
+- **what Claude may do:** whether it should only report, prepare a draft, or make a local change;
+- **what still needs approval:** publishing, sending, purchasing, or other external actions.
+
+The more often a job runs, the more important it is to define what should be ignored. “Tell me only
+when this changes materially” is usually better than receiving the same status every hour.
+
+## What Podbay keeps track of
+
+Podbay records when a run starts. When Claude reports completion, the durable history also records
+whether the run succeeded or failed. If a run stays open during the same pod boot, Podbay raises one
+stalled-run warning instead of quietly treating it as successful.
+
+A restart can interrupt work before Claude records the result. That run remains visible in the log,
+but Podbay does not currently raise the stalled warning after the pod comes back. For important jobs,
+ask Claude to make the work safe to repeat and to verify the expected output on the next run.
+
+Some environments add a more opinionated monitor workflow: save a baseline, compare new results,
+apply thresholds, avoid duplicate alerts, observe a cooldown, and report recovery. Those prepared
+workflows depend on the selected environment; recurring agent work and its run history are common pod
+capabilities.
+
+## When the pod is off
+
+A suspended pod cannot do work. A missed daily job can catch up after the pod resumes on the same
+local day, but it cannot produce an on-time result while the machine is stopped. Keep the pod running
+when timing matters.
+
+<Callout type="warning" title="A schedule is not blanket permission">
+  Recurring work follows the same boundaries as an interactive request. Scheduling “check our
+  leads” does not silently authorize Claude to email them, change an account, spend money, or publish
+  a result.
+</Callout>
+
+## Related
+
+- [Keep application services running](/docs/automation/services-and-processes)
+- [Let your pods work together](/docs/automation/pod-to-pod)
+- [Give Claude safe access to external services](/docs/core-concepts/secrets)

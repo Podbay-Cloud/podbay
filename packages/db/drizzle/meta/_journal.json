@@ -1,0 +1,300 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1783549354705,
+      "tag": "0000_sloppy_darwin",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1783551036944,
+      "tag": "0001_chunky_mentor",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783612270785,
+      "tag": "0002_opposite_senator_kelly",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1783701137375,
+      "tag": "0003_empty_morgan_stark",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1783850261071,
+      "tag": "0004_stale_ogun",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1783855340659,
+      "tag": "0005_thick_wiccan",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1783952780957,
+      "tag": "0006_magenta_legion",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1784017278446,
+      "tag": "0007_clear_network",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1784065979931,
+      "tag": "0008_parched_gertrude_yorkes",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1784103891341,
+      "tag": "0009_magenta_slipstream",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1784109442210,
+      "tag": "0010_silent_alice",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1784129212164,
+      "tag": "0011_fantastic_freak",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1784289205695,
+      "tag": "0012_powerful_stellaris",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1784290690148,
+      "tag": "0013_blushing_giant_girl",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1784290690149,
+      "tag": "0014_backfill_created_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1784555238525,
+      "tag": "0015_lively_magik",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1784594112236,
+      "tag": "0016_tricky_zemo",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1784728514277,
+      "tag": "0017_bumpy_photon",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1784729667873,
+      "tag": "0018_steep_marvel_boy",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1784765909503,
+      "tag": "0019_fat_franklin_storm",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1784820241306,
+      "tag": "0020_marvelous_banshee",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1784889586469,
+      "tag": "0021_melted_mimic",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1784897651604,
+      "tag": "0022_curvy_hex",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1784905403699,
+      "tag": "0023_large_rictor",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1785171164570,
+      "tag": "0024_ordinary_skin",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1785182362112,
+      "tag": "0025_aspiring_betty_ross",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1785401468441,
+      "tag": "0026_closed_tiger_shark",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1785419739926,
+      "tag": "0027_certain_yellowjacket",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1785494048013,
+      "tag": "0028_overconfident_satana",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1785617447692,
+      "tag": "0029_huge_the_renegades",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1785661205838,
+      "tag": "0030_rename_sleeping_to_suspended",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1785661265838,
+      "tag": "0031_add_walkthrough_seen",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1785661325838,
+      "tag": "0032_walkthrough_seen_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1785876626236,
+      "tag": "0033_expand_landing_variants",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1785963026236,
+      "tag": "0034_add_agent_auth",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1785970026236,
+      "tag": "0035_add_event_dismissed_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1785977026236,
+      "tag": "0036_add_agent_messages",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1785984026236,
+      "tag": "0037_fetch_memory_owner",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1786278612193,
+      "tag": "0038_agent_messages_composite_pk",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1786278613193,
+      "tag": "0039_self_host_pod_sizing",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1786278614193,
+      "tag": "0040_user_walkthrough_seen",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1786278615193,
+      "tag": "0041_pod_position",
+      "breakpoints": true
+    }
+  ]
+}

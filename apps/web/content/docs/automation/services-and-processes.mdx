@@ -1,0 +1,58 @@
+---
+title: Services and databases
+description: Ask Claude to keep an app, worker, database, or other supporting process available.
+---
+
+Most useful projects need more than source files. They may need a web application, Postgres, a queue
+worker, a local API, or a process that turns incoming data into a report.
+
+Claude can set up those pieces inside the pod, connect them, verify them, and mark the important ones
+to return after a crash or restart.
+
+## Ask for the working system
+
+Describe what should be true when the work is finished:
+
+> Run the application with Postgres and the queue worker. Apply the migrations, verify one job from
+> end to end, and keep all three available after the pod restarts.
+
+> Turn this script into a small private dashboard. Refresh its data each morning, keep the history in
+> Postgres, and send me the link.
+
+> Keep the development server running while we work. If it stops, recover it and preserve enough
+> logs to explain why.
+
+This gives Claude room to choose the right project commands while making the durability and
+verification requirements explicit.
+
+## What Podbay can keep available
+
+- the project's main development server;
+- workers, queues, watchers, and local APIs;
+- Postgres or another project-local data service;
+- a bridge or helper required by an internal tool;
+- a private dashboard that exposes the result.
+
+Prepared environments may already define the main application service. Claude can add other
+long-running project services when needed. Podbay relaunches declared services after a pod restart
+and watches for common failures while the pod is running.
+
+## Services are different from scheduled work
+
+A service stays available and waits for traffic or work. A schedule wakes Claude at a particular
+time to complete a task. Many projects use both: a dashboard stays running while Claude refreshes its
+data each morning.
+
+## Decide where important data belongs
+
+Project-local Postgres and persistent files work well for development, prototypes, internal tools,
+and small personal workflows. Ask Claude to keep their data in the persistent workspace and to
+document how it is backed up or exported.
+
+Move to an independently managed database or service when you need production availability,
+independent backups, compliance controls, or scaling beyond one pod.
+
+<Callout title="Verification matters">
+  “Keep the worker running” is incomplete without a way to know it works. Ask Claude to exercise a
+  real job or health check and to explain where failures will be visible.
+</Callout>

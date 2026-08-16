@@ -1,0 +1,107 @@
+---
+title: What Claude can do in a pod
+description: See the useful outcomes Claude can deliver when it has a persistent computer, project tools, and Podbay's built-in capabilities.
+---
+
+A pod gives Claude more than a place to edit files. It gives Claude a computer where it can turn a
+request into a working, inspectable system—and return to that system later.
+
+You do not need to learn Podbay's internal commands. Describe the outcome, constraints, and approval
+boundaries. Claude uses the tools available inside the pod to work out the implementation.
+
+## Build and run the whole project
+
+Claude can work across the parts that usually surround an application, not only its source code:
+
+- install project packages and use the environment's language and framework tools;
+- run the application with Postgres, workers, queues, or other supporting services;
+- apply database migrations, seed development data, and verify that the pieces work together;
+- keep important services running after a crash or pod restart;
+- give you a live, owner-only link to inspect the result.
+
+> Get this project running with its database and worker. Fix the setup problems, verify the main
+> flow, and send me a private link when it is ready.
+
+## Receive work in a form you can open
+
+The pod is a remote computer, so its local file paths are not useful on your phone or laptop. Ask
+Claude to return the result through the right channel:
+
+- a live preview for an application or dashboard;
+- a GitHub link or pushed branch for committed source changes;
+- a summary, table, or short document directly in the Claude conversation;
+- an exported or backed-up copy when the result is data that must outlive the pod.
+
+> Put the finished guide in Git, send me a link I can open, and summarize the decisions here.
+
+## Continue the same work from Claude
+
+The project, installed tools, working notes, and Claude session stay with the pod. Start from the
+official Claude desktop app, close your laptop, and continue from Claude on mobile without moving the
+workspace onto either device.
+
+## Give Claude work that repeats
+
+Claude can perform recurring work with the same project context and tools it uses during an
+interactive session. Useful examples include:
+
+- preparing a morning research brief;
+- checking a set of sources and reporting meaningful changes;
+- refreshing data and updating a private dashboard;
+- running a weekly project review or maintenance routine;
+- monitoring a workflow and surfacing when it stops reporting.
+
+Podbay keeps a run history and can surface stalled work. The pod must remain running for scheduled
+work to happen on time.
+
+## Research beyond the pod
+
+Claude can read most public websites directly. When a permitted site rejects cloud datacenter
+traffic, the optional Podbay Relay can let Claude make the request through your own computer and
+network. You can see how the relay is used, pause a pod, block a site, and decide which sites may use
+your signed-in browser session.
+
+## Ask another pod for help
+
+If you keep different projects in separate pods, Claude in one pod can ask Claude in another to do
+project-local work and report back. This is useful when one result depends on another workspace—for
+example, asking a website pod to publish new documentation while a research pod prepares the source
+material.
+
+Messages stay within your own Podbay account. The receiving agent still follows its normal approval
+rules; a message is context, not permission to publish, spend money, or change an external system.
+
+## Start with prepared expertise
+
+An environment can give Claude the right toolchain, project rules, templates, and job-specific skills
+before the first conversation. Some environments also include opinionated workflows such as source
+monitoring or framework-specific testing. You can inspect and change the workspace after launch.
+
+## Recover common failures
+
+Podbay watches the Claude session, disk, scheduled work, the development server, and services Claude
+has marked as important. It can restart several common failures and give Claude a diagnosis when
+something needs attention.
+
+## What you still control
+
+Claude has broad freedom inside its pod. You remain the decision-maker for the outside world:
+
+- only you add or change project secrets;
+- previews stay private until you make them public;
+- pushing code, publishing, spending money, or contacting people still requires the relevant
+  permission;
+- deleting a pod and its stored workspace is an owner action.
+
+<Callout title="The useful way to ask">
+  State the result, the important constraints, and what needs your approval. You do not need to tell
+  Claude which Podbay command to run. For recurring work, also include the timing, timezone, sources,
+  and what should count as worth reporting.
+</Callout>
+
+## Go deeper
+
+- [Run scheduled work and monitors](/docs/automation/scheduled-work)
+- [Keep an app, database, and workers running](/docs/automation/services-and-processes)
+- [See and share a running app](/docs/connectivity/previews)
+- [Connect project accounts safely](/docs/core-concepts/secrets)
