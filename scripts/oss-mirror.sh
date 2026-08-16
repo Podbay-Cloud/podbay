@@ -37,10 +37,12 @@ EXCLUDES=(
   ".git" ".env" ".env.local" ".env.production"
 )
 
-echo "== staging OSS tree → $STAGE (from $(git -C "$ROOT" rev-parse --short HEAD)) =="
+REF="${OSS_REF:-HEAD}"   # CI sets this to the pushed main; local runs use committed HEAD.
+echo "== staging OSS tree → $STAGE (from $(git -C "$ROOT" rev-parse --short "$REF")) =="
 rm -rf "$STAGE"; mkdir -p "$STAGE"
-# Start from a clean, tracked-files-only export (no node_modules, dist, .next, untracked cruft).
-git -C "$ROOT" archive --format=tar HEAD | tar -x -C "$STAGE"
+# Start from a clean, tracked-files-only export of REF (no node_modules, dist, .next, untracked
+# cruft, and never any uncommitted local edits).
+git -C "$ROOT" archive --format=tar "$REF" | tar -x -C "$STAGE"
 
 echo "== applying exclude-list =="
 for p in "${EXCLUDES[@]}"; do
@@ -81,16 +83,33 @@ if [ "$PUSH" = 0 ]; then
   exit 0
 fi
 
-# ── Publish: a single squashed commit onto the public main. Outward action — only on --push.
+# ── Publish: APPEND one commit to the public main (never force-push — contributors' clones must
+# stay valid). Clone the existing public repo, swap in the fresh export tree, commit the delta, push
+# fast-forward. Only tree content crosses over (one commit per sync); private history never does.
 echo "== PUBLISH → $PUBLIC_REMOTE =="
-SHA="$(git -C "$ROOT" rev-parse --short HEAD)"
-cd "$STAGE"
-git init -q
-git checkout -q -b main
+SHA="$(git -C "$ROOT" rev-parse --short "$REF")"
+# Token-based push for CI: embed OSS_PUSH_TOKEN in the remote (a PAT with contents:write on the
+# public repo). Locally, leave it unset and rely on the git credential helper (gh auth setup-git).
+REMOTE="$PUBLIC_REMOTE"
+if [ -n "${OSS_PUSH_TOKEN:-}" ]; then
+  REMOTE="https://x-access-token:${OSS_PUSH_TOKEN}@${PUBLIC_REMOTE#https://}"
+fi
+PUB="${STAGE}.git"; rm -rf "$PUB"
+if git clone --depth 1 "$REMOTE" "$PUB" >/dev/null 2>&1 && [ -d "$PUB/.git" ]; then
+  echo "  appending to existing public main"
+else
+  echo "  public repo empty/new — initializing"
+  rm -rf "$PUB"; mkdir -p "$PUB"
+  ( cd "$PUB" && git init -q && git checkout -q -b main && git remote add origin "$REMOTE" )
+fi
+# Swap the tracked contents for the freshly-scanned export (keep the public .git).
+rsync -a --delete --exclude '.git' "$STAGE/" "$PUB/"
+cd "$PUB"
 git add -A
-git -c user.name="podbay" -c user.email="oss@podbay.cloud" \
-  commit -q -m "sync: podbay OSS mirror @ $SHA"
-git remote add origin "$PUBLIC_REMOTE"
-# Force-push the fresh squashed tree — the public main is a projection, not a peer branch.
-git push -f origin main
+if git diff --cached --quiet; then
+  echo "== no changes since last sync — nothing to push =="
+  exit 0
+fi
+git -c user.name="podbay" -c user.email="oss@podbay.cloud" commit -q -m "sync: podbay OSS mirror @ $SHA"
+git push origin main
 echo "== pushed OSS mirror ($SHA) to $PUBLIC_REMOTE =="
