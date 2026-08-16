@@ -1,0 +1,50 @@
+# Public CI for the OSS mirror (Podbay-Cloud/podbay). Runs on GitHub-hosted runners, which are
+# FREE for public repos — so this is unaffected by any private-repo Actions billing.
+#
+# This file SHIPS to the public repo (the mirror excludes the private ci.yml / selfhost-images.yml /
+# oss-mirror.yml, but keeps this one). Keep it self-contained: it must pass using only what the
+# public tree contains, with no cloud secrets or infra.
+#
+# Scope: build every package, typecheck the web app, lint env manifests, and run the headless core
+# unit tests. The PTY-bound suites (pod-agent, gateway) and the Playwright e2e need a live
+# stack/tty and run upstream — they're intentionally out of this fast, always-green PR gate.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Build packages (tests + web typecheck consume their dist/)
+        run: pnpm --filter "./packages/*" build
+      - name: Typecheck web
+        run: pnpm --filter @podbay/web exec tsc --noEmit -p tsconfig.json
+      - name: Unit tests (headless core)
+        run: >
+          pnpm --workspace-concurrency=1
+          --filter @podbay/control-plane
+          --filter @podbay/db
+          --filter @podbay/auth
+          --filter @podbay/shared
+          --filter @podbay/provider
+          test
+      - name: Lint environment manifests
+        run: node scripts/lint-envs.mjs
