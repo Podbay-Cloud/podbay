@@ -175,7 +175,7 @@ credentials, and ghcr rejects them rather than pulling anonymously. Clear it and
 fi
 
 say ""
-say "✅ podbay is up."
+say "✅ podbay is up — your own private cloud for AI coding agents."
 case "$DEPLOY_MODE" in
   domain)
     say "   Dashboard:  https://$DASHBOARD_HOST"
@@ -248,11 +248,24 @@ if [ "$PUBLIC" -eq 1 ]; then
   say "   each new hostname, so the very first load of a pod's preview can take a few seconds."
 fi
 cat <<EOF
-   First visit shows a one-time owner setup (pick a password) — then it's your dashboard.
 
-   Manage it (from ./$DIR):
-     docker compose logs -f serve     # daemon / provisioning
-     docker compose down              # stop   ·   down -v also wipes state
-   Remote installs are experimental. Keep the dashboard private; see the public deployment guide.
-   To pre-set the owner (skip the first-run setup window), set PODBAY_AUTH_PASSWORD before starting.
+   What you just got: your own always-on cloud for AI coding agents. Open the
+   dashboard and launch a pod — a ready-to-use cloud computer where Claude Code
+   (or Codex) lives, keeps your project files, runs servers, and keeps working
+   even when your laptop is closed.
+
+   First, sign in:
+     • New install → you'll create your owner login (pick a password). That's it.
+     • Installed here before? Sign in with the password you already set.
+       Forgot it, or want a clean slate?  cd $DIR && docker compose down -v
+       (the -v erases everything — pods, data, and that login — so you start fresh.)
+
+   Everyday commands (run inside ./$DIR):
+     docker compose logs -f serve     # watch what podbay is doing
+     docker compose down              # stop podbay — your data stays
+     docker compose down -v           # stop AND erase all data
+
+   Running this on a public server is still experimental — keep your dashboard
+   private. Full guide: https://github.com/Podbay-Cloud/install/blob/main/docs/DEPLOYMENT.md
+   (Advanced: set PODBAY_AUTH_PASSWORD before starting to skip the setup screen.)
 EOF

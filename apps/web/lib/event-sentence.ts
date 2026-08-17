@@ -57,6 +57,10 @@ export function eventSentence(e: TimelineEventLike): string {
       return `${agent(m.agent)} added to this pod`;
     case "codex_rc_toggled":
       return `Codex remote control turned ${m.on ? "on" : "off"}`;
+    case "claude_settings_changed": {
+      const keys = Array.isArray(m.keys) ? m.keys : [];
+      return keys.length ? `Claude settings updated (${keys.join(", ")})` : "Claude settings updated";
+    }
     case "pod_repaired": {
       if (m.by === "doctor") {
         const fixed = Array.isArray(m.fixed) ? m.fixed : [];

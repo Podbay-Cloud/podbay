@@ -2,6 +2,13 @@ export * from "./types.js";
 export * from "./store.js";
 export * from "./drizzle-store.js";
 export * from "./service.js";
+export {
+  pickClaudeSettings,
+  validateClaudeSettings,
+  CLAUDE_SETTINGS_KEYS,
+  type ClaudeSettings,
+  type ClaudeAttribution,
+} from "./claude-settings.js";
 export * from "./secret-vault.js";
 export * from "./slug.js";
 export { usageForPod, usageByPod, type PodUsage, type LifecycleInterval } from "./metrics.js";

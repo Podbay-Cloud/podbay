@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createLogger } from "@podbay/shared/log";
 import { getPostHogClient } from "./posthog-server";
 import type { MetricsSnapshot, PodIssue } from "@podbay/shared";
-import type { PodLiveSignals } from "@podbay/control-plane";
+import type { PodLiveSignals, ClaudeSettings } from "@podbay/control-plane";
 import { requireUser, editionOss } from "./session";
 import { requireApprovedUser } from "./access";
 import { isAdmin } from "./access-rules";
@@ -169,6 +169,29 @@ export async function sendAgentSigninCode(
   const user = await requireUser();
   try {
     await getPodService().sendAgentInput(user.id, slug, agent, code.trim());
+  } catch (e) {
+    return { error: message(e) };
+  }
+}
+
+/** Read the cockpit-editable slice of the pod's Claude settings.json. {} when the pod has none. */
+export async function getClaudeSettings(slug: string): Promise<ClaudeSettings> {
+  const user = await requireUser();
+  return getPodService()
+    .getClaudeSettings(user.id, slug)
+    .catch(() => ({}));
+}
+
+/** Merge a validated Claude-settings patch into the pod's ~/.claude/settings.json (preserving
+ * podbay-managed keys). Returns the settings as actually written on success. */
+export async function saveClaudeSettings(
+  slug: string,
+  patch: ClaudeSettings,
+): Promise<{ settings: ClaudeSettings } | { error: string }> {
+  const user = await requireUser();
+  try {
+    const settings = await getPodService().saveClaudeSettings(user.id, slug, patch);
+    return { settings };
   } catch (e) {
     return { error: message(e) };
   }

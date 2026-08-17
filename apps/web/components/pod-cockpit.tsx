@@ -37,6 +37,7 @@ import { RelayInfoDialog } from "@/components/relay-info-dialog";
 import { RelayStatus } from "@/components/relay-status";
 import type { MyRelayLive } from "@/lib/relay-actions";
 import ConnectWalkthrough from "@/components/connect-walkthrough";
+import ClaudeSettingsDialog from "@/components/claude-settings-dialog";
 import { CopyCodeButton } from "@/components/copy-code-button";
 import AgentCards from "@/components/agent-cards";
 import PreviewCard from "@/components/preview-card";
@@ -1374,6 +1375,17 @@ export default function PodCockpit(props: PodCockpitProps) {
               >
                 {previewPublic ? "Make private" : "Make public"}
               </Button>
+            </SettingRow>
+          )}
+
+          {/* Claude Code's own settings (attribution, unattended timeouts, auto-compact) — only
+              when Claude runs here and the pod is up (the editor reads/writes ~/.claude in the pod). */}
+          {hasClaudeAgent && status === "running" && (
+            <SettingRow
+              label="Claude settings"
+              desc="Attribution, unattended timeouts, auto-compact"
+            >
+              <ClaudeSettingsDialog slug={slug} />
             </SettingRow>
           )}
 

@@ -299,6 +299,48 @@ resume are explicit user verbs. A user SHALL NOT act on a pod they do not own.
 - **WHEN** a user targets a pod they do not own
 - **THEN** the action SHALL be denied as not-found
 
+### Requirement: An owner can edit the pod-relevant slice of Claude settings
+
+When Claude Code is one of a running pod's agents, the cockpit Settings tab SHALL offer a "Claude
+settings" editor scoped to the settings that matter for an agent running headless / remote-controlled
+and often unattended: unattended timeouts (`askUserQuestionTimeout`, `dialogExpiry`), owner-awareness
+(`agentPushNotifEnabled`, `awaySummaryEnabled`), git attribution (`attribution.commit`/`.pr`/
+`.sessionUrl`), and long-session health (`autoCompactEnabled`). It SHALL NOT expose settings the
+Claude client owns (`model`), that podbay injects (`env`), or that podbay pins in the image
+(`autoUpdatesChannel`). The control plane SHALL merge a validated patch into the pod's
+`~/.claude/settings.json`, PRESERVING every podbay-managed key (permissions, hooks), and SHALL reject
+any key outside the exposed allowlist. This behavior is edition-agnostic: it uses `provider.exec`, so
+it works identically on cloud (Incus) and self-host (Docker) and reaches existing pods without an
+image update.
+
+#### Scenario: Owner opens the editor on a Claude pod
+
+- **WHEN** the owner opens Settings on their own running pod that includes Claude
+- **THEN** the "Claude settings" editor SHALL show the current values read from the pod's
+  `~/.claude/settings.json`, falling back to Claude's defaults for absent keys
+
+#### Scenario: The editor is hidden when it cannot apply
+
+- **WHEN** the pod has no Claude agent, or the pod is not running
+- **THEN** the "Claude settings" editor SHALL NOT be shown
+
+#### Scenario: Saving preserves podbay-managed keys
+
+- **WHEN** the owner saves a change (e.g. hides commit attribution or sets a question timeout)
+- **THEN** the control plane SHALL merge only the exposed keys into `~/.claude/settings.json`, leaving
+  podbay's `permissions` and `hooks` untouched, and SHALL record a `claude_settings_changed` event
+
+#### Scenario: A malformed or unknown key is rejected
+
+- **WHEN** a save carries a key outside the allowlist (e.g. `model`, `permissions`) or a malformed
+  value (a non-boolean toggle, an invalid duration)
+- **THEN** the control plane SHALL reject the save as invalid and write nothing
+
+#### Scenario: Cross-owner access is denied
+
+- **WHEN** a user reads or writes Claude settings for a pod they do not own
+- **THEN** the action SHALL be denied as not-found
+
 ### Requirement: A bring-your-own-repo environment requires a repository at launch
 
 An environment declaring `byoRepo` IS the user's own repository, so the launch form SHALL require a

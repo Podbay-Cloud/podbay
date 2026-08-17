@@ -26,6 +26,12 @@ import {
 } from "./agent-messages.js";
 import { drainOutbox, confirmDrain, deliverMessages, pushFleetRoster, type OutboxLine } from "./agent-messaging.js";
 import { classifyEvent } from "./incidents.js";
+import {
+  pickClaudeSettings,
+  validateClaudeSettings,
+  CLAUDE_SETTINGS_MERGE_PY,
+  type ClaudeSettings,
+} from "./claude-settings.js";
 import { formatWarnDigest } from "./warn-digest.js";
 import { createLogger, type Logger } from "@podbay/shared/log";
 import type { PodAgentState, PodIssue } from "@podbay/shared";
@@ -1911,6 +1917,51 @@ export class PodService {
   async codexRcActive(ownerId: string, id: string): Promise<boolean> {
     const rec = await this.owned(ownerId, id);
     return this.providerFor(rec.provider).codexRcActive(id);
+  }
+
+  /** Read the cockpit-editable slice of the pod's ~/.claude/settings.json. Best-effort: a pod with
+   * no file (or a garbled one) yields {} so the UI falls back to Claude's defaults. */
+  async getClaudeSettings(ownerId: string, id: string): Promise<ClaudeSettings> {
+    const rec = await this.owned(ownerId, id);
+    if (rec.status !== "running")
+      throw new ControlError("the pod must be running to read Claude settings", "invalid");
+    const r = await this.providerFor(rec.provider).exec(id, [
+      "cat",
+      "/home/dev/.claude/settings.json",
+    ]);
+    if (r.exitCode !== 0 || !r.stdout.trim()) return {};
+    try {
+      return pickClaudeSettings(JSON.parse(r.stdout));
+    } catch {
+      return {};
+    }
+  }
+
+  /** Merge a validated patch into ~/.claude/settings.json IN the pod, preserving every podbay-managed
+   * key (permissions, hooks, …). `null` for a key resets it to Claude's default. Returns the fresh
+   * settings so the cockpit re-renders from the file that was actually written. */
+  async saveClaudeSettings(
+    ownerId: string,
+    id: string,
+    patch: ClaudeSettings,
+  ): Promise<ClaudeSettings> {
+    const rec = await this.owned(ownerId, id);
+    if (rec.status !== "running")
+      throw new ControlError("the pod must be running to change Claude settings", "invalid");
+    const clean = validateClaudeSettings(patch); // throws ControlError on bad input
+    const b64 = Buffer.from(JSON.stringify(clean), "utf8").toString("base64");
+    const r = await this.providerFor(rec.provider).exec(id, [
+      "python3",
+      "-c",
+      CLAUDE_SETTINGS_MERGE_PY,
+      b64,
+    ]);
+    if (r.exitCode !== 0 || !r.stdout.includes("OK"))
+      throw new Error(
+        `couldn't save Claude settings: ${(r.stderr || r.stdout || "no output").trim().slice(0, 200)}`,
+      );
+    await this.emit(rec, "claude_settings_changed", { keys: Object.keys(clean) });
+    return this.getClaudeSettings(ownerId, id);
   }
 
 

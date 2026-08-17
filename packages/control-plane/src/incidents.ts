@@ -167,6 +167,8 @@ export function classifyEvent(type: PodEventType | string, meta?: Record<string,
     }
     case "codex_rc_toggled":
       return { severity: "info", title: `Codex remote control turned ${meta?.on ? "on" : "off"}`, ...base };
+    case "claude_settings_changed":
+      return { severity: "info", title: "Claude settings updated", ...base };
     case "admin_action":
       return { severity: "info", title: `Admin action${str(meta, "action") ? `: ${str(meta, "action")}` : ""}`, ...base };
     case "update_started":

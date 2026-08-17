@@ -33,6 +33,8 @@ export type PodEventType =
   // these never affect billing — see metrics.ts OPENS/CLOSES.
   | "agent_added"
   | "codex_rc_toggled"
+  // The owner edited the pod's Claude settings from the cockpit. meta: { keys: string[] }.
+  | "claude_settings_changed"
   | "admin_action"
   // The owner revealed a stored secret value in the cockpit. meta: { key }. Audited
   // because it is the one path that returns a plaintext secret to a browser.
