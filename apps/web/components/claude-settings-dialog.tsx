@@ -33,6 +33,12 @@ import { cn } from "@/lib/utils";
 
 type AttrMode = "default" | "hidden" | "custom";
 
+/** Per-row hint (the "subtitle"): reads as a distinct, quieter layer below the setting NAME via
+ * three cues — a different family (mono vs the UI sans), a smaller size, and a dimmer grey
+ * (#6b7688, a step below muted-foreground) against the label's near-white `foreground`. */
+const HINT = "mt-0.5 font-mono text-[11px] leading-snug text-[#6b7688]";
+const LABEL = "text-sm font-medium text-foreground";
+
 /** Accessible switch (role="switch") hand-rolled to avoid pulling a second primitive library —
  * behaviour matches @/components/ui semantics (keyboard-focusable button, aria-checked). */
 function Toggle({
@@ -51,8 +57,8 @@ function Toggle({
   return (
     <div className="flex items-start justify-between gap-4 py-2.5">
       <label htmlFor={id} className="min-w-0 cursor-pointer">
-        <div className="text-sm font-medium">{label}</div>
-        {hint && <div className="text-[12px] leading-snug text-muted-foreground">{hint}</div>}
+        <div className={LABEL}>{label}</div>
+        {hint && <div className={HINT}>{hint}</div>}
       </label>
       <button
         id={id}
@@ -77,19 +83,14 @@ function Toggle({
   );
 }
 
-function Group({
-  title,
-  desc,
-  children,
-}: {
-  title: string;
-  desc: string;
-  children: React.ReactNode;
-}) {
+function Group({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section>
-      <h4 className="text-[13px] font-semibold">{title}</h4>
-      <p className="mb-1 text-[12px] leading-snug text-muted-foreground">{desc}</p>
+      {/* Section title in the accent (a distinct COLOR from the white setting names + dim subtitles),
+          uppercased as a small section eyebrow so the three groups read as dividers. */}
+      <h4 className="mb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--accent-light)]">
+        {title}
+      </h4>
       <div className="divide-y divide-border/50">{children}</div>
     </section>
   );
@@ -115,8 +116,8 @@ function AttributionRow({
   return (
     <div className="flex items-start justify-between gap-4 py-2.5">
       <div className="min-w-0">
-        <div className="text-sm font-medium">{label}</div>
-        <div className="text-[12px] leading-snug text-muted-foreground">{hint}</div>
+        <div className={LABEL}>{label}</div>
+        <div className={HINT}>{hint}</div>
       </div>
       <Select value={mode} onValueChange={(v) => setMode(v as AttrMode)}>
         <SelectTrigger id={id} className="h-8 w-[130px] flex-none text-xs">
@@ -128,6 +129,42 @@ function AttributionRow({
           {mode === "custom" && (
             <SelectItem value="custom">Custom: {custom.slice(0, 20) || "…"}</SelectItem>
           )}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+/** One duration/select row (Question timeout, Permission dialog expiry). */
+function SelectRow({
+  label,
+  hint,
+  value,
+  onChange,
+  opts,
+}: {
+  label: string;
+  hint: string;
+  value: string;
+  onChange: (v: string) => void;
+  opts: { v: string; l: string }[];
+}) {
+  return (
+    <div className="flex items-start justify-between gap-4 py-2.5">
+      <div className="min-w-0">
+        <div className={LABEL}>{label}</div>
+        <div className={HINT}>{hint}</div>
+      </div>
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger className="h-8 w-[150px] flex-none text-xs">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {opts.map((o) => (
+            <SelectItem key={o.v} value={o.v}>
+              {o.l}
+            </SelectItem>
+          ))}
         </SelectContent>
       </Select>
     </div>
@@ -148,11 +185,43 @@ const DIALOG_OPTS = [
   { v: "1h", l: "1 hour" },
 ];
 
+type FormFields = {
+  askTimeout: string;
+  dialogExpiry: string;
+  pushNotif: boolean;
+  awaySummary: boolean;
+  autoCompact: boolean;
+  sessionUrl: boolean;
+  commitMode: AttrMode;
+  commitCustom: string;
+  prMode: AttrMode;
+  prCustom: string;
+};
+
+/** Stable signature of the editable form, so Save can enable ONLY when something actually changed.
+ * Custom text only counts while its mode is "custom" (so stale hidden text never reads as dirty). */
+function formSig(v: FormFields): string {
+  return JSON.stringify([
+    v.askTimeout,
+    v.dialogExpiry,
+    v.pushNotif,
+    v.awaySummary,
+    v.autoCompact,
+    v.sessionUrl,
+    v.commitMode,
+    v.commitMode === "custom" ? v.commitCustom : "",
+    v.prMode,
+    v.prMode === "custom" ? v.prCustom : "",
+  ]);
+}
+
 export default function ClaudeSettingsDialog({ slug }: { slug: string }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Signature of the values as loaded — Save stays disabled until the form diverges from it.
+  const [initialSig, setInitialSig] = useState("");
 
   // Unattended behaviour
   const [askTimeout, setAskTimeout] = useState("never");
@@ -169,25 +238,44 @@ export default function ClaudeSettingsDialog({ slug }: { slug: string }) {
   const [autoCompact, setAutoCompact] = useState(true);
 
   function hydrate(s: ClaudeSettings) {
-    setAskTimeout(s.askUserQuestionTimeout ?? "never");
-    setDialogExpiry(s.dialogExpiry ?? "5m");
-    setPushNotif(s.agentPushNotifEnabled ?? false);
-    setAwaySummary(s.awaySummaryEnabled ?? false);
-    setAutoCompact(s.autoCompactEnabled ?? true);
     const a = s.attribution ?? {};
-    setSessionUrl(a.sessionUrl ?? true);
-    if (a.commit === undefined) setCommitMode("default");
-    else if (a.commit === "") setCommitMode("hidden");
-    else {
-      setCommitMode("custom");
-      setCommitCustom(a.commit);
+    let commitMode: AttrMode = "default";
+    let commitCustom = "";
+    if (a.commit === "") commitMode = "hidden";
+    else if (a.commit !== undefined) {
+      commitMode = "custom";
+      commitCustom = a.commit;
     }
-    if (a.pr === undefined) setPrMode("default");
-    else if (a.pr === "") setPrMode("hidden");
-    else {
-      setPrMode("custom");
-      setPrCustom(a.pr);
+    let prMode: AttrMode = "default";
+    let prCustom = "";
+    if (a.pr === "") prMode = "hidden";
+    else if (a.pr !== undefined) {
+      prMode = "custom";
+      prCustom = a.pr;
     }
+    const fields: FormFields = {
+      askTimeout: s.askUserQuestionTimeout ?? "never",
+      dialogExpiry: s.dialogExpiry ?? "5m",
+      pushNotif: s.agentPushNotifEnabled ?? false,
+      awaySummary: s.awaySummaryEnabled ?? false,
+      autoCompact: s.autoCompactEnabled ?? true,
+      sessionUrl: a.sessionUrl ?? true,
+      commitMode,
+      commitCustom,
+      prMode,
+      prCustom,
+    };
+    setAskTimeout(fields.askTimeout);
+    setDialogExpiry(fields.dialogExpiry);
+    setPushNotif(fields.pushNotif);
+    setAwaySummary(fields.awaySummary);
+    setAutoCompact(fields.autoCompact);
+    setSessionUrl(fields.sessionUrl);
+    setCommitMode(fields.commitMode);
+    setCommitCustom(fields.commitCustom);
+    setPrMode(fields.prMode);
+    setPrCustom(fields.prCustom);
+    setInitialSig(formSig(fields));
   }
 
   async function onOpenChange(next: boolean) {
@@ -231,6 +319,20 @@ export default function ClaudeSettingsDialog({ slug }: { slug: string }) {
     else setOpen(false);
   }
 
+  const dirty =
+    formSig({
+      askTimeout,
+      dialogExpiry,
+      pushNotif,
+      awaySummary,
+      autoCompact,
+      sessionUrl,
+      commitMode,
+      commitCustom,
+      prMode,
+      prCustom,
+    }) !== initialSig;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
@@ -241,10 +343,7 @@ export default function ClaudeSettingsDialog({ slug }: { slug: string }) {
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-[520px]">
         <DialogHeader>
           <DialogTitle>Claude settings</DialogTitle>
-          <DialogDescription>
-            Applies to Claude Code running on this pod. Podbay-managed settings (permissions, sign-in)
-            aren&rsquo;t shown.
-          </DialogDescription>
+          <DialogDescription>Applies to Claude Code running on this pod.</DialogDescription>
         </DialogHeader>
 
         {loading ? (
@@ -253,50 +352,21 @@ export default function ClaudeSettingsDialog({ slug }: { slug: string }) {
           </div>
         ) : (
           <div className="space-y-5">
-            <Group
-              title="Unattended operation"
-              desc="This pod runs when you&rsquo;re away — don&rsquo;t let the agent hang waiting on you."
-            >
-              <div className="flex items-start justify-between gap-4 py-2.5">
-                <div className="min-w-0">
-                  <div className="text-sm font-medium">Question timeout</div>
-                  <div className="text-[12px] leading-snug text-muted-foreground">
-                    How long the agent waits on an unanswered question before moving on.
-                  </div>
-                </div>
-                <Select value={askTimeout} onValueChange={setAskTimeout}>
-                  <SelectTrigger className="h-8 w-[150px] flex-none text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ASK_OPTS.map((o) => (
-                      <SelectItem key={o.v} value={o.v}>
-                        {o.l}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex items-start justify-between gap-4 py-2.5">
-                <div className="min-w-0">
-                  <div className="text-sm font-medium">Permission dialog expiry</div>
-                  <div className="text-[12px] leading-snug text-muted-foreground">
-                    Deadline for an approval prompt forwarded to your phone/desktop.
-                  </div>
-                </div>
-                <Select value={dialogExpiry} onValueChange={setDialogExpiry}>
-                  <SelectTrigger className="h-8 w-[150px] flex-none text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {DIALOG_OPTS.map((o) => (
-                      <SelectItem key={o.v} value={o.v}>
-                        {o.l}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+            <Group title="Unattended operation">
+              <SelectRow
+                label="Question timeout"
+                hint="How long the agent waits on an unanswered question before moving on."
+                value={askTimeout}
+                onChange={setAskTimeout}
+                opts={ASK_OPTS}
+              />
+              <SelectRow
+                label="Permission dialog expiry"
+                hint="Deadline for an approval prompt forwarded to your phone/desktop."
+                value={dialogExpiry}
+                onChange={setDialogExpiry}
+                opts={DIALOG_OPTS}
+              />
               <Toggle
                 id="cs-push"
                 checked={pushNotif}
@@ -313,10 +383,7 @@ export default function ClaudeSettingsDialog({ slug }: { slug: string }) {
               />
             </Group>
 
-            <Group
-              title="Git identity"
-              desc="Attribution on commits &amp; PRs. Pods run via Remote Control, so the session link is added by default."
-            >
+            <Group title="Git identity">
               <AttributionRow
                 id="cs-commit"
                 label="Commit attribution"
@@ -342,10 +409,7 @@ export default function ClaudeSettingsDialog({ slug }: { slug: string }) {
               />
             </Group>
 
-            <Group
-              title="Long sessions"
-              desc="Keep a 24/7 session alive as its context fills up."
-            >
+            <Group title="Long sessions">
               <Toggle
                 id="cs-compact"
                 checked={autoCompact}
@@ -359,14 +423,11 @@ export default function ClaudeSettingsDialog({ slug }: { slug: string }) {
           </div>
         )}
 
-        <DialogFooter className="items-center">
-          <p className="mr-auto hidden text-[11.5px] text-muted-foreground sm:block">
-            Applies to new activity; a running task may finish first.
-          </p>
+        <DialogFooter>
           <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)} disabled={saving}>
             Cancel
           </Button>
-          <Button size="sm" onClick={save} disabled={saving || loading}>
+          <Button size="sm" onClick={save} disabled={saving || loading || !dirty}>
             {saving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
             {saving ? "Saving…" : "Save"}
           </Button>

@@ -556,6 +556,7 @@ cmd_startup_list() {
     return 0
   fi
   jq -r '.commands[] | "\(if .enabled==false then "off" else "on " end)  \(.slug)\t\(.command)"' "$STARTUP_JSON"
+  echo "  reload one on the latest code with: podbay startup restart <slug>  (do NOT hand-kill it — the watchdog races you)"
 }
 
 cmd_startup_add() {
@@ -592,12 +593,28 @@ cmd_startup_remove() {
   echo "removed startup command '$slug' (a process already running from a prior boot is left alone)"
 }
 
+# restart|stop|start a registered startup proc BY SLUG, through the pod-agent (which owns the
+# supervisor + pidfiles): it pauses supervision, kills the old process, and relaunches via a fresh
+# login shell — so the proc comes back on the LATEST code with re-sourced secrets, and the watchdog
+# never races the swap. This is the clean answer to "reload afisha-ops" — never `kill`/`pkill` it.
+cmd_startup_action() {
+  local action="$1" slug="${2:-}"
+  [ -n "$slug" ] || die "usage: podbay startup $action <slug>   (slugs: podbay startup list)"
+  local out
+  out=$(curl -fsS -m 30 -X POST -H 'content-type: application/json' \
+    --data "$(jq -nc --arg a "$action" --arg s "$slug" '{action:$a,slug:$s}')" \
+    "http://127.0.0.1:${PODBAY_AGENT_PORT:-8080}/startup" 2>/dev/null) \
+    || die "the pod-agent could not $action '$slug' (is it up? try: podbay doctor)"
+  printf '%s\n' "$(printf '%s' "$out" | jq -r '.message // .error // "done"')"
+}
+
 cmd_startup() {
   case "${1:-list}" in
     list) cmd_startup_list ;;
     add) shift; cmd_startup_add "$@" ;;
     remove | rm) shift; cmd_startup_remove "${1:-}" ;;
-    *) die "usage: podbay startup <list | add --do \"…\" [--slug NAME] | remove SLUG>" ;;
+    restart | stop | start) cmd_startup_action "$1" "${2:-}" ;;
+    *) die "usage: podbay startup <list | add --do \"…\" [--slug NAME] | restart|stop|start SLUG | remove SLUG>" ;;
   esac
 }
 
@@ -793,7 +810,7 @@ case "${1:-info}" in
     echo "              | relay status"
     echo "              | secrets list | secrets get KEY | secrets env | secrets request KEY [why]"
     echo "              | schedule list | schedule add --name … --at HH:MM [--tz IANA] [--days mon,wed|weekdays] --do \"…\" | schedule remove ID"
-    echo "              | startup list | startup add --do \"…\" [--slug NAME] | startup remove SLUG"
+    echo "              | startup list | startup add --do \"…\" [--slug NAME] | startup restart|stop|start SLUG | startup remove SLUG"
     echo "              | dev restart | dev stop | dev start | dev logs [N] | dev status  (the SUPERVISED dev server — never hand-kill it)"
     echo "              | msg send <pod> <text> | msg inbox | msg reply <id> <text> | msg pods"
     echo "              | link <file>  (a GitHub URL the user can open — pod paths are dead links)"

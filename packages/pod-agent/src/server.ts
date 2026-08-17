@@ -765,6 +765,23 @@ export class AgentServer {
         })();
         return;
       }
+      // Restart/stop/start one `podbay startup` process by slug — the race-free reload the CLI
+      // lacked (afisha-ops couldn't reload without a whole-pod restart). Same handler shape as /dev.
+      if (req.method === "POST" && req.url === "/startup") {
+        void (async () => {
+          try {
+            const body = await readBounded(req, 8192);
+            const parsed = JSON.parse(body || "{}") as { action?: string; slug?: string };
+            const result = await this.startupControl(String(parsed.slug ?? ""), String(parsed.action ?? ""));
+            res.writeHead(result.ok ? 200 : 400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify(result));
+          } catch (e) {
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: e instanceof Error ? e.message : "startup control failed" }));
+          }
+        })();
+        return;
+      }
       // Live supervised-dev-server state, so `podbay dev`/`podbay startup list` can SHOW that the
       // dev server is managed + its restart policy — the visibility first10 never had.
       if (req.method === "GET" && req.url === "/dev") {
@@ -1181,7 +1198,20 @@ export class AgentServer {
     );
     const now = Date.now();
     for (const p of procs) {
-      if (pidfileState(p.pidfile) !== "dead") continue;
+      if (pidfileState(p.pidfile) !== "dead") {
+        // It's running again — if it had been marked capped/gave-up, it RECOVERED (via a spaced
+        // recovery respawn, a `podbay startup restart`, or coming back on its own). Clear the flags
+        // so healthz/doctor stop reporting a dead proc that is actually alive. A portless proc has
+        // no serve-check to do this otherwise, which is how a recovered afisha-ops would still show
+        // as [critical] "gave up" forever.
+        const alive = `startup:${p.slug}`;
+        if (this.cappedTargets.delete(alive)) {
+          this.repairs.delete(alive);
+          this.failedServes.delete(alive);
+          this.appendStartupLog(p, `[podbay] ${p.slug} is running again ✓`);
+        }
+        continue;
+      }
       // TRUCE: an intentional restart/stop (`podbay dev …`) holds a pause sentinel — never race
       // to respawn what the agent deliberately killed. This is the fix for the supervisor↔agent
       // fight that drove first10 into hard-kills that corrupted `.next` (2026-08-11).
@@ -1194,25 +1224,35 @@ export class AgentServer {
       const history = pruneHistory(this.repairs.get(target) ?? [], now);
       const cause = this.oomWatcher.sawOomSince(90_000) ? "oom" : undefined;
 
-      // Capped: normally we stop (surface once). But a SELF-HEALING target (the dev server) gets
-      // a spaced-out recovery attempt so an unattended pod isn't wedged until a reboot.
+      // Capped: back off the tight loop, but NEVER give up permanently — EVERY supervised target
+      // (not just the dev server) gets a spaced-out recovery attempt so an unattended pod heals
+      // itself instead of staying dead until a reboot. (Before: recovery was gated to `dev-server`,
+      // so a crash-looped `startup` proc like afisha-ops was marked "gave up" forever — the pod
+      // couldn't revive itself and `doctor --fix` could only say "restart the pod".)
       let recovery = false;
       if (isCapped(history, now)) {
-        if (p.slug === "dev-server" && recoveryDue(history, now)) {
+        if (recoveryDue(history, now)) {
           recovery = true;
           history.push({ at: now, ok: false }); // advance the cooldown so we retry ~every 10m, not every tick
           this.repairs.set(target, history);
         } else {
+          // Surface the backing-off state ONCE (it's still capped this cooldown window), but it is
+          // NOT terminal — a recovery attempt fires once recoveryDue() passes.
           if (!this.cappedTargets.has(target)) {
             this.cappedTargets.add(target);
             this.log.error("watchdog_gave_up", { target, reason: "process_dead" });
-            this.appendStartupLog(p, `[podbay] ${p.slug} kept failing — stopped retrying. Fix it and run 'podbay dev restart', or update/restart the pod.`);
+            this.appendStartupLog(p, `[podbay] ${p.slug} kept failing — backing off; podbay retries it automatically. Force it now with 'podbay startup restart ${p.slug}'.`);
           }
           continue;
         }
       } else if (!this.tryRepair(target, "process_dead", cause)) {
         continue; // backing off
       }
+
+      // On a recovery attempt the tight crash-loop is often EADDRINUSE from an incompletely-killed
+      // survivor still holding the port. Free it BEFORE respawning so the fresh instance can bind —
+      // otherwise the recovery just re-crashes and re-caps (the afisha-ops failure mode).
+      if (recovery) this.killCommandOrphans(p);
 
       // Corrupted-.next recovery: a Next dev server that came up but never served is almost always
       // a poisoned build cache (a hard kill mid-build). Wipe it before respawning. Recovery
@@ -1305,11 +1345,48 @@ export class AgentServer {
     }
   }
 
-  /** Stop the dev server gracefully. respawnStartupProcess launches DETACHED (a new process-group
-   * leader), so signalling the GROUP (`-pid`) takes down `pnpm dev` AND its `next-server` child
-   * together; fall back to the bare pid for a process not started as a leader. SIGTERM, then
-   * SIGKILL if it won't go within ~5s. */
-  private async stopDevProcess(p: StartupProcess): Promise<void> {
+  /** Kill ORPHAN survivors of a supervised process before a (re)spawn — the fix for the EADDRINUSE
+   * crash-loop. When a prior generation was killed incompletely (a missed pid) or the pod-agent
+   * lost the pidfile, an old instance can keep holding the port; every respawn then dies EADDRINUSE
+   * and eventually trips the cap. We find any process still running THIS proc's exact command
+   * (`pgrep -f <command>`) and SIGKILL its group so the fresh spawn can bind. Scoped to the proc's
+   * specific command string and called only on an intentional restart or a recovery respawn, so a
+   * healthy unrelated process is never touched. Best-effort. */
+  private killCommandOrphans(p: StartupProcess): number {
+    let killed = 0;
+    try {
+      const out = execFileSync("pgrep", ["-f", "--", p.command], {
+        encoding: "utf8",
+        timeout: 4000,
+      }).trim();
+      const self = process.pid;
+      for (const line of out.split("\n")) {
+        const pid = Number.parseInt(line.trim(), 10);
+        if (!Number.isFinite(pid) || pid <= 1 || pid === self) continue;
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {
+            /* already gone */
+          }
+        }
+        killed++;
+      }
+      if (killed)
+        this.appendStartupLog(p, `[podbay] cleared ${killed} stale '${p.slug}' process(es) holding the port before restart`);
+    } catch {
+      /* pgrep exit 1 (no match) or unavailable — nothing to clear */
+    }
+    return killed;
+  }
+
+  /** Stop a supervised process gracefully (dev server OR a `podbay startup` proc — same pidfile
+   * contract). respawnStartupProcess launches DETACHED (a new process-group leader), so signalling
+   * the GROUP (`-pid`) takes down the command AND its children together; fall back to the bare pid
+   * for a process not started as a leader. SIGTERM, then SIGKILL if it won't go within ~5s. */
+  private async stopProcess(p: StartupProcess): Promise<void> {
     let pid = 0;
     try {
       pid = Number.parseInt(readFileSync(p.pidfile, "utf8").trim(), 10);
@@ -1360,11 +1437,17 @@ export class AgentServer {
       this.cappedTargets.delete(target);
       this.failedServes.delete(target);
     };
-    const spawn = (): number => respawnStartupProcess(p, { uid: this.tmuxUid, gid: this.tmuxGid, home });
+    // Spawn AFTER clearing any survivor of this command — the fix for "my kill missed a pid, the
+    // old instance still holds the port, the new one crashes EADDRINUSE". The group-stop takes the
+    // tracked pid; killCommandOrphans mops up any earlier generation that leaked.
+    const spawn = (): number => {
+      this.killCommandOrphans(p);
+      return respawnStartupProcess(p, { uid: this.tmuxUid, gid: this.tmuxGid, home });
+    };
     switch (action) {
       case "stop": {
         this.pauseSupervision(pause, 60_000);
-        await this.stopDevProcess(p);
+        await this.stopProcess(p);
         try {
           rmSync(p.pidfile, { force: true }); // removed pidfile = intentionally stopped; the watchdog won't restart it
         } catch {
@@ -1389,7 +1472,7 @@ export class AgentServer {
       }
       case "restart": {
         this.pauseSupervision(pause, 60_000);
-        await this.stopDevProcess(p);
+        await this.stopProcess(p);
         const pid = spawn();
         clearState();
         this.resumeSupervision(pause);
@@ -1399,6 +1482,82 @@ export class AgentServer {
       }
       default:
         return { ok: false, action, message: "unknown action — use restart | stop | start" };
+    }
+  }
+
+  /**
+   * Agent-facing lifecycle for a `podbay startup` process (afisha-ops, a worker, …) — the sanctioned
+   * alternative to hand-killing one, which races the watchdog. Same pause→swap→resume contract as
+   * devControl: `restart` stops it cleanly and relaunches via a fresh login shell (respawnStartupProcess
+   * → `bash -lc`), so it picks up NEW CODE and re-sourced secrets. `stop` is session-only (the entry
+   * stays registered; the next boot relaunches it — use `podbay startup remove` to unregister). `start`
+   * launches a registered proc that isn't running yet (e.g. right after `startup add`).
+   */
+  async startupControl(
+    slug: string,
+    action: string,
+  ): Promise<{ ok: boolean; action: string; slug: string; message: string }> {
+    const home = "/home/dev";
+    const work = "/home/dev/work";
+    const procs = declaredStartupProcesses(home, work);
+    const p = procs.find((x) => x.slug === slug);
+    if (!p)
+      return { ok: false, action, slug, message: `no startup command '${slug}' (see: podbay startup list)` };
+    const target = `startup:${p.slug}`;
+    const pause = pausePath(p.slug);
+    const logHint = `Tail ~/.podbay/startup/${slug}.log`;
+    const clearState = (): void => {
+      this.repairs.delete(target);
+      this.cappedTargets.delete(target);
+      this.failedServes.delete(target);
+    };
+    // Spawn AFTER clearing any survivor of this command — the fix for "my kill missed a pid, the
+    // old instance still holds the port, the new one crashes EADDRINUSE". The group-stop takes the
+    // tracked pid; killCommandOrphans mops up any earlier generation that leaked.
+    const spawn = (): number => {
+      this.killCommandOrphans(p);
+      return respawnStartupProcess(p, { uid: this.tmuxUid, gid: this.tmuxGid, home });
+    };
+    switch (action) {
+      case "stop": {
+        this.pauseSupervision(pause, 60_000);
+        await this.stopProcess(p);
+        try {
+          rmSync(p.pidfile, { force: true }); // removed pidfile = intentionally stopped; the watchdog won't respawn it
+        } catch {
+          /* nothing to remove */
+        }
+        clearState();
+        this.resumeSupervision(pause);
+        this.appendStartupLog(p, `[podbay] '${slug}' stopped by 'podbay startup stop'`);
+        return {
+          ok: true,
+          action,
+          slug,
+          message: `stopped '${slug}' — it stays registered (the next boot relaunches it; 'podbay startup start ${slug}' to run it now, 'podbay startup remove ${slug}' to unregister)`,
+        };
+      }
+      case "start": {
+        if (pidfileState(p.pidfile) === "alive")
+          return { ok: true, action, slug, message: `'${slug}' is already running (nothing to do)` };
+        this.pauseSupervision(pause, 60_000);
+        const pid = spawn();
+        clearState();
+        this.resumeSupervision(pause);
+        this.appendStartupLog(p, `[podbay] '${slug}' started by 'podbay startup start' (pid ${pid})`);
+        return { ok: true, action, slug, message: `'${slug}' starting (pid ${pid}) — fresh code + re-sourced secrets. ${logHint}` };
+      }
+      case "restart": {
+        this.pauseSupervision(pause, 60_000);
+        await this.stopProcess(p);
+        const pid = spawn();
+        clearState();
+        this.resumeSupervision(pause);
+        this.appendStartupLog(p, `[podbay] '${slug}' restarted by 'podbay startup restart' (pid ${pid})`);
+        return { ok: true, action, slug, message: `'${slug}' restarting (pid ${pid}) — fresh code + re-sourced secrets. ${logHint}` };
+      }
+      default:
+        return { ok: false, action, slug, message: "unknown action — use restart | stop | start" };
     }
   }
 

@@ -7,13 +7,15 @@ import { isProvisioningEnabled } from "@/lib/pod-service";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import EnvTabs from "@/components/env-tabs";
 
 /**
- * The environments marketplace, split into two labelled sections:
+ * The environments marketplace, split into two TABS (Workspaces is the default):
+ * - Workspaces (kind: engine) — open-ended coding environments (bring your own
+ *   repo, or start from a prepped stack). Visually distinct "tool" cards so they
+ *   don't read like consumer playbooks.
  * - Playbooks (kind: playbook) — guided, outcome-driven engagements.
- * - Dev workspaces (kind: engine) — open-ended coding environments (bring your
- *   own repo, or start from a prepped stack). Visually distinct "tool" cards so
- *   they don't read like consumer playbooks. (docs/strategy/marketplace-playbooks.md)
+ * (docs/strategy/marketplace-playbooks.md)
  */
 // Curated lead order within a section; anything unlisted falls back to A–Z
 // (listEnvironments already sorts by name). Presentation-layer curation — when
@@ -46,52 +48,30 @@ export default async function EnvGallery() {
   const enabled = isProvisioningEnabled();
 
   return (
-    <div data-testid="env-gallery" className="flex flex-col gap-9">
-      <EnvSection
-        title="Playbooks"
-        subtitle="Choose a goal. Your agent leads the work step by step."
-        envs={playbooks}
-        variant="playbook"
-        enabled={enabled}
-        emptyText="No playbooks available yet."
-      />
-      {engines.length > 0 && (
-        <EnvSection
-          title="Workspaces"
-          subtitle="Bring an existing repo, or start from a ready-made development stack."
-          envs={engines}
-          variant="engine"
-          enabled={enabled}
-          divider={playbooks.length > 0}
-        />
-      )}
-    </div>
+    <EnvTabs
+      workspaces={
+        <EnvGrid envs={engines} variant="engine" enabled={enabled} emptyText="No workspaces available yet." />
+      }
+      playbooks={
+        <EnvGrid envs={playbooks} variant="playbook" enabled={enabled} emptyText="No playbooks available yet." />
+      }
+    />
   );
 }
 
-function EnvSection({
-  title,
-  subtitle,
+function EnvGrid({
   envs,
   variant,
   enabled,
   emptyText,
-  divider,
 }: {
-  title: string;
-  subtitle: string;
   envs: CatalogEntry[];
   variant: "playbook" | "engine";
   enabled: boolean;
   emptyText?: string;
-  divider?: boolean;
 }) {
   return (
-    <section className={divider ? "border-t border-border pt-8" : undefined}>
-      <div className="mb-3.5">
-        <h2 className="text-[16px] font-semibold tracking-tight">{title}</h2>
-        <p className="text-sm text-muted-foreground">{subtitle}</p>
-      </div>
+    <section>
       {envs.length === 0 ? (
         <p className="text-sm text-muted-foreground">{emptyText ?? "Nothing here yet."}</p>
       ) : (
@@ -162,21 +142,15 @@ function EnvCard({
         {e.description && (
           <p className="text-[13px] leading-relaxed text-muted-foreground">{e.description}</p>
         )}
-        <p className="text-xs text-muted-foreground">
-          {[
-            e.capability.agents.join(" + "),
-            // `base` is deliberately NOT here: every environment we ship is a
-            // devcontainer, so the word appeared on every card and could not help
-            // anyone choose. It is a real portability fact — it stays on the detail
-            // page, where a facts table is the right place for it — but on a card
-            // whose job is "which of these do I want", a constant is noise.
-            e.capability.requiredSecretCount > 0
-              ? `Requires ${e.capability.requiredSecretCount} API key${e.capability.requiredSecretCount > 1 ? "s" : ""}`
-              : null,
-          ]
-            .filter(Boolean)
-            .join(" · ")}
-        </p>
+        {/* Agents (Claude + Codex) are NOT shown — every env ships both, so it's noise on every
+            card. `base` is omitted for the same reason. The one meta worth a line is a secret the
+            env needs, and only when it needs one. */}
+        {e.capability.requiredSecretCount > 0 && (
+          <p className="text-xs text-muted-foreground">
+            Requires {e.capability.requiredSecretCount} API key
+            {e.capability.requiredSecretCount > 1 ? "s" : ""}
+          </p>
+        )}
         {proofPoints.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {proofPoints.map((point) => (
@@ -186,10 +160,7 @@ function EnvCard({
             ))}
           </div>
         )}
-        <div className="mt-auto flex items-center justify-between gap-2 pt-2">
-          <Button asChild variant="ghost" size="sm" className="h-10 sm:h-8">
-            <Link href={`/dashboard/environments/${e.name}`}>View details</Link>
-          </Button>
+        <div className="mt-auto flex items-center justify-end gap-2 pt-2">
           {enabled ? (
             <Button asChild size="sm" className="h-10 sm:h-8">
               <Link href={`/dashboard/pods/new?env=${encodeURIComponent(e.name)}`}>{primaryLabel}</Link>

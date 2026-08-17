@@ -252,6 +252,42 @@ except Exception: print("no")' 2>/dev/null)
       "It's Podbay-supervised — restart it with 'podbay dev restart' (that also reloads secrets)." "$fixed"
 }
 
+check_startup_procs() {
+  # Startup procs (`podbay startup add`) the supervisor BACKED OFF on. --fix recovers each via the
+  # pod-agent: POST /startup restart clears the cap, kills any port-holding survivor (the EADDRINUSE
+  # crash-loop), and respawns on the latest code. Runs BEFORE import_agent_issues so a successful
+  # recovery also clears the (now stale) healthz finding — no "restart the pod" dead-ends.
+  local json; json=$(curl -fsS -m 5 "$AGENT_URL/healthz" 2>/dev/null) || return 0
+  local slugs; slugs=$(printf '%s' "$json" | python3 -c '
+import json,sys
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(0)
+for t in d.get("repairGaveUp") or []:
+    if isinstance(t,str) and t.startswith("startup:"):
+        s=t[len("startup:"):]
+        if s and s!="dev-server": print(s)' 2>/dev/null)
+  [ -n "$slugs" ] || return 0
+  [ "$FIX" = 1 ] || return 0   # without --fix, import_agent_issues already surfaces the finding + fix hint
+  while IFS= read -r slug; do
+    [ -n "$slug" ] || continue
+    curl -fsS -m 30 -X POST "$AGENT_URL/startup" -H 'Content-Type: application/json' \
+      -d "$(printf '{"action":"restart","slug":"%s"}' "$slug")" >/dev/null 2>&1 && sleep 3
+    local still; still=$(curl -fsS -m 5 "$AGENT_URL/healthz" 2>/dev/null | python3 -c '
+import json,sys
+s=sys.argv[1]
+try: d=json.load(sys.stdin)
+except Exception: print("yes"); sys.exit(0)
+print("no" if ("startup:"+s) not in (d.get("repairGaveUp") or []) else "yes")' "$slug" 2>/dev/null)
+    if [ "$still" = "no" ]; then
+      add "startup-$slug-recovered" "warn" "'$slug' was recovered" \
+        "It had been backing off; a clean restart cleared the stuck instance and brought it back on the latest code." true
+    fi
+    # If it still won't stay up, import_agent_issues surfaces the "keeps failing" finding — no dup here.
+  done <<EOF
+$slugs
+EOF
+}
+
 check_stale_setup_lock() {
   # The REAL stale case is running-WITHOUT-done: setup crashed, and every agent boot
   # then burns up to 10 minutes waiting for a marker that will never arrive.
@@ -364,6 +400,7 @@ for i in d.get("issues") or []:
 
 # Findings the pod already knows about come first; our own checks add to them and
 # may mark theirs fixed by id.
+check_startup_procs   # --fix recovers a backed-off startup proc BEFORE we import the (now-stale) finding
 import_agent_issues
 check_codex_runtime
 check_codex_daemon

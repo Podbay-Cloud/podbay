@@ -2,38 +2,45 @@
 
 # podbay
 
-**Give an agent a computer — on your own metal.**
+**Give Claude a persistent computer on your own hardware.**
 
-Persistent, disposable cloud workspaces for coding agents (Claude Code, Codex): a real Linux box per
-task, with a browser dashboard, a live terminal, and instant previews. Self-host it in one command, or
-use the managed service at [podbay.cloud](https://podbay.cloud).
+Podbay runs Claude Code in a persistent workspace with your project, tools, databases, services,
+and recurring work. Sign in once, then continue the same pod from the official Claude apps on
+desktop or mobile, using the Claude Pro or Max subscription you already have.
+
+Self-host it in one command, or use the managed service at
+[podbay.cloud](https://podbay.cloud).
 
 [![License: BSL 1.1](https://img.shields.io/badge/license-BSL%201.1-blue.svg)](LICENSE)
 [![Self-host](https://img.shields.io/badge/self--host-one%20command-brightgreen.svg)](#quickstart-self-host)
 
 <br>
 
-<img src="docs/images/dashboard.png" alt="podbay dashboard — your pods at a glance, each showing its agent's live state, previews, and a one-click open" width="900">
+<img src="docs/images/dashboard.png" alt="Podbay dashboard showing persistent pods, agent activity, app previews, and connected devices" width="900">
 
 </div>
 
 ## Why podbay
 
-An agent is only as capable as the computer you give it. podbay gives each agent a **persistent pod** —
-its own filesystem, tools, ports, and network — that survives restarts, runs 24/7, and shows you exactly
-what it's doing through a dashboard and a live terminal. Point it at a repo, hand it an API key or your
-subscription login, and it works like a teammate with their own machine.
+The official Claude apps already provide the interface. Podbay gives Claude the persistent computer
+behind it.
 
-- **A real box per task** — not a sandbox toy; full Docker workspace, your tools, your ports.
-- **Live previews** — anything on `:3000` gets a shareable (or private) URL.
-- **Watch and steer** — dashboard + web terminal; the agent runs while you're away.
-- **Your metal, your keys** — self-host on a laptop or a server; bring your own Anthropic API key or
-  Claude subscription. Nothing leaves your machine that you didn't send.
+- **Use Claude where you already do.** Continue your pod from the official Claude desktop or mobile
+  app, with the same interface and Claude subscription you already know.
+- **Keep your working environment intact.** Your repository, dependencies, tools, and files remain
+  available between sessions.
+- **Run the whole project.** Claude can work with development servers, databases, background workers,
+  scheduled jobs, monitors, and project-specific skills—not just edit files.
+- **Open what Claude builds.** Apps running in a pod receive a preview you can open or share.
+- **See when you are needed.** The dashboard shows which agents are working, idle, or waiting for
+  your reply.
+- **Keep control of the machine.** Self-hosted pods run as Docker containers on your own computer or
+  server.
 
 ## Quickstart (self-host)
 
-You need **Docker** (Desktop or Engine + Compose v2), ~**8 GB RAM**, ~**6 GB disk**, and either a
-**Claude Pro/Max subscription** or an **Anthropic API key**. Works on macOS, Linux, and WSL2.
+You need **Docker** (Desktop or Engine + Compose v2), ~**8 GB RAM**, ~**6 GB disk**, and a
+**Claude Pro or Max subscription**. Works on macOS, Linux, and WSL2.
 
 ```sh
 curl -fsSL podbay.cloud/install.sh | sh
@@ -47,19 +54,32 @@ images, and prints **the real URL for your setup** — it auto-detects where it 
   `https://<pod>.<your-ip>.sslip.io` preview)
 - **Your domain** → `https://podbay.<your-domain>` (two DNS records)
 
-Open the URL → **Create a pod** → connect your agent → you're in. No repo clone, no build required —
-the one-liner pulls prebuilt images. (Prefer to build them yourself? See [below](#build-from-source).)
+When installation finishes:
+
+1. Open the URL printed by the installer.
+2. Create your owner account and your first pod.
+3. Sign in with your Claude account.
+4. Continue the pod from the official Claude desktop or mobile app.
+
+From then on, Claude is the main interface. Return to the Podbay dashboard to create or manage pods,
+add secrets, inspect health, and open app previews. A browser terminal remains available as an
+advanced recovery tool.
+
+No repository clone or local build is required—the installer pulls prebuilt images. Prefer to build
+them yourself? See [Build from source](#build-from-source).
 
 ## What you get
 
 | | |
 |---|---|
-| **Pods** | persistent Docker workspaces, one per task, that survive restarts |
-| **Agents** | Claude Code and Codex, on your subscription or a BYO API key |
-| **Dashboard** | create/observe/suspend pods; each shows agent state at a glance |
-| **Terminal** | a real browser terminal into every pod |
-| **Previews** | live `:3000` previews, public or owner-only |
-| **Environments** | ready-made workspace templates + a skills/rules layer |
+| **Claude apps** | continue pod sessions from the official Claude desktop and mobile apps |
+| **Persistent pods** | keep each project's files, dependencies, tools, and services together |
+| **Development environment** | run databases, dev servers, workers, and other project services |
+| **Ongoing work** | schedule recurring agent jobs and monitor the work that matters to you |
+| **App previews** | open or share the application running on port `:3000` |
+| **Dashboard** | create, observe, update, and suspend pods; add secrets and inspect health |
+
+Podbay also supports Codex for people who want to use both agents.
 
 ## Build from source
 

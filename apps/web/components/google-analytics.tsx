@@ -3,7 +3,7 @@ import { CONSENT_COOKIE } from "@/lib/consent";
 
 // GA4 measurement ID is PUBLIC by design (it ships in the client HTML on every page),
 // so it's safe to keep here; override with NEXT_PUBLIC_GA_MEASUREMENT_ID if it changes.
-const GA_ID = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID || "G-GT7VEMS3HZ";
+const GA_ID = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID || "G-5044P4GF1X";
 
 /**
  * Google Analytics 4, wired through the SAME cookie-consent gate as PostHog

@@ -6,9 +6,15 @@ test.describe("dashboard shell + cards", () => {
     await login(page, "approved");
     await page.goto("/dashboard/environments");
     await expect(page.locator('[data-testid=env-gallery]')).toBeVisible();
-    await expect(
-      page.getByRole("link", { name: /^(start playbook|launch workspace)$/i }).first(),
-    ).toBeVisible();
+    // Workspaces is the default tab, so a workspace launch is visible up front.
+    await expect(page.getByRole("tab", { name: "Workspaces" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(page.getByRole("link", { name: /launch workspace/i }).first()).toBeVisible();
+    // Switching to Playbooks reveals a playbook launch.
+    await page.getByRole("tab", { name: "Playbooks" }).click();
+    await expect(page.getByRole("link", { name: /start playbook/i }).first()).toBeVisible();
   });
 
   test("pods page links launching to the environments page (no env cards mixed in)", async ({

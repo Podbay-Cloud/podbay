@@ -21,8 +21,7 @@ export default async function SettingsPage() {
       <div className="space-y-6">
         {!oss && relay && <RelayConnectCard initial={relay} />}
         <p className="text-sm text-muted-foreground">
-          Theme and font size are set per-terminal from the pod view. Sign out is in the user menu at
-          the bottom of the sidebar. More settings are coming soon.
+          Sign out is in the user menu at the bottom of the sidebar. More settings are coming soon.
         </p>
       </div>
     </DashboardPage>

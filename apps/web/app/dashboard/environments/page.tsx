@@ -11,7 +11,7 @@ export default function EnvironmentsPage() {
   return (
     <DashboardPage
       title="Create a pod"
-      intro="Choose a guided playbook for a specific outcome, or an open-ended workspace for ongoing development."
+      intro="Start an open-ended workspace for ongoing development, or a guided playbook for a specific outcome."
     >
       <EnvGallery />
     </DashboardPage>

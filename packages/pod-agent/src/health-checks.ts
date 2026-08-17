@@ -121,7 +121,7 @@ export function computeIssues(input: HealthInput): PodIssue[] {
       severity: "critical",
       title: "The pod's terminal session died",
       detail:
-        "Nothing is running on this pod. Podbay restarts it automatically; if this persists, restart the pod.",
+        "Nothing is running on this pod. Podbay restarts it automatically; if it persists, suspend and resume the pod from the dashboard.",
       fixable: true,
     });
   }
@@ -140,11 +140,19 @@ export function computeIssues(input: HealthInput): PodIssue[] {
         target === "session"
           ? "Podbay couldn't restart this pod's session"
           : startupSlug
-            ? `Podbay couldn't keep ${startupSlug === "dev-server" ? "the dev server" : `'${startupSlug}'`} running`
+            ? `${startupSlug === "dev-server" ? "The dev server" : `'${startupSlug}'`} keeps failing to start`
             : `Podbay couldn't restart ${label(target)}`,
-      detail:
-        "It was restarted several times and kept failing, so Podbay stopped retrying. Updating or restarting the pod usually clears it.",
-      fixable: false,
+      // Backing off ≠ given up: podbay retries on a spaced schedule, and the owner (or `doctor --fix`)
+      // can recover it immediately. Point at real actions — NOT "restart the pod" (there is no such
+      // button; the cockpit has Suspend/Resume).
+      detail: startupSlug
+        ? startupSlug === "dev-server"
+          ? "It kept failing, so podbay backed off — it retries automatically. Recover it now with 'podbay dev restart' (or 'podbay doctor --fix')."
+          : `It kept failing, so podbay backed off — it retries automatically. Recover it now with 'podbay startup restart ${startupSlug}' (or 'podbay doctor --fix').`
+        : "It was restarted several times and kept failing, so Podbay backed off. Run 'podbay doctor --fix', or suspend and resume the pod from the dashboard.",
+      // The startup/dev cases are recoverable now (doctor --fix restarts them); only the session case
+      // isn't self-fixable from here.
+      fixable: Boolean(startupSlug),
       ...(target === "session" || startupSlug ? {} : { agent: target }),
     });
   }

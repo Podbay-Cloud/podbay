@@ -255,6 +255,33 @@ already relaunched) is never double-started. The mechanism SHALL never modify `~
 - **THEN** the declaration and all pid/log state SHALL live under `~/.podbay/` and `~/work` SHALL NOT
   be modified
 
+### Requirement: An agent can restart, stop, or start a declared startup command by slug
+
+Boot-time relaunch and crash supervision cover a command across restarts and crashes, but an agent
+that ships new code to a declared command (e.g. a custom ops server) needs to RELOAD it without
+restarting the whole pod. The in-pod `podbay` CLI SHALL expose per-slug control of a declared startup
+command — `podbay startup restart|stop|start <slug>` — routed through the pod-agent so it shares the
+supervisor's pause/pidfile contract and never races the watchdog. A `restart` SHALL stop the process
+gracefully and relaunch it through a fresh login shell, so it comes up on the latest on-disk code with
+the pod's secrets re-sourced. A `stop` SHALL be session-only — the declaration stays registered and
+the next boot relaunches it; `remove` remains the way to unregister. Hand-killing a supervised process
+is NOT the sanctioned path (the watchdog races it).
+
+#### Scenario: Restart reloads a declared command on the latest code
+
+- **GIVEN** a declared, running startup command whose on-disk code changed
+- **WHEN** the agent runs `podbay startup restart <slug>`
+- **THEN** the pod SHALL stop the process without the watchdog racing the swap and relaunch it via a
+  fresh login shell, so it runs the new code with re-sourced secrets
+
+#### Scenario: Stop is session-only, start launches a not-yet-running command
+
+- **WHEN** the agent runs `podbay startup stop <slug>`
+- **THEN** the pod SHALL stop the process and NOT respawn it this session, leaving the declaration
+  registered so the next boot relaunches it
+- **AND WHEN** the agent runs `podbay startup start <slug>` on a registered command that is not running
+- **THEN** the pod SHALL launch it and record its pid, without waiting for the next boot
+
 ### Requirement: Long-running processes that die MID-RUN are restarted, supervised
 
 Boot-time relaunch alone left a gap: a declared startup command (or the dev server) killed mid-run
@@ -263,8 +290,16 @@ dark and nothing telling the owner. The pod SHALL supervise its declared long-ru
 between boots: when a process whose pid was recorded is found dead, it SHALL be relaunched the same
 way boot launches it, under the same capped-and-backed-off repair policy as agent repairs, and the
 repair SHALL be reported (with `cause: oom` when a kill was just observed) so it reaches the owner
-as an incident. A repeatedly-dying process SHALL be given up on, and the give-up surfaced as a
-critical issue naming the owner's slug.
+as an incident. A repeatedly-dying process SHALL be backed off (surfaced as a critical issue naming
+the owner's slug) but NEVER permanently abandoned: EVERY supervised target — the dev server AND any
+`podbay startup` command — SHALL get a spaced-out recovery attempt (~every 10 minutes) so an
+unattended pod heals itself rather than staying dead until a reboot. Before a recovery respawn the
+pod SHALL clear any SURVIVOR of that command still holding its port (an incompletely-killed prior
+generation is the usual crash-loop cause: every respawn dies `EADDRINUSE`). A backed-off process
+SHALL also be recoverable IMMEDIATELY by the owner — `podbay startup restart <slug>` (or `podbay dev
+restart`) and `podbay doctor --fix` — each of which clears the cap, clears the survivor, and respawns
+on the latest code. Owner-facing guidance SHALL point at these real actions, never at a nonexistent
+"restart the pod" control.
 
 Supervision SHALL strictly restart what DIED — never start what never ran (a missing pidfile means
 boot owns the first launch), and never resurrect a removed or disabled declaration (the declaration
@@ -290,11 +325,26 @@ is re-read each pass).
   removed or disabled
 - **THEN** the supervisor SHALL NOT launch it
 
-#### Scenario: A flapping process is parked, not hot-looped
+#### Scenario: A flapping process is backed off but self-heals
 
-- **GIVEN** a supervised process that keeps dying after each relaunch
+- **GIVEN** a supervised process (dev server OR a `podbay startup` command) that keeps dying
 - **WHEN** its repair attempts exhaust the shared repair policy
-- **THEN** the supervisor SHALL stop relaunching it and the pod SHALL surface a critical issue
+- **THEN** the supervisor SHALL stop the tight relaunch loop and surface a critical issue, but SHALL
+  keep making a spaced-out recovery attempt so the process comes back without a reboot — the pod is
+  never wedged until the owner restarts it
+
+#### Scenario: A survivor holding the port is cleared before recovery
+
+- **GIVEN** a supervised process was killed incompletely, so an old instance still holds its port and
+  every respawn dies `EADDRINUSE`
+- **WHEN** the pod makes a recovery respawn (or the owner runs `podbay startup restart <slug>`)
+- **THEN** it SHALL first kill the surviving instance of that command so the fresh process can bind
+
+#### Scenario: doctor --fix recovers a backed-off process
+
+- **WHEN** the owner runs `podbay doctor --fix` on a pod with a backed-off `startup` process
+- **THEN** doctor SHALL clear the cap, clear any port-holding survivor, and respawn it on the latest
+  code — not merely report it — and the owner guidance SHALL NOT tell the owner to "restart the pod"
   naming the process
 
 ### Requirement: The agent restarts the dev server without fighting the supervisor

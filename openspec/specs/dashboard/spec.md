@@ -168,11 +168,12 @@ definition and surfacing its display metadata. Each entry SHALL show a human **t
 (`metadata.title`, falling back to the kebab-case `name` when unset) rather than the raw id; the
 `name` remains the stable id used in URLs. Invalid definitions SHALL be skipped, not crash the catalog.
 
-The catalog SHALL group environments by `kind` into two labelled sections: **Playbooks**
-(`kind: playbook` — guided, outcome-driven) and **Workspaces** (`kind: engine` — open-ended coding
-environments, e.g. bring-your-own-repo). Both kinds are launchable; workspace cards are rendered
-with a visually distinct treatment so they don't read as consumer playbooks. (Engine envs were
-previously omitted from the catalog entirely; they are now surfaced under Workspaces.)
+The catalog SHALL group environments by `kind` into two tabs: **Workspaces** (`kind: engine` —
+open-ended coding environments, e.g. bring-your-own-repo) and **Playbooks** (`kind: playbook` —
+guided, outcome-driven). **Workspaces is the default (active) tab.** Both kinds are launchable;
+workspace cards are rendered with a visually distinct treatment so they don't read as consumer
+playbooks. (Engine envs were previously omitted from the catalog entirely; they are now surfaced
+under Workspaces.)
 
 The page SHALL frame both options as ways to create a pod without promising that the agent is
 already authenticated or that an app preview is already running. Catalog cards SHALL use concise
@@ -184,11 +185,11 @@ taxonomy tags do not help the owner choose and SHALL NOT dominate the card.
 - **WHEN** the catalog is built from the environments directory
 - **THEN** each environment with a valid `podbay.yaml` SHALL appear with its name and description
 
-#### Scenario: Catalog groups environments by kind
+#### Scenario: Catalog groups environments into Workspaces and Playbooks tabs
 
-- **WHEN** the catalog contains both playbook and engine environments
-- **THEN** playbooks SHALL appear under a "Playbooks" section and engines under a "Workspaces" section
-- **AND** an engine environment (e.g. `byo-project`) SHALL be launchable from the Workspaces section
+- **WHEN** the owner opens the environments catalog
+- **THEN** the catalog SHALL present two tabs, "Workspaces" and "Playbooks", with **Workspaces active by default**
+- **AND** an engine environment (e.g. `byo-project`) SHALL be launchable from the Workspaces tab, and a playbook environment from the Playbooks tab
 
 #### Scenario: Catalog copy sets truthful expectations
 

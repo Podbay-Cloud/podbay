@@ -11,7 +11,7 @@ describe("dashboard presentation contract", () => {
     const page = source("app/dashboard/environments/page.tsx");
     expect(page).toContain('title="Create a pod"');
     expect(page).toContain(
-      "Choose a guided playbook for a specific outcome, or an open-ended workspace for ongoing development.",
+      "Start an open-ended workspace for ongoing development, or a guided playbook for a specific outcome.",
     );
     expect(page).not.toContain("agent already signed in");
     expect(page).not.toContain("preview URL live");
@@ -19,11 +19,11 @@ describe("dashboard presentation contract", () => {
 
   it("uses customer-facing catalog labels and proof instead of internal taxonomy", () => {
     const gallery = source("components/env-gallery.tsx");
-    expect(gallery).toContain("Choose a goal. Your agent leads the work step by step.");
-    expect(gallery).toContain("View details");
     expect(gallery).toContain("Start playbook");
     expect(gallery).toContain("Launch workspace");
-    expect(gallery).toContain("Requires ${e.capability.requiredSecretCount} API key");
+    expect(gallery).toContain("API key"); // the one meta kept on a card is a required secret
+    // Agents are no longer labelled per-card (every env ships Claude + Codex — noise).
+    expect(gallery).not.toContain('e.capability.agents.join(" + ")');
     expect(gallery).not.toContain('e.capability.webFetch ? "web research"');
     expect(gallery).not.toContain("e.title.charAt(0)");
   });
