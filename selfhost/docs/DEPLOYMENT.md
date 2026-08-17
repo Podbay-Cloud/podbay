@@ -20,7 +20,7 @@ pod installs dependencies, builds a project, or runs a database.
 Run:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/podbay-cloud/install/main/install.sh | sh
+curl -fsSL podbay.cloud/install.sh | sh
 ```
 
 By default, the installer creates `./podbay/compose.yaml`, starts the stack, and serves the
@@ -31,7 +31,7 @@ To choose a different directory or port:
 
 ```sh
 PODBAY_DIR=my-podbay PODBAY_PORT=8090 \
-  sh -c "$(curl -fsSL https://raw.githubusercontent.com/podbay-cloud/install/main/install.sh)"
+  sh -c "$(curl -fsSL podbay.cloud/install.sh)"
 ```
 
 The installer does not modify system packages. It checks for Docker, Docker Compose, and `curl`,

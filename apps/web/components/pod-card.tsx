@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/pod-status";
 import { AgentLogo } from "@/components/agent-logo";
 import { useConfirm } from "@/components/ui/use-confirm";
+import { deriveState, codexChipFor, type PodCardLive } from "@/lib/pod-visual-state";
 import { cn } from "@/lib/utils";
 
 /**
@@ -20,23 +21,9 @@ import { cn } from "@/lib/utils";
  * problem rides a ribbon across the top. Ordering is MANUAL (drag the grip).
  */
 
-/** Live signals for one pod, serialized from control-plane PodLiveSignals. All fields
- * degrade to null/absent when the pod didn't answer or runs an older image — the card
- * then renders from lifecycle status alone and CLAIMS nothing live. */
-export interface PodCardLive {
-  /** Server lifecycle status at poll time — keeps the card's status current between
-   * full page reloads (e.g. an update starting shows within a poll). */
-  status?: string;
-  updating?: boolean;
-  agentStatus: string | null;
-  /** Codex activity (`busy` | `idle` | null) from its rollout-log mtime. */
-  codexStatus?: string | null;
-  agentWaitingFor: string | null;
-  agents: { id: string; authed: boolean }[];
-  appListening: boolean | null;
-  criticalIssue: { title: string; detail: string } | null;
-  unreachable: boolean;
-}
+// PodCardLive + deriveState + codexChipFor now live in @/lib/pod-visual-state (shared with the pod
+// page). Re-exported here so existing importers (pod-card-list) keep working.
+export type { PodCardLive };
 
 export interface PodCardProps {
   slug: string;
@@ -66,92 +53,6 @@ export interface PodCardDrag {
   style?: CSSProperties;
   handleProps?: Record<string, unknown>;
   dragging?: boolean;
-}
-
-/** One visual state for the spine + pill, derived from lifecycle + live signals. */
-function deriveState(
-  status: string,
-  updating: boolean,
-  live: PodCardLive | null | undefined,
-  hasClaude: boolean,
-): {
-  spine: string;
-  chip: { label: string; className: string; dot: string; pulse?: boolean } | null; // null → lifecycle badge
-  activity: { text: string; dot: string } | null; // the agent line, in words
-  ribbon: string | null;
-} {
-  const NEED = { chip: "border-warning/45 bg-warning/10 text-warning", dot: "bg-warning" };
-  const WORK = { chip: "border-success/40 bg-success/10 text-success", dot: "bg-success" };
-  const WAIT = { chip: "border-sky-400/35 bg-sky-400/10 text-sky-400", dot: "bg-sky-400" };
-  const IDLE = { chip: "border-border bg-white/[0.04] text-muted-foreground", dot: "bg-muted-foreground/70" };
-  const BAD = { chip: "border-destructive/40 bg-destructive/10 text-destructive", dot: "bg-destructive" };
-
-  if (status === "running" && !updating && live) {
-    if (live.unreachable)
-      return {
-        spine: "bg-destructive",
-        chip: { label: "Unreachable", className: BAD.chip, dot: BAD.dot },
-        activity: null,
-        ribbon: "The pod isn't answering — it reports as running but its agent can't be reached",
-      };
-    const ribbon = live.criticalIssue ? live.criticalIssue.title : null;
-    const spineFor = (base: string) => (ribbon ? "bg-destructive" : base);
-    // agentStatus/agentWaitingFor is CLAUDE's activity signal — never apply it to a
-    // Codex-only pod (which has none). Such a pod gets a green "running" spine and no
-    // activity chip; the codexChip in the render carries its (pairing) state instead.
-    if (!hasClaude) return { spine: spineFor("bg-success/60"), chip: null, activity: null, ribbon };
-    const dialog = typeof live.agentWaitingFor === "string" && /dialog/i.test(live.agentWaitingFor);
-    if (dialog)
-      return {
-        spine: spineFor("bg-warning"),
-        chip: { label: "Needs you", className: NEED.chip, dot: NEED.dot, pulse: true },
-        activity: { text: "asking to approve a command", dot: NEED.dot },
-        ribbon,
-      };
-    switch (live.agentStatus) {
-      // `shell` (the agent running a shell command) IS working — fold it into busy so
-      // it's green "Working", not a separate sky state that collided with "Waiting".
-      case "busy":
-      case "shell":
-        return {
-          spine: spineFor("bg-success"),
-          chip: { label: "Working", className: WORK.chip, dot: WORK.dot, pulse: true },
-          activity: { text: "working", dot: WORK.dot },
-          ribbon,
-        };
-      case "waiting":
-        return {
-          spine: spineFor("bg-sky-400"),
-          chip: { label: "Waiting for you", className: WAIT.chip, dot: WAIT.dot },
-          activity: { text: "waiting for your reply", dot: WAIT.dot },
-          ribbon,
-        };
-      case "idle":
-        return {
-          // Idle = running but quiet — a VISIBLE soft grey (was too dim, read as
-          // suspended). Suspended (below) gets the dimmer tone; the two are swapped.
-          spine: spineFor("bg-[#526079]"),
-          chip: { label: "Idle", className: IDLE.chip, dot: IDLE.dot },
-          activity: { text: "idle", dot: IDLE.dot },
-          ribbon,
-        };
-      default:
-        return { spine: spineFor("bg-success/50"), chip: null, activity: null, ribbon };
-    }
-  }
-  // Not running with usable live signals: lifecycle drives the card. The spine tone
-  // MIRRORS StatusDot's tones (pod-status.tsx) so the card and the pod page agree — and
-  // an in-flight update is AMBER while a suspended pod is muted grey, never the same.
-  if (updating) return { spine: "bg-warning", chip: null, activity: null, ribbon: null };
-  const spine =
-    status === "error" || status === "gone"
-      ? "bg-destructive"
-      : status === "suspended"
-        ? "bg-border" // dim/off — resting, and dimmer than idle (swapped per feedback)
-        : status === "running"
-          ? "bg-success/60"
-          : "bg-warning"; // provisioning / waking / destroying
-  return { spine, chip: null, activity: null, ribbon: null };
 }
 
 export default function PodCard({
@@ -197,12 +98,7 @@ export default function PodCard({
   // gets the SAME vocabulary as Claude — Working / Idle — instead of a bare "Running" or
   // a separate "Paired/Ready" (pairing already shows on the Codex line as device pills).
   const codexStatus = live?.codexStatus ?? null;
-  const codexChip =
-    reachable && !onboarding && !hasClaude && agents.includes("codex")
-      ? codexStatus === "busy"
-        ? { label: "Working", className: "text-success bg-success/12" }
-        : { label: "Idle", className: "text-muted-foreground bg-white/[0.05]" }
-      : null;
+  const codexChip = codexChipFor({ reachable, onboarding, hasClaude, agents, codexStatus });
 
   // Preview truth, three-valued: known-live → offer the button; known-empty → NO button
   // (the footer line says "No app on :3000"); unknown (older image / not running) →

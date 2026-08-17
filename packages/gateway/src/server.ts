@@ -708,44 +708,103 @@ export class GatewayServer {
     return /^[a-z0-9][a-z0-9-]*$/.test(slug) ? slug : null;
   }
 
-  /** Resolve slug → pod + decide access. Null result means a response/reject was
-   * already sent. */
-  private async authorizePreview(
+  /** Resolve slug → pod + decide access. Returns the pod, OR a PreviewError describing the failure —
+   * the caller renders it (an HTTP page via sendPreviewError, or a socket reject for a WS upgrade).
+   * The status mapping is uniform across every preview entry point. */
+  private async resolvePreviewAccess(
     slug: string,
     req: http.IncomingMessage,
-    deny: (code: number, msg: string) => void,
-  ): Promise<{ podId: string; ownerId: string } | null> {
+  ): Promise<{ podId: string; ownerId: string } | { error: PreviewError }> {
+    // "No pod here" covers BOTH a non-existent pod AND a private pod that isn't yours — returning 403
+    // for the latter would confirm the pod exists to a stranger (enumeration). Same 404 for both.
+    const notHere: PreviewError = { code: 404, title: "No pod here", message: "There's no pod at this address." };
     const pod = await this.config.control.lookupForPreview(slug);
-    if (!pod) {
-      deny(404, "no such pod");
-      return null;
-    }
+    if (!pod) return { error: notHere };
     if (!pod.previewPublic) {
       const userId = await this.config.authenticate(req).catch(() => null);
+      if (!userId) {
+        return {
+          error: {
+            code: 401,
+            title: "Sign in to view this preview",
+            message: "This pod's preview is owner-only. Sign in to view it.",
+          },
+        };
+      }
       if (userId !== pod.ownerId) {
-        this.log.warn("preview_denied", { slug, authed: !!userId });
-        deny(userId ? 403 : 401, userId ? "forbidden" : "unauthenticated");
-        return null;
+        this.log.warn("preview_denied", { slug, authed: true });
+        return { error: notHere };
       }
     }
-    if (!(await this.ensureRunning(pod.ownerId, pod.podId))) {
-      deny(409, "pod is suspended or unavailable — resume it to view the preview");
-      return null;
+    const state = await this.previewRunState(pod.ownerId, pod.podId);
+    if (state === "suspended") {
+      const dash = this.appOrigin
+        ? `${this.appOrigin}/dashboard/pods/${encodeURIComponent(slug)}`
+        : undefined;
+      return {
+        error: {
+          code: 503,
+          title: "This pod is suspended",
+          message: "Resume it to view the preview — nothing wakes a suspended pod automatically.",
+          dashboardUrl: dash,
+        },
+      };
+    }
+    if (state !== "running") {
+      // starting / waking / provisioning / a transient lookup failure → temporarily unavailable.
+      return {
+        error: {
+          code: 503,
+          title: "This pod is starting",
+          message: "The pod is coming up — the preview will appear here in a moment.",
+          retryAfter: 5,
+        },
+      };
     }
     return { podId: pod.podId, ownerId: pod.ownerId };
   }
 
-  /** True when the pod is reachable. Explicit suspend/resume: a suspended pod is
-   * NOT auto-woken (even for a preview hit) — the owner resumes it. "waking"/
-   * "provisioning" means a start is already in flight, so we wait for it. */
-  private async ensureRunning(ownerId: string, podId: string): Promise<boolean> {
+  /** The pod's readiness for a preview. Explicit suspend/resume: a suspended pod is NOT auto-woken by
+   * a preview hit — the owner resumes it. A waking/provisioning pod is waited for briefly. */
+  private async previewRunState(
+    ownerId: string,
+    podId: string,
+  ): Promise<"running" | "suspended" | "starting" | "unavailable"> {
     try {
       const pod = await this.config.control.getPod(ownerId, podId);
-      if (pod.status === "running") return true;
-      if (pod.status === "suspended") return false; // suspended → resume required
-      return !!(await this.waitRunning(ownerId, podId));
+      if (pod.status === "running") return "running";
+      if (pod.status === "suspended") return "suspended";
+      return (await this.waitRunning(ownerId, podId)) ? "running" : "starting";
     } catch {
-      return false;
+      return "unavailable";
+    }
+  }
+
+  /** THE one place a preview failure becomes a response: the correct HTTP status ALWAYS (so monitors,
+   * caches and crawlers behave), with a body content-negotiated by Accept — a friendly UTF-8 HTML card
+   * for browsers, plain UTF-8 text for API/fetch. A signed-out browser on an owner-only preview is
+   * redirected to sign in (the cookie is domain-shared, so re-opening the link then works). */
+  private sendPreviewError(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    o: PreviewError,
+  ): void {
+    if (res.headersSent) return;
+    const isGet = (req.method ?? "GET") === "GET";
+    const wantsHtml = (req.headers.accept ?? "").includes("text/html");
+    if (o.code === 401 && wantsHtml && isGet && this.appOrigin) {
+      res.writeHead(302, { Location: `${this.appOrigin}/signin` });
+      res.end();
+      return;
+    }
+    const headers: Record<string, string> = {};
+    if (o.retryAfter) headers["Retry-After"] = String(o.retryAfter);
+    if (wantsHtml && isGet) {
+      res.writeHead(o.code, { "Content-Type": "text/html; charset=utf-8", ...headers });
+      res.end(previewStatusPage(o));
+    } else {
+      res.writeHead(o.code, { "Content-Type": "text/plain; charset=utf-8", ...headers });
+      res.end(o.message);
     }
   }
 
@@ -754,22 +813,13 @@ export class GatewayServer {
     req: http.IncomingMessage,
     res: http.ServerResponse,
   ): Promise<void> {
-    // A browser navigating to a private preview while signed-out should be sent
-    // to sign in (the cookie is domain-shared, so re-opening the link then works)
-    // rather than shown a bare "unauthenticated". APIs/other methods still 401.
-    const wantsHtml = (req.headers.accept ?? "").includes("text/html");
-    const deny = (code: number, msg: string) => {
-      if (code === 401 && wantsHtml && this.appOrigin && (req.method ?? "GET") === "GET") {
-        if (!res.headersSent) res.writeHead(302, { Location: `${this.appOrigin}/signin` });
-        res.end();
+    try {
+      const acc = await this.resolvePreviewAccess(slug, req);
+      if ("error" in acc) {
+        this.sendPreviewError(req, res, acc.error);
         return;
       }
-      if (!res.headersSent) res.writeHead(code, { "Content-Type": "text/plain" });
-      res.end(msg);
-    };
-    try {
-      const pod = await this.authorizePreview(slug, req, deny);
-      if (!pod) return;
+      const pod = acc;
       const origin = await this.config.resolvePreviewOrigin!(pod.podId);
       const target = new URL(req.url ?? "/", origin);
       const upstream = http.request(
@@ -780,25 +830,25 @@ export class GatewayServer {
           pres.pipe(res);
         },
       );
-      // Nothing is serving the preview port yet (or it crashed). That's not a client
-      // error (4xx) — it's the pod's app being unavailable, so 503. For a browser,
-      // serve a small, honest page instead of a bare "unreachable" string; the dashboard
-      // card already tries to gate the Preview button on this, but a hand-typed URL or an
-      // app that stops mid-session still lands here, and should explain itself.
+      // Pod is running but nothing is serving :3000 (app not started, or crashed mid-session). Same
+      // uniform 503 + auto-retry as the other "temporarily unavailable" states.
       upstream.on("error", () => {
-        if (res.headersSent) return;
-        if (wantsHtml) {
-          res.writeHead(503, { "Content-Type": "text/html; charset=utf-8", "Retry-After": "5" });
-          res.end(previewUnavailableHtml(slug));
-        } else {
-          res.writeHead(503, { "Content-Type": "text/plain" });
-          res.end("No app is serving this pod's preview port (:3000) yet.");
-        }
+        this.sendPreviewError(req, res, {
+          code: 503,
+          title: "Nothing serving the preview yet",
+          message:
+            "The pod is running, but no app is listening on :3000 — start your dev server and this page refreshes on its own.",
+          retryAfter: 5,
+        });
       });
       req.pipe(upstream);
     } catch (e) {
       this.log.error("preview_http_error", { slug, err: e });
-      deny(500, "gateway error");
+      this.sendPreviewError(req, res, {
+        code: 500,
+        title: "Gateway error",
+        message: "The preview gateway hit an error. Try again in a moment.",
+      });
     }
   }
 
@@ -808,8 +858,12 @@ export class GatewayServer {
     socket: Socket,
     head: Buffer,
   ): Promise<void> {
-    const pod = await this.authorizePreview(slug, req, (code, msg) => reject(socket, code, msg));
-    if (!pod) return;
+    const acc = await this.resolvePreviewAccess(slug, req);
+    if ("error" in acc) {
+      reject(socket, acc.error.code, acc.error.message);
+      return;
+    }
+    const pod = acc;
     try {
       const origin = new URL(await this.config.resolvePreviewOrigin!(pod.podId));
       const upstream = net.connect(Number(origin.port), origin.hostname.replace(/^\[|\]$/g, ""));
@@ -978,11 +1032,35 @@ function sleep(ms: number): Promise<void> {
 /** A small, self-contained page for "nothing is serving :3000 yet" — served with 503
  * from the preview proxy. No external assets (the pod's app may be the only thing that
  * would serve them), theme-neutral dark, and it says what to DO rather than a raw error. */
-function previewUnavailableHtml(slug: string): string {
-  const safe = slug.replace(/[^a-z0-9-]/gi, "");
+/** A preview failure, resolved once and rendered per-transport (HTTP page or WS socket reject). */
+type PreviewError = {
+  code: number;
+  title: string;
+  message: string;
+  retryAfter?: number;
+  dashboardUrl?: string;
+};
+
+/** THE one preview-status page for browsers (every unavailable/denied state routes through here):
+ * a correctly UTF-8-encoded card with the state's title + message, an optional dashboard link (the
+ * suspended case), and optional auto-retry (starting / no-app). One template, message by state. */
+function previewStatusPage(o: {
+  title: string;
+  message: string;
+  retryAfter?: number;
+  dashboardUrl?: string;
+}): string {
+  const esc = (s: string) =>
+    s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] as string);
+  const link = o.dashboardUrl
+    ? `<p class="hint"><a href="${esc(o.dashboardUrl)}" style="color:#5cc8ff;text-decoration:none">Go to your dashboard →</a></p>`
+    : "";
+  const retry = o.retryAfter
+    ? `<p class="hint">This page auto-retries every few seconds.</p><script>setTimeout(function(){location.reload()},${Math.round(o.retryAfter * 1000)})</script>`
+    : "";
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Preview not running · ${safe}</title>
+<title>${esc(o.title)}</title>
 <style>
   html,body{margin:0;height:100%;background:#0b0e13;color:#e7ebf2;
     font:15px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
@@ -992,15 +1070,10 @@ function previewUnavailableHtml(slug: string): string {
   .dot{width:10px;height:10px;border-radius:50%;border:2px solid #69727f;display:inline-block;margin-right:8px;vertical-align:middle}
   h1{font-size:19px;margin:0 0 8px;letter-spacing:-.01em}
   p{color:#98a2b3;margin:0 0 14px}
-  code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;background:#0f131a;
-    border:1px solid #232b38;border-radius:6px;padding:2px 6px;color:#5cc8ff}
   .hint{font-size:13px;color:#69727f;margin-top:18px}
 </style></head><body><div class="wrap"><div class="card">
-  <h1><span class="dot"></span>Nothing is serving this preview yet</h1>
-  <p>The pod <strong>${safe}</strong> is running, but no app is listening on
-  <code>:3000</code> — start your dev server and this page refreshes on its own.</p>
-  <p class="hint">This page auto-retries every few seconds.</p>
-</div></div>
-<script>setTimeout(function(){location.reload()},5000)</script>
-</body></html>`;
+  <h1><span class="dot"></span>${esc(o.title)}</h1>
+  <p>${esc(o.message)}</p>
+  ${link}${retry}
+</div></div></body></html>`;
 }

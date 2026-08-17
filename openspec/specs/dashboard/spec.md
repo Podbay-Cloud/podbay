@@ -509,10 +509,18 @@ so they never disagree — including on an image that predates the cheap health-
 both fall back to the metrics probe. The cockpit's preview card SHALL likewise offer its **Open**
 action only when something is serving (or while the probe is still unknown) — never when the pod
 reports nothing serving, so Open never leads to the 503 page — and it carries no manual reload
-control (the listening state auto-refreshes on its own). When a request nonetheless reaches a preview whose app port is
-not being served (a hand-typed URL, or an app that stopped), the preview proxy SHALL respond **503**
-with a short explanatory page (not a bare error string, and not a 4xx — the app being down is a
-service-unavailable condition, not a client error).
+control (the listening state auto-refreshes on its own).
+
+Every preview response the proxy sends for an UNAVAILABLE or DENIED state SHALL be UNIFORM: the
+semantically-correct HTTP status ALWAYS (so monitors, caches and crawlers behave), with a body
+content-negotiated by `Accept` — a small, correctly **UTF-8-encoded** HTML card for browsers, and plain
+UTF-8 text for API/`fetch` callers (never HTML-with-200, which would report a down preview as healthy).
+The status mapping: a missing pod OR a private pod requested by a non-owner → **404** (never 403, which
+would confirm the pod exists to a stranger); an owner-only preview for a signed-out browser → redirect
+to sign in; a **suspended**, **starting/provisioning**, or **app-not-serving-:3000** pod → **503** (a
+temporarily-unavailable service, not a 4xx), with `Retry-After` and an auto-retrying page for the
+cases that recover without a human (starting, no-app) but NOT for suspended (the owner must resume — the
+page links to the dashboard instead).
 
 #### Scenario: Agent working
 
@@ -529,6 +537,24 @@ service-unavailable condition, not a client error).
 - **WHEN** a preview request reaches a pod whose app port has nothing listening
 - **THEN** the proxy SHALL return 503 with a short "nothing is serving this preview yet" page,
   not a bare error and not a 4xx
+
+#### Scenario: A suspended pod's preview
+
+- **WHEN** a preview request reaches a suspended pod
+- **THEN** the proxy SHALL return **503** (not 409, not 2xx) without auto-waking the pod, and a browser
+  gets a "suspended — resume it" card linking to the dashboard (no auto-retry)
+
+#### Scenario: A private preview requested by a non-owner
+
+- **WHEN** a signed-in user who is not the owner requests a private preview
+- **THEN** the proxy SHALL return **404** (as if the pod does not exist), never 403
+
+#### Scenario: Preview errors are UTF-8 and content-negotiated
+
+- **WHEN** any preview-error response is served
+- **THEN** a browser (`Accept: text/html`) receives an HTML card with `Content-Type: text/html;
+  charset=utf-8`, and an API/`fetch` caller receives `text/plain; charset=utf-8` — never a mis-encoded
+  string, and never an HTML page carrying a 200
 
 #### Scenario: Older image
 

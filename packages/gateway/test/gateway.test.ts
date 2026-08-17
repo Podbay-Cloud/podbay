@@ -159,7 +159,7 @@ async function seed(id: string, ownerId: string, over: Partial<PodRecord> = {}) 
 function previewGet(
   slug: string,
   opts: { path?: string; user?: string; accept?: string } = {},
-): Promise<{ status: number; body: string; location?: string }> {
+): Promise<{ status: number; body: string; location?: string; contentType?: string; retryAfter?: string }> {
   return new Promise((resolve, reject) => {
     const req = http.request(
       {
@@ -180,6 +180,8 @@ function previewGet(
             status: res.statusCode ?? 0,
             body,
             location: res.headers.location as string | undefined,
+            contentType: res.headers["content-type"] as string | undefined,
+            retryAfter: res.headers["retry-after"] as string | undefined,
           }),
         );
       },
@@ -274,9 +276,10 @@ describe("preview proxy", () => {
     expect(res.location).toBe("https://app.test/signin");
   });
 
-  it("rejects a non-owner request to a private preview (403)", async () => {
+  it("hides a private preview from a non-owner as 404 (no enumeration, not 403)", async () => {
     await seed("brave-otter-4f2a", "u1");
-    expect((await previewGet("brave-otter-4f2a", { user: "u2" })).status).toBe(403);
+    // 404 for both "no such pod" and "not yours" — a 403 would confirm the pod exists to a stranger.
+    expect((await previewGet("brave-otter-4f2a", { user: "u2" })).status).toBe(404);
   });
 
   it("allows anonymous access when the pod is public", async () => {
@@ -290,13 +293,29 @@ describe("preview proxy", () => {
     expect((await previewGet("ghost-pod-0000", { user: "u1" })).status).toBe(404);
   });
 
-  it("does NOT wake a suspended pod on preview request — 409 (explicit resume)", async () => {
+  it("does NOT wake a suspended pod on preview request — 503 (explicit resume)", async () => {
     await seed("brave-otter-4f2a", "u1", { status: "suspended" });
     const res = await previewGet("brave-otter-4f2a", { user: "u1" });
-    // Explicit suspend/resume: a preview hit never auto-wakes a suspended pod;
-    // the owner resumes it from the dashboard. Pod stays suspended.
-    expect(res.status).toBe(409);
+    // Explicit suspend/resume: a preview hit never auto-wakes a suspended pod; the owner resumes it.
+    // Suspended is a temporarily-unavailable service → 503, uniform with the other not-ready states.
+    expect(res.status).toBe(503);
     expect((await store.get("brave-otter-4f2a"))?.status).toBe("suspended");
+  });
+
+  it("serves a preview error UTF-8, content-negotiated: HTML card for browsers, text for API", async () => {
+    await seed("brave-otter-4f2a", "u1", { status: "suspended" });
+    // Browser → a real HTML card, always charset=utf-8 (the em-dash used to mojibake to "â€"").
+    const html = await previewGet("brave-otter-4f2a", { user: "u1", accept: "text/html" });
+    expect(html.status).toBe(503);
+    expect(html.contentType).toBe("text/html; charset=utf-8");
+    expect(html.body).toContain("<!doctype html>");
+    expect(html.body).toContain("This pod is suspended");
+    // API / fetch → plain UTF-8 text (not HTML), so a program isn't handed a page.
+    const api = await previewGet("brave-otter-4f2a", { user: "u1" });
+    expect(api.status).toBe(503);
+    expect(api.contentType).toBe("text/plain; charset=utf-8");
+    expect(api.body).not.toContain("<!doctype");
+    expect(api.body).toContain("Resume it");
   });
 });
 

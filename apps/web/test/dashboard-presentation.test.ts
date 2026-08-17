@@ -51,7 +51,9 @@ describe("dashboard presentation contract", () => {
     expect(page).toContain(">New pod</Link>");
     expect(page).toContain("No pods yet");
     expect(page).toContain("Create your first pod");
-    expect(page).toContain("environmentTitle={environmentTitles.get(p.environmentName)");
+    // The dashboard now builds a PodCardProps[] for <PodCardList> (signal-cards refactor), so the
+    // env title is an object property, not a JSX prop.
+    expect(page).toContain("environmentTitle: environmentTitles.get(p.environmentName)");
     expect(page).not.toContain("agent already in it");
   });
 

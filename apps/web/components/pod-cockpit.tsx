@@ -6,6 +6,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { ArrowUpRight, Pencil, Loader2, ClipboardPaste, TriangleAlert } from "lucide-react";
 import {
   wakePod,
+  getOwnerLiveSignals,
   sleepPod,
   destroyPod,
   renamePod,
@@ -54,6 +55,8 @@ import {
   type UpdateInfo,
 } from "@/components/update-info-dialog";
 import { StatusDot, StatusBadge } from "@/components/pod-status";
+import { deriveState, codexChipFor, type PodCardLive } from "@/lib/pod-visual-state";
+import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -322,6 +325,52 @@ export default function PodCockpit(props: PodCockpitProps) {
   // mid-update shows "Updating…" straight from the backend. The poll below keeps
   // it live and calls router.refresh() when the backend says it's done.
   const [updating, setUpdating] = useState(Boolean(updatingSince));
+  // Live agent signals for THIS pod — the same feed the dashboard cards use, so the page shows the
+  // SAME activity state (Working / Idle / Waiting) and matching colours instead of a bare "Running".
+  const [live, setLive] = useState<PodCardLive | null>(null);
+  // Whether the first live poll has returned — until it has, we show a neutral "loading" indicator
+  // for a running pod rather than the lifecycle "Running" badge, so the header settles straight to
+  // the real activity (Idle/Working) instead of flashing green→grey on every refresh.
+  const [liveLoaded, setLiveLoaded] = useState(false);
+  useEffect(() => {
+    if (status !== "running") {
+      setLive(null);
+      setLiveLoaded(false);
+      return;
+    }
+    let stop = false;
+    const poll = () =>
+      void getOwnerLiveSignals()
+        .then((rows) => {
+          if (stop) return;
+          const r = rows.find((x) => x.id === slug);
+          setLive(
+            r
+              ? {
+                  status: r.status,
+                  updating: r.updating,
+                  agentStatus: r.agentStatus,
+                  codexStatus: r.codexStatus,
+                  agentWaitingFor: r.agentWaitingFor,
+                  agents: r.agents,
+                  appListening: r.appListening,
+                  criticalIssue: r.criticalIssue,
+                  unreachable: r.unreachable,
+                }
+              : null,
+          );
+          setLiveLoaded(true);
+        })
+        .catch(() => undefined);
+    poll();
+    const t = setInterval(() => {
+      if (!document.hidden) poll();
+    }, 10_000);
+    return () => {
+      stop = true;
+      clearInterval(t);
+    };
+  }, [slug, status]);
   // Optimistic suspend/resume label. These actions take several seconds (handoff +
   // provider stop/start); running them through `act()`/useTransition made the pending
   // server action block the router, freezing nav (reported live). Like runUpdate/resize,
@@ -384,6 +433,32 @@ export default function PodCockpit(props: PodCockpitProps) {
   // reconcile sweep) from tearing down + rebuilding the terminal every time.
   const connectable = !!gatewayUrl && status !== "suspended";
   const display = name?.trim() || slug;
+  // Shared visual state (same module the dashboard card uses) so page and card agree.
+  const cockpitAgents = podAgents.length ? podAgents : [agent];
+  const hasClaudeAgent = cockpitAgents.includes("claude-code") || cockpitAgents.length === 0;
+  const podState = deriveState(status, updating, live, hasClaudeAgent);
+  const cockpitCodexChip = codexChipFor({
+    reachable: status === "running" && !onboarding,
+    onboarding,
+    hasClaude: hasClaudeAgent,
+    agents: cockpitAgents,
+    codexStatus: live?.codexStatus ?? null,
+  });
+  const activityChip = podState.chip
+    ? { label: podState.chip.label, className: podState.chip.className, dot: podState.chip.dot, pulse: podState.chip.pulse }
+    : cockpitCodexChip
+      ? {
+          label: cockpitCodexChip.label,
+          className: cockpitCodexChip.className,
+          dot: cockpitCodexChip.label === "Working" ? "bg-success" : "bg-muted-foreground/70",
+          pulse: cockpitCodexChip.label === "Working",
+        }
+      : null;
+  // Running but the first live poll hasn't returned yet → a neutral loading indicator (not the
+  // lifecycle "Running", which would then flip to Idle). Once loaded with no activity chip, we fall
+  // through to the lifecycle badge.
+  const activityLoading =
+    status === "running" && !onboarding && !updating && !liveLoaded && !activityChip;
 
   useEffect(() => setStepStartedAt(Date.now()), [phase]);
 
@@ -645,8 +720,44 @@ export default function PodCockpit(props: PodCockpitProps) {
       />
     );
   }
+  // The confirm modal is SHARED: it must render in the suspended branch (its Resume calls
+  // setConfirm) AND the main cockpit. It used to live only in the main return, so on a suspended
+  // pod setConfirm set state with no dialog in the tree to show it — Resume looked dead.
+  const confirmDialog = (
+    <AlertDialog open={confirm !== null} onOpenChange={(o) => !o && setConfirm(null)}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{confirm?.title}</AlertDialogTitle>
+          {confirm?.message && <AlertDialogDescription>{confirm.message}</AlertDialogDescription>}
+          {confirm?.warning && (
+            <div
+              role="note"
+              className="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-left text-[13px] text-warning"
+            >
+              <TriangleAlert aria-hidden="true" className="mt-px size-4 shrink-0" />
+              <span>{confirm.warning}</span>
+            </div>
+          )}
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            variant={confirm?.danger ? "destructive" : "default"}
+            onClick={() => {
+              confirm?.run();
+              setConfirm(null);
+            }}
+          >
+            {confirm?.confirmLabel}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+
   if (status === "suspended") {
     return (
+      <>
       <PodSuspended
         name={name}
         slug={slug}
@@ -670,6 +781,8 @@ export default function PodCockpit(props: PodCockpitProps) {
         }}
         resuming={pending}
       />
+      {confirmDialog}
+      </>
     );
   }
 
@@ -678,7 +791,20 @@ export default function PodCockpit(props: PodCockpitProps) {
       {/* Header */}
       <header className="flex flex-col gap-2">
         <div className="flex min-w-0 items-center gap-2.5">
-          <StatusDot status={updating ? transientKind : status} />
+          {activityChip ? (
+            <span
+              aria-hidden
+              className={cn(
+                "size-2.5 shrink-0 rounded-full",
+                activityChip.dot,
+                activityChip.pulse && "animate-pulse",
+              )}
+            />
+          ) : activityLoading ? (
+            <span aria-hidden className="size-2.5 shrink-0 animate-pulse rounded-full bg-muted-foreground/40" />
+          ) : (
+            <StatusDot status={updating ? transientKind : status} />
+          )}
           {editing ? (
             <Input
               autoFocus
@@ -713,7 +839,26 @@ export default function PodCockpit(props: PodCockpitProps) {
           )}
         </div>
         <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 pl-[19px] text-[13px] text-muted-foreground">
-          <StatusBadge status={updating ? transientKind : status} />
+          {activityChip ? (
+            <span
+              data-testid="pod-status"
+              className={cn(
+                "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-semibold",
+                activityChip.className,
+              )}
+            >
+              {activityChip.pulse && (
+                <span className={cn("size-1.5 animate-pulse rounded-full", activityChip.dot)} aria-hidden />
+              )}
+              {activityChip.label}
+            </span>
+          ) : activityLoading ? (
+            <span className="inline-flex items-center rounded-md border border-border px-1.5 py-0.5 text-[11px] font-semibold text-muted-foreground/60">
+              …
+            </span>
+          ) : (
+            <StatusBadge status={updating ? transientKind : status} />
+          )}
           <span className="ml-1">{environmentName}</span>
           <span>· active {ago(lastActiveAt)}</span>
         </div>
@@ -1187,7 +1332,7 @@ export default function PodCockpit(props: PodCockpitProps) {
                       ? `${(podMemoryMb / 1024).toFixed(podMemoryMb % 1024 ? 1 : 0)} GB RAM`
                       : "RAM: no limit"
                   }`
-                : `${labelForPod(size, diskGb)} — reserved compute`
+                : `${POD_TIERS[size].label}: ${POD_TIERS[size].cpus} vCPU · ${POD_TIERS[size].memoryGb} GB RAM · ${Math.max(diskGb, POD_TIERS[size].diskGb)} GB disk`
             }
           >
             <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-1">
@@ -1446,35 +1591,7 @@ export default function PodCockpit(props: PodCockpitProps) {
       )}
 
 
-      <AlertDialog open={confirm !== null} onOpenChange={(o) => !o && setConfirm(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{confirm?.title}</AlertDialogTitle>
-            {confirm?.message && <AlertDialogDescription>{confirm.message}</AlertDialogDescription>}
-            {confirm?.warning && (
-              <div
-                role="note"
-                className="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-left text-[13px] text-warning"
-              >
-                <TriangleAlert aria-hidden="true" className="mt-px size-4 shrink-0" />
-                <span>{confirm.warning}</span>
-              </div>
-            )}
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant={confirm?.danger ? "destructive" : "default"}
-              onClick={() => {
-                confirm?.run();
-                setConfirm(null);
-              }}
-            >
-              {confirm?.confirmLabel}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {confirmDialog}
 
       <AlertDialog open={resizeOpen} onOpenChange={setResizeOpen}>
         <AlertDialogContent>

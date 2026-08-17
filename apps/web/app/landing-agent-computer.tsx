@@ -50,12 +50,11 @@ export default async function AgentComputerLanding({
 
       <section className={`${styles.shell} ${styles.hero}`}>
         <div className={styles.heroCopy}>
-          <p className={styles.eyebrow}>Claude is the interface. Your pod is its computer in the cloud.</p>
-          <h1>Your coding agent keeps working after your laptop closes.</h1>
+          <p className={styles.eyebrow}>Claude is the interface. Podbay is its computer.</p>
+          <h1>The always-on computer for your coding agent.</h1>
           <p className={styles.heroText}>
-            Start in Claude on desktop. Continue from your phone. Your pod keeps working between
-            them. It&rsquo;s a private virtual machine hosted by Podbay, with Claude Code, your
-            project, and your tools inside.
+            Close the lid &mdash; it keeps working. Files, servers, and running jobs stay put,
+            reachable from any device.
           </p>
           <div className={styles.heroActions}>
             <TrackedLink
@@ -66,15 +65,20 @@ export default async function AgentComputerLanding({
             >
               {primaryLabel}
             </TrackedLink>
-            <a className={styles.secondaryCta} href="#workspace">
-              See how it works <ArrowUpRight aria-hidden />
+            <a
+              className={styles.secondaryCta}
+              href="https://github.com/Podbay-Cloud/podbay"
+              target="_blank"
+              rel="noopener"
+            >
+              Self-host it <ArrowUpRight aria-hidden />
             </a>
           </div>
           <div className={styles.subscriptionLine}>
             <KeyRound aria-hidden />
             <span className={styles.subscriptionCopy}>
               <strong>Use your existing Claude subscription.</strong>
-              <span>Official CLI · No token markup</span>
+              <span>Official CLI · No token markup · Self-host it (BSL 1.1)</span>
               <span className={styles.pilotNote}>Codex support is in pilot.</span>
             </span>
           </div>
@@ -86,6 +90,13 @@ export default async function AgentComputerLanding({
         id="workspace"
         aria-label="Claude on desktop and mobile connected to one running pod"
       >
+        <div className={styles.sectionHeading}>
+          <div>
+            <p className={styles.eyebrow}>Remote control &ne; always-on</p>
+            <h2>Podbay runs the machine your session lives on.</h2>
+          </div>
+          <p>Remote control gives you access. Podbay gives you uptime.</p>
+        </div>
         <div className={styles.continuityFlow}>
           <div className={styles.continuityMoment}>
             <div className={styles.momentLabel}>

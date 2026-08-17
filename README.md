@@ -36,7 +36,7 @@ You need **Docker** (Desktop or Engine + Compose v2), ~**8 GB RAM**, ~**6 GB dis
 **Claude Pro/Max subscription** or an **Anthropic API key**. Works on macOS, Linux, and WSL2.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/podbay-cloud/install/main/install.sh | sh
+curl -fsSL podbay.cloud/install.sh | sh
 ```
 
 The installer checks your machine, writes a Docker Compose setup into `./podbay`, pulls the prebuilt
