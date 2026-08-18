@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { and, eq, gt, isNull, desc } from "@podbay/db";
+import { and, eq, gt, lt, isNull, isNotNull, desc, sql } from "@podbay/db";
 import { relayPairingCodes, relayConnections, relayTokens, fetchMemory, type Database } from "@podbay/db";
 
 /**
@@ -121,10 +121,12 @@ export class RelayService {
     const at = new Date(now);
     await this.db
       .insert(relayConnections)
-      .values({ ownerId, connectedAt: at, lastSeenAt: at, loginDomains })
+      .values({ ownerId, connectedAt: at, lastSeenAt: at, loginDomains, disconnectedAt: null })
       .onConflictDoUpdate({
         target: relayConnections.ownerId,
-        set: { lastSeenAt: at, loginDomains },
+        // Reconnect: refresh connectedAt ("connected since" = latest connect) + clear the disconnect
+        // marker, but PRESERVE dropCount so the flap history survives across reconnects.
+        set: { connectedAt: at, lastSeenAt: at, loginDomains, disconnectedAt: null },
       });
   }
 
@@ -136,30 +138,55 @@ export class RelayService {
       .where(eq(relayConnections.ownerId, ownerId));
   }
 
-  /** Clean disconnect — the socket closed and we know it. */
-  async markDisconnected(ownerId: string): Promise<void> {
-    await this.db.delete(relayConnections).where(eq(relayConnections.ownerId, ownerId));
+  /** Disconnect — the socket closed (or the heartbeat found it half-open) and we know it. The row
+   * is KEPT (not deleted) with a disconnect marker + an incremented dropCount, so the owner can see
+   * that the relay dropped/flapped instead of it vanishing silently. Idempotent-ish: a second call
+   * with no reconnect between bumps the count again, which is the honest signal for a flapping link. */
+  async markDisconnected(ownerId: string, now = Date.now()): Promise<void> {
+    await this.db
+      .update(relayConnections)
+      .set({ disconnectedAt: new Date(now), dropCount: sql`${relayConnections.dropCount} + 1` })
+      .where(and(eq(relayConnections.ownerId, ownerId), isNull(relayConnections.disconnectedAt)));
   }
 
-  /** Is this owner's relay connected right now? Stale rows (a crashed gateway) read as
-   * disconnected rather than being trusted. */
-  async isConnected(ownerId: string, now = Date.now()): Promise<{ connected: boolean; loginDomains: string[] }> {
+  /** Reap connection rows that have been DISCONNECTED longer than `olderThanMs` — a relay the owner
+   * paired once and never brought back (or an owner since deleted). The row is kept for a while after
+   * a drop so the cockpit can show the flap history, but a long-dead row is pure noise; a reconnect
+   * just re-inserts a fresh one. Only ever deletes rows with a disconnect marker, so a currently-up
+   * (or briefly-flapped) relay is never touched. Returns how many were removed. */
+  async reapStaleConnections(olderThanMs: number, now = Date.now()): Promise<number> {
+    const cutoff = new Date(now - olderThanMs);
+    const deleted = await this.db
+      .delete(relayConnections)
+      .where(and(isNotNull(relayConnections.disconnectedAt), lt(relayConnections.disconnectedAt, cutoff)))
+      .returning({ ownerId: relayConnections.ownerId });
+    return deleted.length;
+  }
+
+  /** Is this owner's relay connected right now? Connected = a row with NO disconnect marker whose
+   * last real pong is fresh (a crashed gateway leaves a stale row → reads disconnected). Also returns
+   * the drop history so the cockpit can show "dropped N times" even while currently reconnected. */
+  async isConnected(
+    ownerId: string,
+    now = Date.now(),
+  ): Promise<{ connected: boolean; loginDomains: string[]; dropCount: number; lastDroppedAt: string | null }> {
     const rows = await this.db
       .select()
       .from(relayConnections)
       .where(eq(relayConnections.ownerId, ownerId));
     const row = rows[0];
-    if (!row || now - row.lastSeenAt.getTime() >= RELAY_STALE_MS) {
-      return { connected: false, loginDomains: [] };
-    }
-    return { connected: true, loginDomains: row.loginDomains ?? [] };
+    const dropCount = row?.dropCount ?? 0;
+    const lastDroppedAt = row?.disconnectedAt ? row.disconnectedAt.toISOString() : null;
+    const connected =
+      !!row && row.disconnectedAt == null && now - row.lastSeenAt.getTime() < RELAY_STALE_MS;
+    return { connected, loginDomains: connected ? (row!.loginDomains ?? []) : [], dropCount, lastDroppedAt };
   }
 
   /** Admin fleet view: every currently-connected relay. Stale rows omitted. */
   async listConnections(now = Date.now()): Promise<RelayConnectionRow[]> {
     const rows = await this.db.select().from(relayConnections).orderBy(desc(relayConnections.connectedAt));
     return rows
-      .filter((r) => now - r.lastSeenAt.getTime() < RELAY_STALE_MS)
+      .filter((r) => r.disconnectedAt == null && now - r.lastSeenAt.getTime() < RELAY_STALE_MS)
       .map((r) => ({
         ownerId: r.ownerId,
         connectedAt: r.connectedAt.toISOString(),

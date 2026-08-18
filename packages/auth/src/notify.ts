@@ -99,6 +99,53 @@ async function gmailToken(saJson: string, impersonate: string, f: typeof fetch):
 }
 
 /**
+ * Notify the OPERATOR (velsa) that a new access request arrived, with two ONE-CLICK links —
+ * Approve and Later — so they can action it from their inbox without opening the admin panel. The
+ * links carry an AES-encrypted, unforgeable action token (see admin/quick); this function just mails
+ * whatever URLs the caller minted. Best-effort + no-op when Gmail isn't configured — a signup must
+ * never fail because a notification did.
+ */
+export async function sendNewRequestEmail(
+  to: string,
+  requester: { name?: string | null; email: string },
+  links: { approveUrl: string; laterUrl: string },
+  deps: EmailDeps = {},
+): Promise<void> {
+  const saJson = deps.saJson ?? process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  const impersonate = deps.impersonate ?? process.env.PODBAY_GMAIL_IMPERSONATE;
+  const from = deps.from ?? process.env.PODBAY_FROM_EMAIL;
+  if (!saJson || !impersonate || !from || !to) return;
+  const who = (requester.name ?? "").trim() || requester.email;
+  const f = deps.fetchImpl ?? fetch;
+  try {
+    const token = await (deps.tokenFn ?? gmailToken)(saJson, impersonate, f);
+    const subject = `New Podbay access request: ${who}`;
+    const body =
+      `${who} requested access to Podbay.\n\n` +
+      `Name:  ${requester.name || "(none)"}\n` +
+      `Email: ${requester.email}\n\n` +
+      `Approve now:\n${links.approveUrl}\n\n` +
+      `Set aside for later:\n${links.laterUrl}\n\n` +
+      `(Or review everyone at https://podbay.cloud/admin.)\n`;
+    const message =
+      `From: ${encodeFrom(from)}\r\n` +
+      `To: ${to}\r\n` +
+      `Subject: ${encodeHeaderWord(subject)}\r\n` +
+      `MIME-Version: 1.0\r\n` +
+      `Content-Type: text/plain; charset="UTF-8"\r\n` +
+      `Content-Transfer-Encoding: base64\r\n\r\n` +
+      Buffer.from(body, "utf8").toString("base64");
+    await f("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ raw: b64url(message) }),
+    });
+  } catch {
+    /* best-effort: never let a notification break the signup */
+  }
+}
+
+/**
  * Tell an APPROVED user they're in. This is the email the /pending page promises
  * ("we'll email you when your spot opens up") — without it, that promise is a lie to every
  * waitlisted user. Sends via the Google Workspace GMAIL API using a service account with

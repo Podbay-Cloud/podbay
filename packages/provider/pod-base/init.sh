@@ -605,6 +605,13 @@ DEV_PIDFILE=/home/dev/.podbay-dev.pid
 DEV_LOG=/home/dev/.podbay-dev.log
 start_dev_server() {
   [ -f "$WORK/package.json" ] || return 0
+  # Durable opt-out: a pod that serves its OWN :3000 (a production `next start` via `podbay startup`)
+  # runs `podbay dev disable`, which drops this file. Without this guard the auto `pnpm dev` races the
+  # prod server for :3000 and `next dev` clobbers the prod .next in place (the makore.app outage).
+  if [ -f /home/dev/.podbay/dev-server-disabled ]; then
+    echo "podbay: dev server disabled (podbay dev enable to re-enable)"
+    return 0
+  fi
   su dev -c "jq -e '.scripts.dev // empty' '$WORK/package.json'" >/dev/null 2>&1 || return 0
   if [ -f "$DEV_PIDFILE" ] && kill -0 "$(cat "$DEV_PIDFILE" 2>/dev/null)" 2>/dev/null; then return 0; fi
   curl -sf -o /dev/null --max-time 1 http://localhost:3000 2>/dev/null && return 0

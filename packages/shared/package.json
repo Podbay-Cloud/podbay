@@ -22,6 +22,10 @@
       "types": "./dist/log.d.ts",
       "default": "./dist/log.js"
     },
+    "./heartbeat": {
+      "types": "./dist/heartbeat.d.ts",
+      "default": "./dist/heartbeat.js"
+    },
     "./crypto": {
       "types": "./dist/crypto.d.ts",
       "default": "./dist/crypto.js"

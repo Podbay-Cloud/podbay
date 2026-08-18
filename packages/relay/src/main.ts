@@ -18,6 +18,7 @@ import {
 } from "./config.js";
 import { RelayClient } from "./relay-client.js";
 import { RelayTunnel } from "./relay-tunnel.js";
+import { keepAwake } from "./keep-awake.js";
 import { BrowserFetcher } from "./browser-fetcher.js";
 import { RelayEventStore, type RelaySource } from "./audit.js";
 import { serveDashboard } from "./dashboard.js";
@@ -99,13 +100,18 @@ async function cmdStart(a: string[]): Promise<void> {
     cfg.consentedAt = new Date().toISOString();
   }
   cfg.gatewayUrl = gateway;
+  // Opt-in keep-awake (persisted, so it survives `relay stop`/restart). `--no-keep-awake` turns it off.
+  if (a.includes("--keep-awake")) cfg.keepAwake = true;
+  else if (a.includes("--no-keep-awake")) cfg.keepAwake = false;
   save(cfg);
   try { unlinkSync(dashboardRuntimeFile()); } catch {}
 
   // Spawn ourselves detached: one command, then it runs in the background.
   mkdirSync(profileDir().replace(/\/profile$/, ""), { recursive: true });
   const self = fileURLToPath(import.meta.url);
-  const child = spawn(process.execPath, [self, "start", "__daemon", "--gateway", gateway, "--code", code], {
+  const daemonArgs = [self, "start", "__daemon", "--gateway", gateway, "--code", code];
+  if (cfg.keepAwake) daemonArgs.push("--keep-awake");
+  const child = spawn(process.execPath, daemonArgs, {
     detached: true,
     stdio: "ignore",
   });
@@ -137,11 +143,16 @@ async function runDaemon(a: string[]): Promise<void> {
   const cfgAtStart = load();
   const store = new RelayEventStore({ retentionDays: cfgAtStart.retentionDays ?? 30 }).init();
   const runtime = new RelayRuntime({ version: "0.1.7" });
+  // Opt-in: keep the Mac from idle-sleeping the relay (a 24/7 host). Released on stop AND — via
+  // caffeinate's `-w <pid>` — automatically if we crash, so it never gets stuck holding the Mac awake.
+  const releaseKeepAwake =
+    a.includes("--keep-awake") || cfgAtStart.keepAwake ? keepAwake(log) : () => {};
   let stopping = false;
   let dashboardClose: (() => void) | undefined;
   const stop = async () => {
     if (stopping) return;
     stopping = true;
+    releaseKeepAwake();
     runtime.clearActive();
     dashboardClose?.();
     await browser.close();

@@ -849,23 +849,6 @@ export async function updateIdlePods(): Promise<{ started: number } | { error: s
   }
 }
 
-/** Live config-refresh (docs/plans/live-config-refresh.md): push the current pod-base content
- * (skills / rules / settings) into this running pod and re-apply it WITHOUT a recreate — no reboot,
- * the agent keeps running. Both editions. */
-export async function refreshPodConfig(
-  slug: string,
-): Promise<{ refreshed: boolean; note?: string } | { error: string }> {
-  const user = await requireUser();
-  try {
-    const r = await getPodService().refreshPodConfig(user.id, slug);
-    revalidatePath(`/dashboard/pods/${slug}`);
-    return r;
-  } catch (e) {
-    log.error("refresh_pod_config_failed", { userId: user.id, podId: slug, err: e });
-    return { error: message(e) };
-  }
-}
-
 /**
  * Add a second agent (a DIFFERENT type) to a running pod — multi-agent slice 3.
  * The control plane enforces the rules (different type, env-declared, running,

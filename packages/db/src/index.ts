@@ -17,7 +17,7 @@ export * from "./schema.js"; // user, session, account, verification, schema, Sc
 // and Database type come from. Importing them straight from "drizzle-orm" pulls a
 // second, peer-hash-differentiated instance whose SQL<> type is nominally
 // incompatible — the source of the control-plane tsc clash. One instance, one type.
-export { and, eq, or, not, sql, inArray, desc, asc, gt, gte, lt, lte, isNull } from "drizzle-orm";
+export { and, eq, or, not, sql, inArray, desc, asc, gt, gte, lt, lte, isNull, isNotNull } from "drizzle-orm";
 
 /** Unified DB type used across the app (both drivers satisfy this query surface). */
 export type Database = PgliteDatabase<typeof schema>;

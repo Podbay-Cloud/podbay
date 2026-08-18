@@ -36,6 +36,8 @@ function sample(id: string, ownerId: string, over: Partial<PodRecord> = {}): Pod
     // The authoritative pod→machine link + the image it runs (migration 0012).
     machineId: "d5683049f12345",
     imageDigest: "sha256:deadbeef",
+    // Hash of the last-delivered config layer (migration 0045) — a real value to exercise round-trip.
+    configHash: "a".repeat(64),
     // Durable image-update progress (migration 0021).
     updatingSince: "2026-01-02T03:04:05.000Z",
     maintenanceKind: "resize" as const,

@@ -7,6 +7,7 @@ import AutoRefresh from "@/components/auto-refresh";
 import DashboardPage from "@/components/dashboard-page";
 import SlotMeter from "@/components/slot-meter";
 import { editionOss } from "@/lib/session";
+import { sameDigest } from "@/lib/pod-image";
 import { Button } from "@/components/ui/button";
 import { getEnvironmentDetail } from "@/lib/environments";
 import { isAdmin } from "@/lib/access-rules";
@@ -49,7 +50,7 @@ export default async function Dashboard() {
   const updateReady = (p: (typeof pods)[number]): boolean => {
     if (isUpdating(p)) return false;
     const pin = p.provider === "incus" ? incusPin : flyPin;
-    return Boolean(pin && p.imageDigest && p.imageDigest !== pin);
+    return Boolean(pin && p.imageDigest && !sameDigest(p.imageDigest, pin));
   };
 
   // Which of the on-screen envs declare secrets — resolve each distinct env once

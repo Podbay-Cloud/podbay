@@ -12,7 +12,6 @@ import {
   renamePod,
   setPodPreviewPublic,
   setPodAutoUpdate,
-  refreshPodConfig,
   updatePodImage,
   podUpdateProgress,
   resizePod,
@@ -316,8 +315,6 @@ export default function PodCockpit(props: PodCockpitProps) {
 
   const [previewPublic, setPreviewPub] = useState(props.previewPublic);
   const [autoUpdate, setAutoUpdateState] = useState<"inherit" | "off">(props.autoUpdate ?? "inherit");
-  const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
-  const [refreshing, startRefresh] = useTransition();
   const [walkthroughDone, setWalkthroughDone] = useState(false);
   // "Replay walkthrough" (from Details) forces the tour once more this session even
   // though the per-user flag says seen. Reset when the tour finishes.
@@ -1411,38 +1408,10 @@ export default function PodCockpit(props: PodCockpitProps) {
             </SettingRow>
           )}
 
-          {/* Live config-refresh: pull the latest rules/skills/settings into this running pod
-              WITHOUT a restart. Both editions; only meaningful while the pod is up. */}
-          {status === "running" && (
-            <SettingRow
-              label="Sync config"
-              desc={
-                refreshMsg ??
-                "Pull the latest rules, skills & settings into this pod — no restart, the agent keeps running"
-              }
-            >
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={refreshing || updating}
-                onClick={() => {
-                  setRefreshMsg(null);
-                  startRefresh(async () => {
-                    const r = await refreshPodConfig(slug);
-                    setRefreshMsg(
-                      "error" in r
-                        ? r.error
-                        : r.refreshed
-                          ? "Synced — live changes apply now; rules apply at the next compaction."
-                          : r.note ?? "Delivered; update this pod to apply in place.",
-                    );
-                  });
-                }}
-              >
-                {refreshing ? "Syncing…" : "Sync now"}
-              </Button>
-            </SettingRow>
-          )}
+          {/* Config now syncs AUTOMATICALLY: the reconcile sweep detects when this running pod has
+              drifted from the env's current .claude/skills/settings layer and re-applies it in place,
+              no button and no restart (control-plane reconcileConfigDrift). So there is no manual
+              "Sync config" control here anymore. */}
 
           {/* Claude Code's own settings (attribution, unattended timeouts, auto-compact) — only
               when Claude runs here and the pod is up (the editor reads/writes ~/.claude in the pod). */}

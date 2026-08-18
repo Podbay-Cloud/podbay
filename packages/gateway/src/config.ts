@@ -26,6 +26,8 @@ export interface RelayAuthority {
   heartbeat(ownerId: string): Promise<void>;
   /** The socket closed and we know it. */
   markDisconnected(ownerId: string): Promise<void>;
+  /** Reap connection rows disconnected longer than `olderThanMs`; returns how many were removed. */
+  reapStaleConnections(olderThanMs: number): Promise<number>;
 }
 
 export interface GatewayConfig {

@@ -3,6 +3,7 @@ import { usageByPod, type PodUsage, type PodRecord, type PodEvent } from "@podba
 import { POD_TIERS, isPodSize } from "@podbay/shared";
 import { getPodService, isProvisioningEnabled } from "./pod-service";
 import { requireAdmin } from "./access";
+import { sameDigest } from "./pod-image";
 
 /** Billing slots for a pod (docs/strategy/pricing-model.md): 1 slot ≈ 4 GB RAM. S=1/M=2/L=4. */
 function slotsFor(size: string): number {
@@ -173,7 +174,7 @@ export async function getFleet(now = Date.now()): Promise<Fleet> {
       machineCount: machineCounts.get(pod.id) ?? 0,
       stale: (() => {
         const pin = pinnedDigestFor(pod.provider);
-        return Boolean(pin && pod.imageDigest && pod.imageDigest !== pin);
+        return Boolean(pin && pod.imageDigest && !sameDigest(pod.imageDigest, pin));
       })(),
       slots,
       estUsd: slots * USD_PER_SLOT,
@@ -199,7 +200,7 @@ export async function getFleet(now = Date.now()): Promise<Fleet> {
     .map(([digest, count]) => ({
       digest: digest || null,
       count,
-      isCurrent: Boolean(currentDigest && digest === currentDigest),
+      isCurrent: Boolean(currentDigest && sameDigest(digest, currentDigest)),
     }))
     .sort((a, b) => Number(b.isCurrent) - Number(a.isCurrent) || b.count - a.count);
 

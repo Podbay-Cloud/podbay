@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { closeSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, writeFileSync } from "node:fs";
 
 /**
  * Supervision for the pod's long-running NON-agent processes: the dev server and the
@@ -32,13 +32,26 @@ export interface StartupProcess {
   probePort?: number;
 }
 
+/** Durable opt-out for the auto dev server. A pod that serves its OWN `:3000` (a production
+ * `next start` via `podbay startup`, say) must be able to stop podbay from also launching `pnpm dev`
+ * on the same port — otherwise the two race and `next dev` clobbers the prod `.next` in place (the
+ * makore.app outage, 2026-08-18). `podbay dev disable` writes this file; `enable` removes it. Under
+ * `~/.podbay` so it survives every restart (home persists). */
+export function devServerDisabledPath(home: string): string {
+  return `${home}/.podbay/dev-server-disabled`;
+}
+
 /** The dev-server special case (same file layout init.sh uses). Present only when the
- * workspace declares a `dev` script — mirroring init.sh's own guard. */
+ * workspace declares a `dev` script AND the durable disable flag is absent — mirroring init.sh's
+ * own guards, so the supervisor and boot agree on exactly one owner of `:3000`. */
 export function devServerProcess(
   home: string,
   work: string,
   readFile: (p: string) => string = (p) => readFileSync(p, "utf8"),
+  exists: (p: string) => boolean = existsSync,
 ): StartupProcess | null {
+  // Durably disabled (the pod serves its own :3000) → not ours to run or supervise.
+  if (exists(devServerDisabledPath(home))) return null;
   try {
     const pkg = JSON.parse(readFile(`${work}/package.json`)) as { scripts?: Record<string, unknown> };
     if (typeof pkg.scripts?.dev !== "string") return null;

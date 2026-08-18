@@ -1,12 +1,16 @@
 import type { MetadataRoute } from "next";
 import { getAllPosts } from "@/lib/blog";
 import { docsSource } from "@/lib/docs-source";
+import { editionOss } from "@/lib/session";
 
 const BASE = "https://podbay.cloud";
 
 /** Public, indexable routes only — auth-gated (/dashboard, /new, /pending, /pods) and internal
  * (/api, /admin, /preview, /dev-harness) routes are excluded here and disallowed in robots.ts. */
 export default function sitemap(): MetadataRoute.Sitemap {
+  // Self-host (OSS) has no public podbay.cloud marketing surface to advertise — emit nothing rather
+  // than list podbay.cloud URLs on the owner's own domain. (robots.ts also disallows all in OSS.)
+  if (editionOss()) return [];
   const now = new Date();
   const staticRoutes: MetadataRoute.Sitemap = [
     { url: BASE, lastModified: now, changeFrequency: "weekly", priority: 1 },

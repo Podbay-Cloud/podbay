@@ -1,9 +1,11 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { createNeonDb, createAppDb, schema } from "@podbay/db";
-import { notifySignup } from "./notify.js";
+import { notifySignup, sendNewRequestEmail } from "./notify.js";
+import { mintActionToken } from "./action-token.js";
 
 export * from "./notify.js";
+export * from "./action-token.js";
 
 /**
  * Shared better-auth configuration + session helpers, used by both apps/web and
@@ -144,10 +146,26 @@ export function createAuth(env: AuthEnv) {
                 },
               }
             : {}),
-          after: async (created: { name?: string | null; email: string }) => {
+          after: async (created: { id: string; name?: string | null; email: string }) => {
             // No ops mailbox to notify on a self-host install — the "signup" is just the owner.
             if (oss) return;
             await notifySignup({ name: created.name, email: created.email });
+            // Email the operator a new-request alert with ONE-CLICK Approve / Later links (each a
+            // capability token only the server could mint). Best-effort — sendNewRequestEmail no-ops
+            // if Gmail isn't configured; nothing here may fail the signup.
+            const adminEmail =
+              process.env.PODBAY_ADMIN_NOTIFY_EMAIL ||
+              process.env.ADMIN_EMAILS?.split(",")[0]?.trim();
+            if (adminEmail) {
+              const base = (process.env.PODBAY_PUBLIC_URL || "https://podbay.cloud").replace(/\/+$/, "");
+              const link = (a: "approve" | "later"): string =>
+                `${base}/admin/quick?t=${encodeURIComponent(mintActionToken(a, created.id, Date.now()))}`;
+              await sendNewRequestEmail(
+                adminEmail,
+                { name: created.name, email: created.email },
+                { approveUrl: link("approve"), laterUrl: link("later") },
+              );
+            }
           },
         },
       },

@@ -147,3 +147,65 @@ present an authenticated visitor with a route to their dashboard instead of anot
 - **WHEN** they open the landing page or act on its primary call to action
 - **THEN** the landing SHALL identify the dashboard as their next action and route them there
 
+### Requirement: Deferred ("Later") requests
+
+An admin SHALL be able to set a pending request aside for later without approving or losing it. A
+deferred request carries a persisted `deferredAt` timestamp, remains unapproved (pending access), and
+SHALL be listed separately from the still-to-triage queue so the admin can return to it. Approving a
+request SHALL clear its deferred state.
+
+#### Scenario: Admin defers a pending request
+
+- **WHEN** an admin sets a pending user aside for later
+- **THEN** that user SHALL be marked deferred (a `deferredAt` timestamp is recorded), SHALL remain
+  unapproved, and SHALL move out of the primary pending list into a separate "Later" list
+
+#### Scenario: Deferred request can be moved back
+
+- **WHEN** an admin moves a deferred user back
+- **THEN** the deferred mark SHALL be cleared and the user SHALL reappear in the primary pending list
+
+#### Scenario: Approving clears the deferred mark
+
+- **WHEN** an admin approves a user who was deferred
+- **THEN** the user SHALL become approved and the deferred mark SHALL be cleared
+
+### Requirement: New-request operator email with one-click actions
+
+When a new access request arrives and an email provider is configured, the system SHALL email the
+configured operator address an alert identifying the requester that carries two one-click links —
+approve, and set-aside-for-later. Each link SHALL embed an unforgeable, server-minted, expiring
+capability token that encodes exactly one action for exactly one requester; the link SHALL require
+no admin session because the token itself is the authorization, and SHALL be usable only to action
+the single requester it encodes. Following the approve link SHALL approve that requester (and email
+them their invite, per the approval-email rules); following the later link SHALL defer them. A
+tampered, expired, or wrong-key token SHALL perform no action. This email is best-effort — when no
+operator address or no email provider is configured, sign-up SHALL still succeed with no error.
+
+#### Scenario: Operator is emailed with approve + later links on a new request
+
+- **WHEN** a new user signs up, an operator address is configured, and an email provider is configured
+- **THEN** the operator SHALL receive an email identifying the requester with a one-click approve link
+  and a one-click later link
+
+#### Scenario: One-click approve link approves without a session
+
+- **WHEN** the operator follows the approve link (carrying a valid token) while not signed in as an admin
+- **THEN** the encoded requester SHALL be approved (and emailed their invite on the first approval)
+
+#### Scenario: One-click later link defers the requester
+
+- **WHEN** the operator follows the later link carrying a valid token
+- **THEN** the encoded requester SHALL be marked deferred
+
+#### Scenario: A tampered or expired token does nothing
+
+- **WHEN** a one-click link is followed with a token that is tampered, expired, or minted under a
+  different key
+- **THEN** no approval or deferral SHALL occur and the request SHALL be left unchanged
+
+#### Scenario: Unconfigured operator email is a no-op
+
+- **WHEN** a new user signs up and either no operator address or no email provider is configured
+- **THEN** sign-up SHALL succeed without attempting to email the operator
+

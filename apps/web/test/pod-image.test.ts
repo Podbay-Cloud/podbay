@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { imageState, shortDigest } from "@/lib/pod-image";
+import { imageState, shortDigest, sameDigest } from "@/lib/pod-image";
 
 const pod = (over: Record<string, unknown> = {}) =>
   ({ provider: "incus", imageDigest: "abc", updatingSince: null, ...over }) as never;
@@ -44,5 +44,31 @@ describe("digests are quoted the same way everywhere", () => {
   });
   it("never renders 'undefined'", () => {
     expect(shortDigest(null)).toBe("—");
+  });
+});
+
+describe("sameDigest matches across digest FORMS (the 'nothing changed' bug)", () => {
+  const short = "31c374efda9a";
+  const full = "31c374efda9a5fbc750f2efd0ca9b794332d56def04a991601e6e9abb9fc70e3";
+  it("a 12-char pin/pod digest equals the full 64-char manifest digest of the same image", () => {
+    // The exact scenario: pin/pod = 12-char, pod_base_images manifest = 64-char. Raw === was false,
+    // so the update range came back empty → "nothing changed" for a real build.
+    expect(sameDigest(short, full)).toBe(true);
+    expect(sameDigest(full, short)).toBe(true);
+  });
+  it("also handles a sha256: OCI form of the same image", () => {
+    expect(sameDigest(`sha256:${full}`, short)).toBe(true);
+  });
+  it("different images do not match", () => {
+    expect(sameDigest(short, "9378fecc3f6261ace00d2c87246d8d0e3021c3172a87accef8e90cce5369879e")).toBe(false);
+  });
+  it("null/undefined never matches (no false 'up to date')", () => {
+    expect(sameDigest(null, full)).toBe(false);
+    expect(sameDigest(short, undefined)).toBe(false);
+  });
+  it("imageState: a full-digest pod on the current image is NOT falsely 'behind' a 12-char pin", () => {
+    process.env.PODBAY_INCUS_IMAGE_DIGEST = short;
+    const s = imageState({ provider: "incus", imageDigest: full, updatingSince: null });
+    expect(s.behind).toBe(false); // was TRUE with raw !== → false "update available"
   });
 });

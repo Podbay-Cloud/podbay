@@ -78,6 +78,18 @@ export function RelayStatus({ initial, settingsHref }: { initial: MyRelayLive; s
         <span className={`h-2 w-2 rounded-full ${failing ? "bg-destructive" : "bg-success"}`} />
         {failing ? "Relay failure" : "Connected"}
       </span>
+      {/* Recent-drop warning: the link is up NOW but flapped recently — the instability that used to
+          be invisible ("connected, 0 errors"). Gated on RECENCY (dropCount is cumulative-forever), so
+          a link that's been stable for a while shows nothing. Total drops ride the tooltip. */}
+      {live.lastDroppedAt &&
+        Date.now() - Date.parse(live.lastDroppedAt) < 15 * 60_000 && (
+          <span
+            className="text-[11px] text-amber-500"
+            title={`${live.dropCount} drop${live.dropCount === 1 ? "" : "s"} total — the relay link is flapping`}
+          >
+            dropped {Math.max(1, Math.round((Date.now() - Date.parse(live.lastDroppedAt)) / 60_000))}m ago · unstable
+          </span>
+        )}
       {/* Usage only when there's something to say. A healthy, idle relay is just
           "Connected" — no clutter. The row's desc already says "through your
           computer", so the number stands alone. */}

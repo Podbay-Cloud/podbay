@@ -78,6 +78,27 @@ describe("updatableIdlePods — bulk idle-update eligibility", () => {
     expect(await svc.updatableIdlePods("u1", PIN, DWELL)).toEqual([]);
   });
 
+  it("INCLUDES a codex-only idle pod (Claude agentStatus null, codex idle) — was wrongly skipped", async () => {
+    const id = await makePod("u1");
+    provider.agentStatusResult = null; // no Claude session
+    provider.codexStatusResult = "idle"; // codex is idle
+    expect(await svc.updatableIdlePods("u1", PIN, DWELL)).toEqual([id]);
+  });
+
+  it("excludes a pod whose CODEX is busy even if Claude reads idle (don't interrupt codex)", async () => {
+    await makePod("u1");
+    provider.agentStatusResult = "idle";
+    provider.codexStatusResult = "busy";
+    expect(await svc.updatableIdlePods("u1", PIN, DWELL)).toEqual([]);
+  });
+
+  it("excludes a pod with NO agent signal at all (neither idle) — stays conservative", async () => {
+    await makePod("u1");
+    provider.agentStatusResult = null;
+    provider.codexStatusResult = null;
+    expect(await svc.updatableIdlePods("u1", PIN, DWELL)).toEqual([]);
+  });
+
   it("excludes a pod idle for LESS than the dwell (a pause between turns)", async () => {
     await makePod("u1", { lastActiveAt: new Date().toISOString() });
     expect(await svc.updatableIdlePods("u1", PIN, DWELL)).toEqual([]);

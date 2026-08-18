@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@podbay/db": "workspace:*",
+    "@podbay/shared": "workspace:*",
     "better-auth": "^1.6.23"
   },
   "devDependencies": {

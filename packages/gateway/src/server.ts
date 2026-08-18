@@ -6,6 +6,7 @@ import { TunnelRouter } from "./relay-tunnel-router.js";
 import { RelayRegistry } from "./relay-registry.js";
 import { ControlError } from "@podbay/control-plane";
 import { createLogger, type Logger } from "@podbay/shared/log";
+import { attachHeartbeat, type HeartbeatSocket } from "@podbay/shared/heartbeat";
 import { isAgentMessage, type AgentMessage } from "@podbay/shared/protocol";
 import type { GatewayConfig } from "./config.js";
 
@@ -52,6 +53,13 @@ function stripAnsi(s: string): string {
   return s.replace(ANSI_RE, "");
 }
 
+/** A relay row disconnected longer than this is reaped — long enough that the cockpit's flap history
+ * stays useful for a while after a drop, short enough that ancient dead rows don't accumulate. */
+const RELAY_STALE_CONNECTION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+/** How often the reaper is allowed to run (it rides the frequent idle tick, but the cleanup is
+ * daily-scale, so most ticks skip it). */
+const RELAY_REAP_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+
 /** Extract the Codex one-time device sign-in code from a buffer of terminal output,
  * or null. Gated on the unambiguous `codex/device` marker so it only matches during a
  * Codex device login (never a stray XXXX-XXXXX token). Caller strips ANSI first.
@@ -78,6 +86,9 @@ export class GatewayServer {
   private reconcileTimer?: ReturnType<typeof setInterval>;
   private relayTimer?: ReturnType<typeof setInterval>;
   private reconcileCursor = 0;
+  /** Last time we reaped long-dead relay rows (throttle — the idle tick fires far more often than a
+   * daily-scale cleanup needs). 0 ⇒ reap on the first tick after boot. */
+  private lastRelayReapAt = 0;
   private readonly opts: Required<
     Pick<
       GatewayConfig,
@@ -424,21 +435,57 @@ export class GatewayServer {
         // "working" instead of only "connected". Fire-and-forget: a failed probe is a
         // dashboard signal, never a reason to refuse the relay.
         void this.tunnels?.canary(ownerId).catch(() => undefined);
-        const hb = setInterval(() => void auth.heartbeat(ownerId!).catch(() => undefined), 30_000);
-        if (typeof hb.unref === "function") hb.unref();
+        // Liveness heartbeat ON THE RELAY SOCKET. The gateway previously had NONE — it kept a
+        // blind 30s timer bumping the DB "last seen" whether or not the socket was alive, so a
+        // HALF-OPEN link (Mac sleep/wake, a residential blip; no FIN/RST) read as "connected"
+        // indefinitely. Pods then sent into a dead pipe and timed out for minutes with ZERO errors
+        // surfaced (root cause, 2026-08-18). Now: ping/pong DETECTS the half-open; `onAlive` drives
+        // the DB freshness from REAL pongs (not a timer that lies); `onDead` records the outage; and
+        // terminate() → the `close` handler below runs the existing cleanup + reconnect. A slightly
+        // tolerant window (15s/10s) avoids false-positive flapping on a jittery home uplink.
+        let lastBeat = 0;
+        // Diagnostic (2026-08-18): WHY does a relay flap? `gatewayKilled` = our own heartbeat found
+        // the link half-open and terminate()d it; combined with the WS close CODE it tells us the
+        // cause WITHOUT the owner's Mac logs: gatewayKilled → the pods-timing-out half-open case;
+        // code 1006 + !gatewayKilled → the MAC killed it abruptly (its own aggressive heartbeat, or a
+        // network death); code 1001 → clean going-away (sleep/quit); `sinceMs` = link uptime.
+        let gatewayKilled = false;
+        const openedAt = Date.now();
+        const stopHb = attachHeartbeat(ws as unknown as HeartbeatSocket, {
+          pingIntervalMs: 15_000,
+          pongTimeoutMs: 10_000,
+          onAlive: () => {
+            const t = Date.now();
+            if (t - lastBeat < 20_000) return; // real traffic fires this often — don't spam the DB
+            lastBeat = t;
+            void auth.heartbeat(ownerId!).catch(() => undefined);
+          },
+          onDead: () => {
+            gatewayKilled = true;
+            this.log.warn("relay_half_open", { ownerId });
+          },
+        });
 
-        ws.on("close", () => {
-          clearInterval(hb);
+        ws.on("close", (code?: number, reason?: unknown) => {
+          stopHb();
           this.relays!.disconnect(ownerId!, link);
           // Every tunnelled stream of this owner's is now unreachable — close them at
           // the pod rather than leaving apps hanging on a relay that is gone.
           this.tunnels?.dropOwner(ownerId!);
+          // markDisconnected records the drop (owner-visible outage history) as well as clearing
+          // the connected state.
           void auth.markDisconnected(ownerId!).catch(() => undefined);
           this.broadcastRelayState(ownerId!, false, []);
-          this.log.info("relay_disconnected", { ownerId });
+          this.log.info("relay_disconnected", {
+            ownerId,
+            code,
+            reason: String(reason ?? "").slice(0, 80) || undefined,
+            gatewayKilled,
+            sinceMs: Date.now() - openedAt,
+          });
         });
         ws.on("error", () => {
-          clearInterval(hb);
+          stopHb();
           this.relays!.disconnect(ownerId!, link);
           this.tunnels?.dropOwner(ownerId!);
         });
@@ -908,6 +955,18 @@ export class GatewayServer {
     );
   }
 
+  /** Reap relay connection rows that have been disconnected for a long time (a relay paired once and
+   * never returned, or an owner since deleted) — so the table holds live/recently-flapped relays, not
+   * ancient dead ones. Throttled to at most once per REAP_INTERVAL since a long-dead row is not urgent.
+   * No-op when relay auth isn't configured (OSS). Returns how many were removed this call. */
+  async sweepRelayReap(now = Date.now()): Promise<number> {
+    const auth = this.config.relayAuthority;
+    if (!auth) return 0;
+    if (now - this.lastRelayReapAt < RELAY_REAP_INTERVAL_MS) return 0;
+    this.lastRelayReapAt = now;
+    return auth.reapStaleConnections(RELAY_STALE_CONNECTION_TTL_MS);
+  }
+
   /**
    * Refresh pod status against the provider, a slice per tick.
    *
@@ -945,6 +1004,7 @@ export class GatewayServer {
     this.idleTimer = setInterval(() => {
       void this.sweepIdle().catch(() => undefined);
       void this.sweepMaintenance().catch(() => undefined);
+      void this.sweepRelayReap().catch(() => undefined); // self-throttled; no-op without relay auth
     }, this.opts.tickMs);
     let reconcileRunning = false;
     // Drain relay queues on a short tick: a request held back for pacing must go out

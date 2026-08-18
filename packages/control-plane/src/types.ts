@@ -117,6 +117,11 @@ export interface PodRecord {
   /** Image digest the machine runs; written at create + at update. Drives "update
    * available" without a live Fly call, and the backoffice fleet-drift view. */
   imageDigest: string | null;
+  /** Hash of the config layer (.claude/skills/permissions) LAST DELIVERED to this pod —
+   * set at create, image-update, and every live config-refresh. The reconcile sweep
+   * compares it to the env's current resolved layer to auto-sync a running pod on drift.
+   * Null on legacy rows and until the first delivery records one. */
+  configHash: string | null;
   /** Durable image-update progress. `updatingSince` (ISO) is set when an update
    * starts and cleared when it finishes/fails; while non-null the pod is updating,
    * whatever imageDigest still says. `updateStage` is the coarse phase for display.

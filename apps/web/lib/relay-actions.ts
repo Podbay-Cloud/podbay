@@ -45,7 +45,12 @@ export async function mintRelayCommand(): Promise<RelayCommand> {
 }
 
 /** Whether the signed-in owner has a relay connected right now, and for which sites. */
-export async function myRelayStatus(): Promise<{ connected: boolean; loginDomains: string[] }> {
+export async function myRelayStatus(): Promise<{
+  connected: boolean;
+  loginDomains: string[];
+  dropCount: number;
+  lastDroppedAt: string | null;
+}> {
   const user = await requireApprovedUser();
   return relayService().isConnected(user.id);
 }
@@ -86,6 +91,11 @@ function gatewayHttpBase(): string | null {
 export interface MyRelayLive {
   connected: boolean;
   loginDomains: string[];
+  /** Relay-liveness observability (2026-08-18): how many times the relay has dropped/flapped, and
+   * when it last dropped. Surfaces a flapping link that used to be invisible ("connected, 0 errors").
+   * Survives reconnects, so it shows history even while currently connected. */
+  dropCount: number;
+  lastDroppedAt: string | null;
   health: TunnelHealth | null;
   /** Open now + totals since the gateway started. Null when not connected. The per-site
    * breakdown deliberately stays on the owner's machine (`relay dashboard`). */

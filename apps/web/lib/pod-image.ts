@@ -33,9 +33,24 @@ export function imageState(
   pod: Pick<PodRecord, "provider" | "imageDigest" | "updatingSince">,
 ): ImageState {
   const pinned = pinnedDigest(pod.provider);
-  const behind = Boolean(pinned && pod.imageDigest && pod.imageDigest !== pinned);
+  const behind = Boolean(pinned && pod.imageDigest && !sameDigest(pod.imageDigest, pinned));
   const updating = Boolean(pod.updatingSince);
   return { pinned, behind, updating, showUpdate: behind || updating };
+}
+
+/**
+ * Do two image digests identify the SAME image, even in different forms?
+ *
+ * A single incus image appears as a 12-char fingerprint prefix (the `PODBAY_INCUS_IMAGE_DIGEST`
+ * pin, and some pod rows), a full 64-char fingerprint (the `pod_base_images` manifest, and other pod
+ * rows), or a `sha256:`-prefixed OCI digest. Raw `===` across those forms is ALWAYS false — which is
+ * the bug behind a pod showing "update available" that then says "nothing changed" (a 12-char pin
+ * never equals a 64-char manifest digest, so the update-info range comes back empty). Compare the
+ * canonical short form instead.
+ */
+export function sameDigest(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  return shortDigest(a) === shortDigest(b);
 }
 
 /**

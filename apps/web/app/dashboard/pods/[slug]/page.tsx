@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { requireApprovedUser } from "@/lib/access";
 import { getPodService, localPreviewUrl, hostCapacity, latestPodImageDigest } from "@/lib/pod-service";
 import { myRelayLive } from "@/lib/relay-actions";
-import { imageState } from "@/lib/pod-image";
+import { imageState, sameDigest } from "@/lib/pod-image";
 import { getEnvironmentDetail } from "@/lib/environments";
 import { imageByDigest, listImages } from "@/lib/image-manifest";
 import { ControlError } from "@podbay/control-plane";
@@ -125,7 +125,14 @@ export default async function PodCockpitPage({ params }: { params: Promise<{ slu
     svc.podAdminActions(user.id, pod.id).catch(() => []),
     // The owner's relay (their machine) — connected?, signed-in sites, tunnel health,
     // usage — in one shape the cockpit then POLLS to stay near-realtime.
-    myRelayLive().catch(() => ({ connected: false, loginDomains: [] as string[], health: null, usage: null })),
+    myRelayLive().catch(() => ({
+      connected: false,
+      loginDomains: [] as string[],
+      dropCount: 0,
+      lastDroppedAt: null,
+      health: null,
+      usage: null,
+    })),
   ]);
   // "Update available" without a live provider call: compare the digest recorded
   // on the row against the image we pin NOW — per provider, since a Fly OCI digest
@@ -139,7 +146,7 @@ export default async function PodCockpitPage({ params }: { params: Promise<{ slu
   // from the pod-base tag currently pulled on the host (the owner refreshes it with a compose pull).
   const ossLatestDigest = editionOss() ? await latestPodImageDigest() : null;
   const updateAvailable = editionOss()
-    ? Boolean(pod.imageDigest && ossLatestDigest && pod.imageDigest !== ossLatestDigest)
+    ? Boolean(pod.imageDigest && ossLatestDigest && !sameDigest(pod.imageDigest, ossLatestDigest))
     : cloudUpdateAvailable;
 
   // A recent unplanned incident (OOM, crash, wedged) to surface at the top of the pod's
@@ -161,16 +168,19 @@ export default async function PodCockpitPage({ params }: { params: Promise<{ slu
   const allImages = updateAvailable
     ? await listImages().catch(() => [] as Awaited<ReturnType<typeof listImages>>)
     : [];
-  const targetImage = pinned ? (allImages.find((i) => i.digest === pinned) ?? null) : null;
+  // Match on the CANONICAL short form: the pin + some pod rows are 12-char fingerprints while the
+  // manifest stores the full 64-char digest, so a raw `i.digest === pinned` never matched — the range
+  // came back empty and the modal wrongly said "nothing changed" for a real build (2026-08-18).
+  const targetImage = pinned ? (allImages.find((i) => sameDigest(i.digest, pinned)) ?? null) : null;
   const currentImageRow = pod.imageDigest
-    ? (allImages.find((i) => i.digest === pod.imageDigest) ?? null)
+    ? (allImages.find((i) => sameDigest(i.digest, pod.imageDigest)) ?? null)
     : null;
   // The range: builds newer than the pod's current one, up to and including target.
   // listImages is newest-first, so that's slice(target .. current). If the current
   // build isn't in the manifest (pre-manifest), fall back to just the target.
-  const targetIdx = pinned ? allImages.findIndex((i) => i.digest === pinned) : -1;
+  const targetIdx = pinned ? allImages.findIndex((i) => sameDigest(i.digest, pinned)) : -1;
   const currentIdx = pod.imageDigest
-    ? allImages.findIndex((i) => i.digest === pod.imageDigest)
+    ? allImages.findIndex((i) => sameDigest(i.digest, pod.imageDigest))
     : -1;
   const rangeRows =
     targetIdx >= 0 && currentIdx > targetIdx

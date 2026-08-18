@@ -66,17 +66,22 @@ export default function RootLayout({
     ],
   };
 
+  // A self-host (OSS) install is a private single-tenant box, not the podbay.cloud product — it must
+  // not emit podbay.cloud marketing structured data, cookie consent, or analytics.
+  const oss = editionOss();
   return (
     <html lang="en" className={inter.variable}>
       <body>
-        <script
-          type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
-        />
+        {!oss && (
+          <script
+            type="application/ld+json"
+            dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+          />
+        )}
         {children}
         {/* Cookie consent + analytics are cloud-only — a single-tenant self-host install sets no
             third-party cookies and ships no analytics, so there's nothing to consent to. */}
-        {!editionOss() && (
+        {!oss && (
           <>
             <ConsentBanner />
             <GoogleAnalytics />

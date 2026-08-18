@@ -464,7 +464,9 @@ SHALL NOT appear in the OSS edition.
 
 A pod is **update-eligible** for this control when ALL hold: it is behind the current pinned image
 (its recorded `imageDigest` differs from the provider's pin), it is `running` and not already
-updating, its agent reports `idle` (not busy/waiting/shell), it has had no real activity for a fixed
+updating, its agent(s) are idle — at least one reports `idle` and NONE is busy/waiting/shell (so a
+codex-only pod counts on its codex status, and a busy codex blocks even when Claude reads idle) — it
+has had no real activity for a fixed
 idle dwell (≈10 minutes, so a pod merely paused between turns is not interrupted mid-task), and it is
 not excluded from auto-update (`autoUpdate !== "off"`). The control SHALL render only when at least
 one pod is eligible, and its label SHALL carry the count.
@@ -516,28 +518,29 @@ NOT appear in the OSS edition.
 - **THEN** the pod is durably marked `autoUpdate: "off"` and is skipped by the bulk idle-update
   action, while remaining individually updatable from its own Update control
 
-### Requirement: A running pod's config can be refreshed in place without a restart
+### Requirement: A running pod's config is kept in sync automatically, without a restart
 
-The pod Settings tab SHALL offer a "Sync config" control (both editions) that pushes the CURRENT
-pod-base + env content — the `.claude` layer, skills, the managed `settings.json` slice, and rules —
-into the RUNNING pod and re-applies it WITHOUT recreating the instance or restarting the agent. The
-control plane recomputes the layer fresh (as an image update does) and delivers it via the provider's
-in-place refresh; the pod applies it with the same idempotent, never-clobber-a-user-edit logic used
-at boot. Live-reloadable layers (permissions/hooks, skills) reach the running agent at once; rules in
-`CLAUDE.md` apply at the agent's next compaction. A pod on an image that predates the in-pod refresh
-reports that the content was delivered but needs an update to apply. Only meaningful while the pod is
-running; the control refuses otherwise. See docs/plans/live-config-refresh.md.
+A running pod's config layer — the `.claude` layer, skills, the managed `settings.json` slice, and
+rules — SHALL be kept current AUTOMATICALLY: when it drifts from the env's current resolved layer
+(because the env changed or a newer pod-base shipped), the control plane SHALL re-apply the current
+layer in place WITHOUT recreating the instance or restarting the agent, with no owner action. The
+re-apply uses the same idempotent, never-clobber-a-user-edit logic used at boot; live-reloadable
+layers (permissions/hooks, skills) reach the running agent at once, while rules in `CLAUDE.md` apply
+at the agent's next compaction. A pod on an image that predates the in-pod refresh has the content
+delivered but needs an image update to apply it. There SHALL be no manual "Sync config" button — the
+sync is a background reconcile behavior, not an owner control. (Mechanism: openspec control-plane
+"Automatic config-drift reconciliation".)
 
-#### Scenario: Owner syncs a running pod
+#### Scenario: No manual sync control in pod Settings
 
-- **WHEN** the owner activates "Sync config" on their own running pod
-- **THEN** the pod's `.claude` layer / skills / settings / rules are re-applied in place with no
-  recreate and no agent restart, and the result (applied, or delivered-pending-update) is reported
+- **WHEN** the owner opens a running pod's Settings tab
+- **THEN** there SHALL be no manual "Sync config" control — config sync is automatic
 
-#### Scenario: Pod is not running
+#### Scenario: A drifted running pod is re-synced without owner action
 
-- **WHEN** the pod is suspended or otherwise not running
-- **THEN** the refresh is refused rather than attempted
+- **WHEN** a running pod's config layer has drifted from the env's current resolved layer
+- **THEN** the current layer SHALL be re-applied in place, with no recreate and no agent restart,
+  and without any owner action
 
 ### Requirement: Restarting controls warn that a live agent session is interrupted
 
@@ -1350,6 +1353,27 @@ owner SHALL NOT have to read external documentation to decide whether to run it.
 
 - **WHEN** the owner opens the relay row's ⓘ
 - **THEN** they SHALL see what the relay does and each of its limits, without leaving the app
+
+### Requirement: The cockpit relay indicator reflects REAL liveness, not a stale flag
+
+The cockpit's relay indicator SHALL report "connected" only while the relay link is actually live —
+driven by real proof-of-life (the gateway's ping/pong on the relay socket), NOT by a timer that keeps
+asserting "connected" after the socket has gone half-open. A half-open link (owner's machine slept,
+a network blip with no FIN/RST) SHALL be detected and reflected as disconnected, so the owner is never
+shown "connected" while their pods actually time out. When the link has dropped/flapped recently, the
+indicator SHALL surface that instability (a recent-drop signal) rather than showing an unqualified
+"connected" — the flapping that was previously invisible as "connected, 0 errors."
+
+#### Scenario: The relay link goes half-open
+
+- **WHEN** the relay socket dies without a clean close (sleep/wake, network blip)
+- **THEN** the gateway's liveness heartbeat SHALL detect it within its ping/pong window and the cockpit
+  SHALL report the relay as not-connected, instead of "connected" while pod traffic silently fails
+
+#### Scenario: The relay has flapped recently
+
+- **WHEN** the relay reconnected after one or more recent drops
+- **THEN** the cockpit relay indicator SHALL surface the recent instability, not a bare "connected"
 
 ### Requirement: Relay oversight covers both consumers
 

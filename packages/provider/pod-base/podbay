@@ -627,10 +627,33 @@ cmd_startup() {
 # it's also the fix for "the API is open because a secret was added after the server booted".
 DEV_LOG=${PODBAY_DEV_LOG:-/home/dev/.podbay-dev.log}
 AGENT_URL="http://127.0.0.1:${PODBAY_AGENT_PORT:-8080}"
+# Durable "this pod serves its own :3000 — don't auto-start pnpm dev" flag (survives restarts).
+DEV_DISABLED=${PODBAY_DEV_DISABLED:-/home/dev/.podbay/dev-server-disabled}
 
 cmd_dev() {
   case "${1:-status}" in
+    disable)
+      # Durably stop podbay from auto-running `pnpm dev` on :3000 — for a pod that serves its OWN
+      # :3000 (a production `next start` via `podbay startup`). Stop the running one FIRST (while it's
+      # still supervised so the agent can kill it), THEN drop the flag so it never relaunches (this
+      # boot's supervisor, or any future boot). Survives restarts.
+      curl -fsS -m 30 -X POST -H 'content-type: application/json' --data '{"action":"stop"}' \
+        "$AGENT_URL/dev" >/dev/null 2>&1 || true
+      mkdir -p "$(dirname "$DEV_DISABLED")" && : > "$DEV_DISABLED"
+      echo "dev server DISABLED — podbay will not auto-start 'pnpm dev' on :3000 (survives restarts)."
+      echo "Re-enable with: podbay dev enable"
+      ;;
+    enable)
+      # Remove the flag FIRST so the agent sees a managed dev server again, then start it.
+      rm -f "$DEV_DISABLED"
+      curl -fsS -m 30 -X POST -H 'content-type: application/json' --data '{"action":"start"}' \
+        "$AGENT_URL/dev" >/dev/null 2>&1 || true
+      echo "dev server ENABLED — podbay will auto-start 'pnpm dev' on :3000 again."
+      ;;
     restart | stop | start)
+      if [ -f "$DEV_DISABLED" ] && [ "$1" != "stop" ]; then
+        die "dev server is disabled (podbay dev disable). Run 'podbay dev enable' first."
+      fi
       local action="$1" out
       out=$(curl -fsS -m 30 -X POST -H 'content-type: application/json' \
         --data "$(jq -nc --arg a "$action" '{action:$a}')" "$AGENT_URL/dev" 2>/dev/null) \
@@ -642,6 +665,10 @@ cmd_dev() {
       tail -n "${2:-40}" "$DEV_LOG"
       ;;
     status | "")
+      if [ -f "$DEV_DISABLED" ]; then
+        echo "dev server: DISABLED — podbay won't auto-start 'pnpm dev' on :3000 (podbay dev enable to turn back on)"
+        return 0
+      fi
       local out
       out=$(curl -fsS -m 8 "$AGENT_URL/dev" 2>/dev/null) \
         || die "the pod-agent is not reachable (try: podbay doctor)"
@@ -656,7 +683,7 @@ cmd_dev() {
           + "\n  Podbay-managed — to restart, use: podbay dev restart  (do NOT hand-kill it)"
         end'
       ;;
-    *) die "usage: podbay dev <restart | stop | start | logs [N] | status>" ;;
+    *) die "usage: podbay dev <restart | stop | start | disable | enable | logs [N] | status>" ;;
   esac
 }
 
@@ -811,7 +838,7 @@ case "${1:-info}" in
     echo "              | secrets list | secrets get KEY | secrets env | secrets request KEY [why]"
     echo "              | schedule list | schedule add --name … --at HH:MM [--tz IANA] [--days mon,wed|weekdays] --do \"…\" | schedule remove ID"
     echo "              | startup list | startup add --do \"…\" [--slug NAME] | startup restart|stop|start SLUG | startup remove SLUG"
-    echo "              | dev restart | dev stop | dev start | dev logs [N] | dev status  (the SUPERVISED dev server — never hand-kill it)"
+    echo "              | dev restart | dev stop | dev start | dev disable | dev enable | dev logs [N] | dev status  (the SUPERVISED dev server — never hand-kill it; 'disable' if this pod serves its own :3000)"
     echo "              | msg send <pod> <text> | msg inbox | msg reply <id> <text> | msg pods"
     echo "              | link <file>  (a GitHub URL the user can open — pod paths are dead links)"
     echo "              | visibility  (is this pod's preview public or owner-only? — the owner sets it in the dashboard)]" ;;

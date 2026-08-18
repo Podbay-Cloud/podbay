@@ -54,6 +54,8 @@ export interface AdminUser {
   email: string;
   name: string;
   approved: boolean;
+  /** Admin "Later": a pending request set aside to revisit (ISO), or null. */
+  deferredAt: string | null;
   createdAt: string;
 }
 
@@ -81,6 +83,7 @@ export async function listUsers(): Promise<AdminUser[]> {
       email: r.email,
       name: r.name,
       approved: effectiveApproved(r.email, r.approved),
+      deferredAt: r.deferredAt ? r.deferredAt.toISOString() : null,
       createdAt: r.createdAt.toISOString(),
     }))
     .sort((a, b) => Number(a.approved) - Number(b.approved) || a.createdAt.localeCompare(b.createdAt));
@@ -136,6 +139,7 @@ export async function listUsersDetailed(): Promise<AdminUserDetail[]> {
         email: u.email,
         name: u.name,
         approved: effectiveApproved(u.email, u.approved),
+        deferredAt: u.deferredAt ? u.deferredAt.toISOString() : null,
         emailVerified: u.emailVerified,
         createdAt: u.createdAt.toISOString(),
         lastLoginAt: latest ? latest.createdAt.toISOString() : null,

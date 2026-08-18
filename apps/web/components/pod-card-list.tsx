@@ -138,7 +138,15 @@ export default function PodCardList({
         if (!c.updateReady || c.updating || l?.updating) return false;
         if ((l?.status ?? c.status) !== "running") return false;
         if (c.autoUpdate === "off") return false;
-        if (l?.agentStatus !== "idle") return false;
+        // Idle across ALL agents (keep in sync with control-plane updatableIdlePods): a codex-only
+        // pod has a null Claude agentStatus, so requiring agentStatus==="idle" wrongly skipped it.
+        const someIdle = l?.agentStatus === "idle" || l?.codexStatus === "idle";
+        const anyBusy =
+          l?.agentStatus === "busy" ||
+          l?.agentStatus === "waiting" ||
+          l?.agentStatus === "shell" ||
+          l?.codexStatus === "busy";
+        if (!someIdle || anyBusy) return false;
         if (!c.lastActiveAtIso || now - Date.parse(c.lastActiveAtIso) < IDLE_UPDATE_DWELL_MS) return false;
         return true;
       });

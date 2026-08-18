@@ -21,6 +21,9 @@ export interface RelayConfig {
   pausedPodIds?: string[];
   blockedDomains?: string[];
   retentionDays?: 7 | 30 | 90;
+  /** Opt-in (`relay start --keep-awake`): prevent the Mac from idle-sleeping while the relay runs,
+   * for a host meant to stay online 24/7. Persisted so it survives restarts. Default off. */
+  keepAwake?: boolean;
 }
 
 const dir = () => process.env.PB_RELAY_HOME ?? path.join(homedir(), ".podbay", "relay");

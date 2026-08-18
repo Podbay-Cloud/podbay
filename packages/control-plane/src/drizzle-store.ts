@@ -31,6 +31,7 @@ function toRecord(row: Row): PodRecord {
     codexDevices: (row.codexDevices as PodRecord["codexDevices"]) ?? null,
     machineId: row.machineId,
     imageDigest: row.imageDigest,
+    configHash: row.configHash ?? null,
     updatingSince: row.updatingSince ? row.updatingSince.toISOString() : null,
     maintenanceKind: row.maintenanceKind ?? null,
     updateStage: row.updateStage ?? null,
@@ -74,6 +75,7 @@ export class DrizzlePodStore implements PodStore {
       codexDevices: record.codexDevices,
       machineId: record.machineId,
       imageDigest: record.imageDigest,
+      configHash: record.configHash ?? null,
       updatingSince: record.updatingSince ? new Date(record.updatingSince) : null,
       maintenanceKind: record.maintenanceKind ?? null,
       updateStage: record.updateStage,
@@ -133,6 +135,7 @@ export class DrizzlePodStore implements PodStore {
     if (patch.codexDevices !== undefined) set.codexDevices = patch.codexDevices;
     if (patch.machineId !== undefined) set.machineId = patch.machineId;
     if (patch.imageDigest !== undefined) set.imageDigest = patch.imageDigest;
+    if (patch.configHash !== undefined) set.configHash = patch.configHash;
     if (patch.updatingSince !== undefined)
       set.updatingSince = patch.updatingSince ? new Date(patch.updatingSince) : null;
     if (patch.maintenanceKind !== undefined) set.maintenanceKind = patch.maintenanceKind;

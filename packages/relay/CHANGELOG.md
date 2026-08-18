@@ -3,6 +3,28 @@
 All notable changes to `relay` (the Podbay relay CLI). This mirrors the package published to
 npm as [`@podbay/relay`](https://www.npmjs.com/package/@podbay/relay).
 
+## 0.2.2
+
+- **`relay start --keep-awake`** — opt-in mode for a Mac meant to stay online 24/7: while the relay
+  runs, it prevents the Mac from idle-sleeping (macOS `caffeinate -is`, auto-released when the relay
+  exits — a crash never leaves your Mac stuck awake). Persisted, so it survives restarts;
+  `--no-keep-awake` turns it back off. Off by default (a laptop should still be free to sleep). On
+  Linux/Windows it's a no-op with a note — use your power settings there. Pairs with the 0.2.1
+  heartbeat hardening: 0.2.1 stops the *self-inflicted* flaps, `--keep-awake` stops the Mac
+  idle-sleeping the link out from under a dedicated relay host.
+
+## 0.2.1
+
+- **Heartbeat hardened against macOS throttling — stops the relay dropping its OWN connection.** The
+  old liveness check terminated the gateway link after a single missed pong in a 5s window. On a Mac,
+  App Nap / Wi-Fi power-save / timer coalescing routinely delay a background process's timers past
+  that, so a perfectly healthy link got killed and reconnected on a loop (the "keeps disconnecting,
+  dashboard still says connected" reports). Now: (1) a FROZEN process (a timer tick landing far
+  overdue = the OS napped/slept us) resets and re-verifies instead of false-terminating on wake;
+  (2) it takes TWO consecutive unanswered pings, not one, to declare the link dead; (3) a more
+  tolerant 15s interval. A genuinely dead link is still caught (~30s) and reconnects; a jittery one
+  is left alone.
+
 ## 0.2.0
 
 - **Renamed: `@podbay/pb` → `@podbay/relay`, and the command `pb` → `relay`.** The tool is a relay,

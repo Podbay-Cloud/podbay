@@ -63,6 +63,27 @@ default to `pod-base` (the current monolith) so the manifest generalizes to per-
 - **THEN** the release notes SHALL be the commit summaries of `fromSha..toSha` (computed by the caller,
   which has the git checkout) and the row SHALL be persisted by the server (which has the database)
 
+### Requirement: Canonical digest form
+
+An image digest SHALL be stored and compared in ONE canonical form: the full 64-character
+lowercase-hex fingerprint (no `sha256:` prefix, never a truncated prefix). The manifest is the source
+of truth for digests, so recording SHALL reject a digest that is not a full fingerprint. The pod-base
+pin (`PODBAY_INCUS_IMAGE_DIGEST`) SHALL likewise be the full fingerprint, because the provider echoes
+the pin as each pod's recorded `image_digest`; a short pin would store short digests that cannot be
+compared against the full manifest form. Because history may still hold mixed forms, any digest
+COMPARISON SHALL normalize to a common form rather than compare raw strings, so a lingering
+short/full mismatch never yields a false "up to date" or false "update available".
+
+#### Scenario: Recording rejects a non-canonical digest
+
+- **WHEN** an image is recorded with a digest that is not a full 64-char lowercase-hex fingerprint
+- **THEN** the recording SHALL be refused rather than storing a short or prefixed digest
+
+#### Scenario: Comparison tolerates legacy mixed forms
+
+- **WHEN** a pod's stored digest and the current pin are compared and one is a short prefix of the other
+- **THEN** they SHALL be treated as equal (normalized comparison), never as a spurious difference
+
 ### Requirement: Exactly one image is current; recording promotes
 Recording a new image SHALL mark it `current` and demote the previously-current image to `superseded`,
 so at most one manifest row per `env` is `current` at a time. The current image's digest is the one

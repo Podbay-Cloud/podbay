@@ -216,6 +216,28 @@ Failures SHALL be loud in the boot log — a dead preview URL must never again b
   first-boot setup completes)
 - **THEN** the check SHALL record the failure and surface the tail of the dev log in the boot log
 
+### Requirement: The auto dev server can be durably disabled
+
+A workspace with a `dev` script is auto-served (`pnpm dev` on the preview port) at boot and supervised
+thereafter. A pod that instead serves its OWN process on the preview port (e.g. a production build via
+an agent-declared startup command) SHALL be able to durably turn the auto dev server OFF, so podbay
+does not race it for the port or overwrite its build artifacts. The opt-out SHALL be a persistent flag
+under `~/.podbay` (surviving every restart), toggled by an explicit command. While the flag is set,
+neither the boot path NOR the supervisor SHALL launch or relaunch the auto dev server, and removing
+the flag SHALL restore the normal auto-serve behavior. (Distinct from the transient `dev stop`, which
+only pauses supervision briefly.)
+
+#### Scenario: Disabled dev server is not started at boot or by the supervisor
+
+- **WHEN** the durable disable flag is present and a dev-script workspace boots (or the supervisor runs)
+- **THEN** the auto dev server SHALL NOT be launched or relaunched, leaving the preview port to the
+  pod's own process
+
+#### Scenario: Re-enabling restores the auto dev server
+
+- **WHEN** the durable disable flag is removed
+- **THEN** the auto dev server SHALL be eligible to run and be supervised as normal again
+
 ### Requirement: Agent-declared startup commands are re-launched on every boot
 
 Because a pod restart (Update, Suspend, Resize, or a host reboot) kills all running processes and

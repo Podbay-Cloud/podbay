@@ -342,6 +342,50 @@ un-migrated or in-flight history still resolves correctly.
 - **WHEN** reconciliation detects a running or suspended transition it did not itself cause
 - **THEN** it SHALL emit the corresponding lifecycle event so the timeline reflects reality
 
+### Requirement: Automatic config-drift reconciliation
+
+The control plane SHALL keep a running pod's config layer in sync with its environment's CURRENT
+resolved layer automatically, with no owner action. It SHALL record on each pod a hash of the config
+layer (the `/etc/podbay/claude/*` files plus the permissions slice) LAST DELIVERED to it — set at
+create, at image update, and at every in-place delivery. During status reconciliation of a RUNNING
+pod, when the provider supports in-place refresh, the control plane SHALL recompute the env's current
+layer hash and:
+
+- when the pod has no recorded hash (a fresh or legacy pod), BASELINE it to the current hash WITHOUT
+  delivering — the pod already carries that layer from boot;
+- when the recorded hash differs from the current hash (real drift), DELIVER the current layer in
+  place via the provider's refresh, record the new hash, and emit a `config_refreshed` event marked
+  automatic;
+- when they are equal, do nothing.
+
+The delivery SHALL be best-effort and MUST NOT fail reconciliation; an env that no longer resolves
+SHALL be skipped (nothing delivered, nothing recorded). A pod whose refresh keeps failing SHALL be
+rate-limited so it is not re-attempted on every sweep. This behavior replaces any manual "sync
+config" action.
+
+#### Scenario: Fresh pod is baselined without a delivery
+
+- **WHEN** a running pod with no recorded config hash is reconciled
+- **THEN** its config hash SHALL be recorded from the current layer and no in-place delivery SHALL
+  occur
+
+#### Scenario: Drifted pod is re-synced in place
+
+- **WHEN** a running pod's recorded config hash differs from the env's current layer hash
+- **THEN** the current layer SHALL be delivered in place, the pod's recorded hash SHALL be updated,
+  and an automatic `config_refreshed` event SHALL be emitted
+
+#### Scenario: In-sync pod is left alone
+
+- **WHEN** a running pod's recorded config hash equals the current layer hash
+- **THEN** no delivery SHALL occur
+
+#### Scenario: Unresolvable environment is skipped
+
+- **WHEN** the pod's environment no longer resolves at reconcile time
+- **THEN** no delivery SHALL occur and the recorded hash SHALL be left unchanged, without failing
+  reconciliation
+
 ### Requirement: Interrupting lifecycle actions request a handoff first
 
 Update and suspend SHALL, after the owner confirms and before the provider recreates or stops the

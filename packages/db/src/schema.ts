@@ -28,6 +28,9 @@ export const user = pgTable("user", {
   // Podbay access gate (invite-only alpha). better-auth ignores this column; the
   // DB default covers its inserts.
   approved: boolean("approved").notNull().default(false),
+  // Admin "Later": an access request the operator set aside to revisit, without approving or
+  // rejecting it. Null = a normal pending request (or already approved). Approving clears it.
+  deferredAt: timestamp("deferred_at"),
   // When the owner first finished (or skipped) the post-create "how it works"
   // walkthrough. Per-USER, not per-pod: once they've seen it on ANY pod it never
   // re-runs on a new one. Null = never seen. (Superseded pods.walkthroughSeenAt,
@@ -171,6 +174,11 @@ export const pods = pgTable(
     // without a live Fly call per dashboard render, and the backoffice's fleet
     // drift view. See docs/plans/pre-alpha-plan.md P2.5.
     imageDigest: text("image_digest"),
+    // Hash of the `.claude`/skills/permissions config layer LAST DELIVERED to this pod
+    // (set on create, image-update, and every live config-refresh). The reconcile sweep
+    // compares it against the env's current resolved layer to auto-sync a running pod on
+    // drift — no manual "Sync config" button. Null on legacy rows and until first delivery.
+    configHash: text("config_hash"),
     // Image-update progress, DURABLE on the row so every surface (list card,
     // cockpit) reflects "updating" straight from the backend and survives a
     // navigate-away/refresh — never client-only state. `updatingSince` is set when
@@ -542,6 +550,12 @@ export const relayConnections = pgTable("relay_connections", {
   /** Domains the owner has done `relay login` for — shown to their pods so an
    * agent can report a source as reachable-as-them before trying. Never the fetch log. */
   loginDomains: jsonb("login_domains").$type<string[]>().notNull().default([]),
+  /** Relay-liveness observability (2026-08-18): the row is NO LONGER deleted on disconnect — it's
+   * marked with `disconnectedAt` and `dropCount++`, so the owner can SEE that the relay dropped/
+   * flapped (previously invisible: "connected, 0 errors"). `disconnectedAt` NULL = currently up.
+   * A reconnect (markConnected) clears `disconnectedAt` but PRESERVES `dropCount`. */
+  disconnectedAt: timestamp("disconnected_at"),
+  dropCount: integer("drop_count").notNull().default(0),
 });
 
 /**

@@ -1,6 +1,6 @@
 import path from "node:path";
 import { access } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import {
   resolveWithConfig,
   POD_TIERS,
@@ -65,6 +65,24 @@ import {
 } from "./types.js";
 import { generateSlug } from "./slug.js";
 import { usageForPod, type PodUsage } from "./metrics.js";
+
+/** Min gap between config-drift auto-refresh ATTEMPTS on one pod, so a persistently-failing refresh
+ * doesn't exec on every reconcile sweep. A successful refresh updates config_hash and stops retrying
+ * outright; this only bounds the failure case. */
+const CONFIG_DRIFT_BACKOFF_MS = 10 * 60_000;
+
+/** Stable hash of the config layer we deliver to a pod — the `/etc/podbay/claude/*` files (sorted by
+ * path so order can't perturb it) plus the permissions slice. Drift-detection compares this: it
+ * changes iff the delivered bytes change. Returns null when there's nothing to deliver. */
+function configLayerHash(
+  claudeFiles: { guest_path: string; raw_value: string }[] | undefined,
+  permissions: unknown,
+): string | null {
+  if (!claudeFiles && permissions === undefined) return null;
+  const files = [...(claudeFiles ?? [])].sort((a, b) => a.guest_path.localeCompare(b.guest_path));
+  const canonical = JSON.stringify({ files, permissions: permissions ?? null });
+  return createHash("sha256").update(canonical).digest("hex");
+}
 
 export interface PodServiceConfig {
   /** Directory holding first-party environments (each a subdir with podbay.yaml). */
@@ -171,6 +189,10 @@ export class PodService {
   /** Per-(pod:type) last-alerted time, so a repeating critical incident pages once per
    * window rather than on every reconcile. In-memory (a gateway restart resets it). */
   private readonly incidentAlertedAt = new Map<string, number>();
+  /** Per-pod last config-drift auto-refresh ATTEMPT time, so a pod whose refresh keeps failing is
+   * backed off instead of exec'd on every reconcile sweep. In-memory (a gateway restart resets it,
+   * which just means one immediate retry — harmless because the delivery is idempotent). */
+  private readonly configDriftAttempt = new Map<string, number>();
 
   constructor(
     private readonly provider: SandboxProvider,
@@ -316,6 +338,8 @@ export class PodService {
       authUrl: null,
       machineId: null,
       imageDigest: null,
+      // Baselined by the first reconcile (no delivery — the pod boots with the current layer).
+      configHash: null,
       updatingSince: null,
       updateStage: null,
       maintenanceKind: null,
@@ -1680,10 +1704,24 @@ export class PodService {
     const liveBy = new Map(live.map((l) => [l.id, l]));
     return pods
       .filter((p) => {
-        if (!p.imageDigest || p.imageDigest === pin) return false; // not behind (matches imageState)
+        // Compare CANONICAL short forms: the pin is a 12-char fingerprint while a pod row may be the
+        // full 64-char one (or vice-versa), so a raw === falsely marks a current pod "behind" (same
+        // format bug as the update dialog's "nothing changed", 2026-08-18).
+        const short = (d: string): string => (d.startsWith("sha256:") ? d.slice(7, 19) : d.slice(0, 12));
+        if (!p.imageDigest || short(p.imageDigest) === short(pin)) return false; // not behind
         if (p.status !== "running" || p.updatingSince) return false; // must be up + not already updating
         if (p.autoUpdate === "off") return false; // owner excluded it (C)
-        if (liveBy.get(p.id)?.agentStatus !== "idle") return false; // idle right now
+        // Idle across ALL the pod's agents — not just Claude. Requiring agentStatus==="idle" skipped
+        // codex-only pods (their Claude agentStatus is null). Eligible = at least one agent
+        // AFFIRMATIVELY idle AND neither agent busy/working (so a busy codex still blocks an update).
+        const l = liveBy.get(p.id);
+        const someIdle = l?.agentStatus === "idle" || l?.codexStatus === "idle";
+        const anyBusy =
+          l?.agentStatus === "busy" ||
+          l?.agentStatus === "waiting" ||
+          l?.agentStatus === "shell" ||
+          l?.codexStatus === "busy";
+        if (!someIdle || anyBusy) return false; // not idle right now
         if (now - Date.parse(p.lastActiveAt) < dwellMs) return false; // …and idle for the dwell window
         return true;
       })
@@ -2030,34 +2068,94 @@ export class PodService {
     const provider = this.providerFor(rec.provider);
     if (!provider.refreshConfig)
       throw new ControlError("this pod's provider can't refresh config in place", "invalid");
-    // Resolve the env FRESH so we deliver the CURRENT layer — identical to runPodImageUpdate's
-    // resolve. Best-effort: an env renamed out from under a live pod delivers nothing rather than
-    // failing the refresh (the pod keeps its existing layer).
-    let claudeFiles: { guest_path: string; raw_value: string }[] | undefined;
-    let permissions: unknown;
+    const payload = await this.resolveConfigPayload(rec);
+    const result = await provider.refreshConfig(id, {
+      claudeFiles: payload.claudeFiles,
+      permissions: payload.permissions,
+    });
+    // Record the delivered hash so the drift sweep treats the pod as in-sync (skip on a resolve
+    // failure — we didn't actually deliver the current layer, so don't claim we did).
+    if (payload.hash) await this.store.update(id, { configHash: payload.hash }).catch(() => undefined);
+    await this.emit(rec, "config_refreshed", {
+      refreshed: result.refreshed,
+      files: payload.claudeFiles?.length ?? 0,
+      ...(result.note ? { note: result.note } : {}),
+    });
+    return result;
+  }
+
+  /**
+   * Resolve a pod's CURRENT `.claude`/skills/permissions layer FRESH (the same resolve an image
+   * update does) + a stable hash of it. The hash is what drift-detection compares: it changes iff
+   * the delivered bytes change. Best-effort — an env renamed out from under a live pod yields an
+   * undefined payload + null hash (deliver nothing, claim nothing) rather than throwing.
+   */
+  private async resolveConfigPayload(
+    rec: PodRecord,
+  ): Promise<{ claudeFiles?: { guest_path: string; raw_value: string }[]; permissions?: unknown; hash: string | null }> {
     try {
       const envDir = path.join(this.config.environmentsRoot, rec.environmentName);
       const resolved = await resolveWithConfig(envDir);
-      permissions = resolved.permissions;
+      const permissions = resolved.permissions;
       const files = await buildInitFiles({
-        id,
+        id: rec.id,
         resolved,
         envDir,
         name: rec.name ?? undefined,
         githubRepo: rec.githubRepo ?? undefined,
         agents: (rec.agents as never) ?? undefined,
       });
-      claudeFiles = files.filter((f) => f.guest_path.startsWith("/etc/podbay/claude/"));
+      const claudeFiles = files.filter((f) => f.guest_path.startsWith("/etc/podbay/claude/"));
+      return { claudeFiles, permissions, hash: configLayerHash(claudeFiles, permissions) };
     } catch (e) {
-      this.log.warn("refresh_claude_layer_resolve_failed", { podId: id, err: e });
+      this.log.warn("refresh_claude_layer_resolve_failed", { podId: rec.id, err: e });
+      return { hash: null };
     }
-    const result = await provider.refreshConfig(id, { claudeFiles, permissions });
+  }
+
+  /**
+   * Auto-sync a RUNNING pod's config when it has drifted from the env's current layer — the reconcile
+   * hook that replaces the manual "Sync config" button. Rides the reconcile sweep (already rotating
+   * over running pods, thundering-herd-safe), so an env/image change reaches every running pod within
+   * one rotation, no button press. Semantics:
+   *   - config_hash NULL (fresh pod, or a legacy row from before this feature): BASELINE to the
+   *     current hash WITHOUT delivering — the pod already booted with its layer, so a no-op delivery
+   *     would just add noise. (Trade-off: a pod whose env changed between its last delivery and this
+   *     baseline is not re-synced until the NEXT change — a one-time rollout gap, not ongoing.)
+   *   - hash present AND different → DELIVER the current layer in place + record the new hash + emit.
+   *   - equal → nothing.
+   * Best-effort and gated on a provider that can refresh; a persistently-failing pod is backed off
+   * in-memory so it doesn't exec every sweep.
+   */
+  private async reconcileConfigDrift(rec: PodRecord, prov: SandboxProvider): Promise<void> {
+    if (typeof prov.refreshConfig !== "function") return;
+    const payload = await this.resolveConfigPayload(rec);
+    if (!payload.hash) return; // env didn't resolve — nothing trustworthy to compare
+    if (payload.hash === rec.configHash) return; // in sync
+    if (rec.configHash === null) {
+      // Baseline silently — the pod already has this layer from boot/last delivery.
+      await this.store.update(rec.id, { configHash: payload.hash }).catch(() => undefined);
+      return;
+    }
+    // Real drift. Back off a pod that keeps failing so we don't exec it every sweep.
+    const now = Date.now();
+    const last = this.configDriftAttempt.get(rec.id) ?? 0;
+    if (last && now - last < CONFIG_DRIFT_BACKOFF_MS) return;
+    this.configDriftAttempt.set(rec.id, now);
+    const result = await prov.refreshConfig(rec.id, {
+      claudeFiles: payload.claudeFiles,
+      permissions: payload.permissions,
+    });
+    // Only record the new hash once the layer was actually delivered; a false record would suppress
+    // future retries. `refreshed:false` (image predates the in-pod script) still DELIVERED the bytes,
+    // so it counts as synced for hash purposes.
+    await this.store.update(rec.id, { configHash: payload.hash }).catch(() => undefined);
     await this.emit(rec, "config_refreshed", {
       refreshed: result.refreshed,
-      files: claudeFiles?.length ?? 0,
+      files: payload.claudeFiles?.length ?? 0,
+      auto: true,
       ...(result.note ? { note: result.note } : {}),
     });
-    return result;
   }
 
   /** UNSCOPED lookup for preview routing (the requester may be anonymous when the
@@ -2246,8 +2344,13 @@ export class PodService {
       { claudeFiles, permissions },
     );
     const to = info.imageDigest ?? image.split("@")[1] ?? null;
+    // The recreate just delivered this env's current layer — record its hash so the drift sweep
+    // sees the pod as in-sync and doesn't redundantly re-deliver. Only when it resolved (null hash =
+    // env didn't resolve = we delivered no layer, so leave the prior hash untouched).
+    const cfgHash = configLayerHash(claudeFiles, permissions);
     const updated = await this.store.update(id, {
       imageDigest: to,
+      ...(cfgHash ? { configHash: cfgHash } : {}),
       machineId: info.machineId ?? rec.machineId,
       status: info.status,
       // Update finished — clear the in-flight flag so the row stops reading
@@ -2557,6 +2660,9 @@ export class PodService {
       await this.ingestRepairs(record, prov).catch(() => undefined);
       await this.exchangeFetchMemory(record, prov).catch(() => undefined);
       await this.exchangeMessages(record, prov).catch(() => undefined);
+      // Auto-sync the config layer if the env drifted from what this pod last received — the
+      // reconcile hook that replaces the manual "Sync config" button (best-effort; see the method).
+      await this.reconcileConfigDrift(record, prov).catch(() => undefined);
     }
 
     if (status !== record.status) {

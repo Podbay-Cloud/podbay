@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   declaredStartupProcesses,
   devServerProcess,
+  devServerDisabledPath,
   isSupervisionPaused,
   nextCacheDir,
   pausePath,
@@ -76,8 +77,21 @@ describe("devServerProcess", () => {
       probePort: 3000,
     });
     const noDev = files({ [`${WORK}/package.json`]: JSON.stringify({ scripts: {} }) });
-    expect(devServerProcess(HOME, WORK, noDev)).toBeNull();
-    expect(devServerProcess(HOME, WORK, files({}))).toBeNull();
+    expect(devServerProcess(HOME, WORK, noDev, () => false)).toBeNull();
+    expect(devServerProcess(HOME, WORK, files({}), () => false)).toBeNull();
+  });
+
+  it("is NOT supervised when the durable disable flag is present, even with a dev script", () => {
+    const withDev = files({ [`${WORK}/package.json`]: JSON.stringify({ scripts: { dev: "next dev" } }) });
+    const disabled = (p: string): boolean => p === devServerDisabledPath(HOME);
+    // Flag present → null (the pod serves its own :3000; no auto pnpm dev, no .next clobber).
+    expect(devServerProcess(HOME, WORK, withDev, disabled)).toBeNull();
+    // Flag absent → supervised as normal.
+    expect(devServerProcess(HOME, WORK, withDev, () => false)).toMatchObject({ slug: "dev-server" });
+  });
+
+  it("keys the disable flag under the persistent ~/.podbay dir", () => {
+    expect(devServerDisabledPath(HOME)).toBe(`${HOME}/.podbay/dev-server-disabled`);
   });
 });
 
