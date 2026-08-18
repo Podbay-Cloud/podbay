@@ -344,6 +344,34 @@ export class LocalProvider implements SandboxProvider {
     }
   }
 
+  /** Live config-refresh (self-host): deliver the current `.claude` layer + refreshed permissions and
+   * re-apply via `/opt/podbay/podbay-refresh` — no container recreate, no agent restart. Mirrors the
+   * incus implementation via docker exec / file writes. Degrades gracefully on an image without the
+   * refresh script. Never throws. */
+  async refreshConfig(
+    id: string,
+    opts: { claudeFiles?: { guest_path: string; raw_value: string }[]; permissions?: unknown },
+  ): Promise<{ refreshed: boolean; note?: string }> {
+    try {
+      const cur = await this.exec(id, ["cat", "/etc/podbay/pod-spec.json"]);
+      if (cur.exitCode === 0 && cur.stdout) {
+        const specToPush = refreshSpecPermissions(cur.stdout, opts.permissions);
+        if (specToPush !== cur.stdout)
+          await this.writeFile(id, "/etc/podbay/pod-spec.json", specToPush);
+      }
+      for (const f of opts.claudeFiles ?? []) await this.writeFileB64(id, f.guest_path, f.raw_value);
+      const r = await this.exec(id, ["podbay-refresh"]);
+      if (r.exitCode !== 0)
+        return {
+          refreshed: false,
+          note: "delivered; this pod's image predates in-place refresh — update it to apply",
+        };
+      return { refreshed: true };
+    } catch (e) {
+      return { refreshed: false, note: `refresh failed: ${String(e).slice(0, 120)}` };
+    }
+  }
+
   async destroy(id: string): Promise<void> {
     await this.docker(["rm", "-f", this.name(id)]);
     // Remove the pod's persistent home volume too — delete means "gone for good" (the cockpit says

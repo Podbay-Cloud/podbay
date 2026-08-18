@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const podBase = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "pod-base");
 const initSh = path.join(podBase, "init.sh");
+const refreshLib = path.join(podBase, "refresh-common.sh");
 
 /** Task 5.3: wake must not re-run setup — the init contract uses run-once markers. */
 describe("pod-base first-boot init", () => {
@@ -233,7 +234,7 @@ describe("pod-base runtime-literacy layer", () => {
       agent: string,
       opts: { rules?: Record<string, string>; runtime?: string; existing?: string } = {},
     ) {
-      const src = await fs.readFile(initSh, "utf8");
+      const src = await fs.readFile(refreshLib, "utf8");
       const after = src.split(">>> podbay:codex-agents-rules")[1];
       expect(after, "sentinel-delimited codex-agents-rules block must exist").toBeTruthy();
       const block = after.slice(after.indexOf("\n") + 1).split("<<< podbay:codex-agents-rules")[0];
@@ -344,7 +345,7 @@ describe("pod-base runtime-literacy layer", () => {
   describe("universal runtime rules refresh (not seed-once)", () => {
     /** Extract the sentinel-delimited block from init.sh and run it with overridden paths. */
     async function runRefresh(dir: string, rulesText: string) {
-      const src = await fs.readFile(initSh, "utf8");
+      const src = await fs.readFile(refreshLib, "utf8");
       const after = src.split(">>> podbay:runtime-rules-refresh")[1];
       expect(after, "sentinel-delimited rules-refresh block must exist in init.sh").toBeTruthy();
       // drop the remainder of the sentinel's own comment line, else it runs as a command
@@ -404,7 +405,7 @@ describe("pod-base runtime-literacy layer", () => {
     /** Run the REAL init.sh settings-refresh block against temp paths. `existing`
      * undefined = leave whatever is on disk (for multi-run marker tests). */
     async function runSettings(dir: string, rules: object, existing?: object) {
-      const src = readFileSync(initSh, "utf8");
+      const src = readFileSync(refreshLib, "utf8");
       const after = src.split(">>> podbay:settings-refresh")[1];
       expect(after, "sentinel-delimited settings-refresh block must exist in init.sh").toBeTruthy();
       const block = after.slice(after.indexOf("\n") + 1).split("<<< podbay:settings-refresh")[0];
@@ -492,7 +493,7 @@ describe("pod-base runtime-literacy layer", () => {
 
   describe("work-rules refresh (env rules → $WORK/CLAUDE.md)", () => {
     async function runWorkRules(dir: string, rules: Record<string, string>, opts: { byo?: boolean } = {}) {
-      const src = await fs.readFile(initSh, "utf8");
+      const src = await fs.readFile(refreshLib, "utf8");
       const after = src.split(">>> podbay:work-rules-refresh")[1];
       expect(after, "sentinel-delimited work-rules block must exist in init.sh").toBeTruthy();
       const block = after.slice(after.indexOf("\n") + 1).split("# <<< podbay:work-rules-refresh")[0];
@@ -701,7 +702,7 @@ describe("pod-base runtime-literacy layer", () => {
    */
   describe("codex skills translation", () => {
     async function runTranslate(dir: string, agent: string) {
-      const src = await fs.readFile(initSh, "utf8");
+      const src = await fs.readFile(refreshLib, "utf8");
       const after = src.split(">>> podbay:codex-skills-translate")[1];
       expect(after, "sentinel-delimited codex-skills-translate block must exist").toBeTruthy();
       const block = after.slice(after.indexOf("\n") + 1).split("<<< podbay:codex-skills-translate")[0];
@@ -841,7 +842,9 @@ describe("runtime-rules.md names the podbay capability surface", () => {
  */
 describe("codex config reaches a codex SECONDARY agent", () => {
   async function block(marker: string): Promise<string> {
-    const src = await fs.readFile(initSh, "utf8");
+    // codex-skills-translate + codex-agents-rules now live in refresh-common.sh (shared with
+    // podbay-refresh); init.sh sources + calls them.
+    const src = await fs.readFile(refreshLib, "utf8");
     const after = src.split(`>>> podbay:${marker}`)[1];
     expect(after, `sentinel block ${marker} must exist`).toBeTruthy();
     return after!.slice(after!.indexOf("\n") + 1).split(`<<< podbay:${marker}`)[0]!;
@@ -908,5 +911,27 @@ describe("codex config reaches a codex SECONDARY agent", () => {
     const out = await fs.readFile(dst, "utf8").catch(() => null);
     expect(out, "codex secondary must still get the podbay rules block").toBeTruthy();
     expect(out).toContain("confirm before outbound");
+  });
+});
+
+// Regression guard (2026-08-18): init.sh sources refresh-common.sh under `set -e`, so the Incus
+// payload MUST ship every file podbay-init needs, or every pod fails to boot. A boot-breaking image
+// shipped once because make-payload.sh's copy list didn't include refresh-common.sh / podbay-refresh
+// (they were only in the Dockerfile). This asserts the packaging list covers what init.sh sources.
+describe("pod-base packaging ships what init.sh needs", () => {
+  it("make-payload.sh copies every file podbay-init sources at boot", async () => {
+    const init = await fs.readFile(initSh, "utf8");
+    const payload = await fs.readFile(path.join(podBase, "../../../scripts/incus/make-payload.sh"), "utf8");
+    // Files init.sh `. `-sources from /usr/local/bin (the ones a missing copy would brick boot on).
+    const sourced = [...init.matchAll(/^\s*\.\s+\/usr\/local\/bin\/([\w.-]+)/gm)].map((m) => m[1]);
+    expect(sourced, "init.sh should source at least refresh-common.sh").toContain("refresh-common.sh");
+    for (const f of sourced) {
+      expect(
+        payload.includes(`/usr/local/bin/${f}`),
+        `make-payload.sh must stage /usr/local/bin/${f} (init.sh sources it under set -e)`,
+      ).toBe(true);
+    }
+    // podbay-refresh is the on-demand entry the control plane execs — ship it too.
+    expect(payload).toContain("/usr/local/bin/podbay-refresh");
   });
 });

@@ -187,6 +187,20 @@ export class MockProvider implements SandboxProvider {
   async patchPodSpec(id: string, patch: Record<string, unknown>): Promise<void> {
     this.specPatches.set(id, { ...(this.specPatches.get(id) ?? {}), ...patch });
   }
+  /** Live config-refresh calls — id + number of .claude files + permissions delivered. */
+  refreshConfigCalls: { id: string; files: number; permissions: unknown }[] = [];
+  refreshConfigResult: { refreshed: boolean; note?: string } = { refreshed: true };
+  async refreshConfig(
+    id: string,
+    opts: { claudeFiles?: { guest_path: string; raw_value: string }[]; permissions?: unknown },
+  ): Promise<{ refreshed: boolean; note?: string }> {
+    this.refreshConfigCalls.push({
+      id,
+      files: opts.claudeFiles?.length ?? 0,
+      permissions: opts.permissions,
+    });
+    return this.refreshConfigResult;
+  }
   /** Permissions passed to the most recent updateImage — asserts the refresh-preset path. */
   updatePermissions: unknown[] = [];
   async updateImage(

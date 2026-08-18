@@ -11,6 +11,8 @@ import {
   destroyPod,
   renamePod,
   setPodPreviewPublic,
+  setPodAutoUpdate,
+  refreshPodConfig,
   updatePodImage,
   podUpdateProgress,
   resizePod,
@@ -60,6 +62,7 @@ import { deriveState, codexChipFor, type PodCardLive } from "@/lib/pod-visual-st
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
@@ -155,6 +158,9 @@ export interface PodCockpitProps {
   lifecycleLocked: boolean;
   previewUrl: string | null;
   previewPublic: boolean;
+  /** Fleet-updates (C): "off" = excluded from the bulk "update idle pods" button; "inherit" = included.
+   * Cloud-only surface. */
+  autoUpdate?: "inherit" | "off";
   sessionUrl: string | null;
   /** Durable Claude sign-in URL (from the pod row), so the Sign-in step shows the
    * link from the backend and survives a refresh mid-login. */
@@ -309,6 +315,9 @@ export default function PodCockpit(props: PodCockpitProps) {
   phaseRef.current = phase;
 
   const [previewPublic, setPreviewPub] = useState(props.previewPublic);
+  const [autoUpdate, setAutoUpdateState] = useState<"inherit" | "off">(props.autoUpdate ?? "inherit");
+  const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
+  const [refreshing, startRefresh] = useTransition();
   const [walkthroughDone, setWalkthroughDone] = useState(false);
   // "Replay walkthrough" (from Details) forces the tour once more this session even
   // though the per-user flag says seen. Reset when the tour finishes.
@@ -1189,7 +1198,6 @@ export default function PodCockpit(props: PodCockpitProps) {
               {updateInfo ? (
                 <UpdateInfoDialog
                   info={updateInfo}
-                  warning={SESSION_INTERRUPT_WARNING}
                   busy={pending || updating}
                   onConfirm={runUpdate}
                   trigger={
@@ -1374,6 +1382,64 @@ export default function PodCockpit(props: PodCockpitProps) {
                 }}
               >
                 {previewPublic ? "Make private" : "Make public"}
+              </Button>
+            </SettingRow>
+          )}
+
+          {/* Fleet-updates (C): exclude a pod from the bulk "update idle pods" button. Cloud-only —
+              self-host updates are a host-level compose pull, not a per-pod action. A pod running a
+              service (always-on) is the shape you'd exclude, so it restarts only when YOU choose. */}
+          {!oss && (
+            <SettingRow
+              label="Auto-update"
+              desc={
+                autoUpdate === "off"
+                  ? "Off — skipped by “Update idle pods”; update it here when you choose"
+                  : "On — included in the “Update idle pods” bulk action when idle"
+              }
+            >
+              <Switch
+                checked={autoUpdate !== "off"}
+                disabled={pending || updating}
+                aria-label="Auto-update"
+                onCheckedChange={(on) => {
+                  const next = on ? "inherit" : "off";
+                  setAutoUpdateState(next);
+                  act(() => setPodAutoUpdate(slug, on), "update auto-update");
+                }}
+              />
+            </SettingRow>
+          )}
+
+          {/* Live config-refresh: pull the latest rules/skills/settings into this running pod
+              WITHOUT a restart. Both editions; only meaningful while the pod is up. */}
+          {status === "running" && (
+            <SettingRow
+              label="Sync config"
+              desc={
+                refreshMsg ??
+                "Pull the latest rules, skills & settings into this pod — no restart, the agent keeps running"
+              }
+            >
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={refreshing || updating}
+                onClick={() => {
+                  setRefreshMsg(null);
+                  startRefresh(async () => {
+                    const r = await refreshPodConfig(slug);
+                    setRefreshMsg(
+                      "error" in r
+                        ? r.error
+                        : r.refreshed
+                          ? "Synced — live changes apply now; rules apply at the next compaction."
+                          : r.note ?? "Delivered; update this pod to apply in place.",
+                    );
+                  });
+                }}
+              >
+                {refreshing ? "Syncing…" : "Sync now"}
               </Button>
             </SettingRow>
           )}

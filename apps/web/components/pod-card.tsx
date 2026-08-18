@@ -40,6 +40,11 @@ export interface PodCardProps {
   sessionUrl?: string | null;
   updateReady?: boolean;
   updating?: boolean;
+  /** Fleet-updates (C): "off" excludes this pod from the bulk "update idle pods" button. */
+  autoUpdate?: "inherit" | "off";
+  /** Raw ISO of last real activity — the client uses it for the idle-DWELL check that gates
+   * the bulk-update button (agoLabel is display-only and can't be diffed). */
+  lastActiveAtIso?: string;
   canRetry?: boolean;
   podAgents?: string[];
   /** Codex devices the owner confirmed pairing for — listed on the card like the pod page. */

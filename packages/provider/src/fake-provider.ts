@@ -196,6 +196,16 @@ export class FakeProvider implements SandboxProvider {
     this.require(id);
     this.specPatches.set(id, { ...(this.specPatches.get(id) ?? {}), ...patch });
   }
+  /** Live config-refresh calls recorded for e2e/tests. */
+  readonly refreshConfigCalls: { id: string; files: number }[] = [];
+  async refreshConfig(
+    id: string,
+    opts: { claudeFiles?: { guest_path: string; raw_value: string }[]; permissions?: unknown },
+  ): Promise<{ refreshed: boolean; note?: string }> {
+    this.require(id);
+    this.refreshConfigCalls.push({ id, files: opts.claudeFiles?.length ?? 0 });
+    return { refreshed: true };
+  }
   async endpoint(id: string): Promise<string> {
     const p = this.require(id);
     if (!p.endpoint) throw new ProviderError(`pod ${id} has no endpoint`, "invalid");

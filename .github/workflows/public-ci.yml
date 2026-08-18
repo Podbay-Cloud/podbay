@@ -21,6 +21,11 @@ concurrency:
 
 jobs:
   build-test:
+    # This CI is for the PUBLIC mirror (Podbay-Cloud/podbay), where GitHub-hosted runners are FREE.
+    # On the private origin it is pure redundancy — ci.yml already runs the same build+test+typecheck
+    # +lint on the self-hosted box (free) — and ubuntu-latest there BURNS metered minutes. So skip it
+    # anywhere that isn't the public mirror.
+    if: ${{ github.repository != 'velsa/podbay' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

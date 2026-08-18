@@ -455,6 +455,90 @@ reads them and SHALL degrade gracefully when an image predates the manifest or h
 - **WHEN** the target image has no recorded notes (built before the manifest, or not yet recorded)
 - **THEN** the modal still opens and states that notes aren't recorded, describing what an update does
 
+### Requirement: The pods list can bulk-update idle pods that are behind
+
+On cloud (`!editionOss()`), the pods list SHALL offer a single "Update N idle pods" control that
+updates every pod that is genuinely idle AND behind the current image in one action. Self-host
+updates are a host-level `docker compose pull`, not a per-pod dashboard action, so this control
+SHALL NOT appear in the OSS edition.
+
+A pod is **update-eligible** for this control when ALL hold: it is behind the current pinned image
+(its recorded `imageDigest` differs from the provider's pin), it is `running` and not already
+updating, its agent reports `idle` (not busy/waiting/shell), it has had no real activity for a fixed
+idle dwell (≈10 minutes, so a pod merely paused between turns is not interrupted mid-task), and it is
+not excluded from auto-update (`autoUpdate !== "off"`). The control SHALL render only when at least
+one pod is eligible, and its label SHALL carry the count.
+
+The action SHALL recompute eligibility server-side and update only the pods that still qualify —
+never a client-supplied list — and SHALL start the updates without blocking the dashboard. Each
+updated pod keeps its files and login and resumes its agent after the restart, exactly as a single
+Update does.
+
+Activating the control SHALL first open a confirmation that names the pods to be updated and states
+plainly what happens (each restarts about a minute, its agent resumes, files are kept, and
+working/waiting/excluded pods are skipped); the updates start only on confirm, and cancelling changes
+nothing.
+
+#### Scenario: Some pods are idle and behind
+
+- **WHEN** the owner has one or more update-eligible pods
+- **THEN** the pods list shows an "Update N idle pods" control whose count matches the eligible pods
+
+#### Scenario: Confirming the bulk update
+
+- **WHEN** the owner activates the "Update N idle pods" control
+- **THEN** a confirmation names the eligible pods and what will happen, and only on confirm does it
+  start an image update on each of them (cancel starts nothing)
+
+#### Scenario: A pod is behind but busy, recently active, or excluded
+
+- **WHEN** a pod is behind the current image but its agent is busy, it was active within the idle
+  dwell, or its `autoUpdate` is `off`
+- **THEN** that pod is NOT counted by the control and is NOT updated by the bulk action
+
+#### Scenario: Self-host edition
+
+- **WHEN** the dashboard runs in the OSS/self-host edition
+- **THEN** the "Update N idle pods" control does not appear
+
+### Requirement: A pod can be excluded from auto-update
+
+On cloud (`!editionOss()`), the pod's Settings tab SHALL offer an "Auto-update" toggle (on/off) that
+sets the pod's `autoUpdate` between `inherit` (on — included in the bulk "update idle pods" action)
+and `off` (excluded — never touched by the bulk action; the owner updates it deliberately from the
+pod's own Update control). The toggle reflects the current state, its change is durable on the pod
+record (surviving a reload), and it defaults to on (`inherit`). This control is cloud-only and SHALL
+NOT appear in the OSS edition.
+
+#### Scenario: Owner excludes a service pod
+
+- **WHEN** the owner sets a pod's Auto-update to off (e.g. a pod running a long-lived service)
+- **THEN** the pod is durably marked `autoUpdate: "off"` and is skipped by the bulk idle-update
+  action, while remaining individually updatable from its own Update control
+
+### Requirement: A running pod's config can be refreshed in place without a restart
+
+The pod Settings tab SHALL offer a "Sync config" control (both editions) that pushes the CURRENT
+pod-base + env content — the `.claude` layer, skills, the managed `settings.json` slice, and rules —
+into the RUNNING pod and re-applies it WITHOUT recreating the instance or restarting the agent. The
+control plane recomputes the layer fresh (as an image update does) and delivers it via the provider's
+in-place refresh; the pod applies it with the same idempotent, never-clobber-a-user-edit logic used
+at boot. Live-reloadable layers (permissions/hooks, skills) reach the running agent at once; rules in
+`CLAUDE.md` apply at the agent's next compaction. A pod on an image that predates the in-pod refresh
+reports that the content was delivered but needs an update to apply. Only meaningful while the pod is
+running; the control refuses otherwise. See docs/plans/live-config-refresh.md.
+
+#### Scenario: Owner syncs a running pod
+
+- **WHEN** the owner activates "Sync config" on their own running pod
+- **THEN** the pod's `.claude` layer / skills / settings / rules are re-applied in place with no
+  recreate and no agent restart, and the result (applied, or delivered-pending-update) is reported
+
+#### Scenario: Pod is not running
+
+- **WHEN** the pod is suspended or otherwise not running
+- **THEN** the refresh is refused rather than attempted
+
 ### Requirement: Restarting controls warn that a live agent session is interrupted
 
 Every cockpit control that restarts or stops the pod — Update and Suspend — SHALL show, in its

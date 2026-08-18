@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useTransition } from "react";
 import {
   DndContext,
   PointerSensor,
@@ -20,7 +20,14 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import PodCard, { type PodCardProps, type PodCardLive } from "@/components/pod-card";
-import { reorderPods, getOwnerLiveSignals } from "@/lib/actions";
+import { reorderPods, getOwnerLiveSignals, updateIdlePods } from "@/lib/actions";
+import { Button } from "@/components/ui/button";
+import { useConfirm } from "@/components/ui/use-confirm";
+import { RefreshCw } from "lucide-react";
+
+/** Idle DWELL for the bulk button — a pod idle < this is skipped (a pause between turns, not
+ * genuinely inactive). Must match IDLE_UPDATE_DWELL_MS in lib/actions.ts (the server re-checks). */
+const IDLE_UPDATE_DWELL_MS = 10 * 60 * 1000;
 
 /**
  * The dashboard's pod list with MANUAL drag-to-reorder (the grip is the only drag
@@ -46,7 +53,14 @@ function SortableCard({ card }: { card: PodCardProps }) {
   );
 }
 
-export default function PodCardList({ cards }: { cards: PodCardProps[] }) {
+export default function PodCardList({
+  cards,
+  bulkUpdate = false,
+}: {
+  cards: PodCardProps[];
+  /** Cloud-only: show the "Update N idle pods" bulk button (self-host updates are host-level). */
+  bulkUpdate?: boolean;
+}) {
   const [order, setOrder] = useState(() => cards.map((c) => c.slug));
   // Live signals fetched off the render path (the server no longer blocks on them),
   // then polled — so navigating here is instant and the cards fill in their live
@@ -113,6 +127,53 @@ export default function PodCardList({ cards }: { cards: PodCardProps[] }) {
   const byId = new Map(cards.map((c) => [c.slug, { ...c, live: live[c.slug] ?? c.live ?? null }]));
   const ordered = order.map((s) => byId.get(s)).filter(Boolean) as PodCardProps[];
 
+  // Bulk "update idle pods" (cloud-only). Client-side count for the button's visibility + label;
+  // the server action re-derives eligibility from scratch (never trusts this list). Mirrors the
+  // control-plane predicate: behind + running + not-updating + not-excluded + agent idle + dwell.
+  const now = Date.now();
+  const eligibleIdle = !bulkUpdate
+    ? []
+    : cards.filter((c) => {
+        const l = live[c.slug];
+        if (!c.updateReady || c.updating || l?.updating) return false;
+        if ((l?.status ?? c.status) !== "running") return false;
+        if (c.autoUpdate === "off") return false;
+        if (l?.agentStatus !== "idle") return false;
+        if (!c.lastActiveAtIso || now - Date.parse(c.lastActiveAtIso) < IDLE_UPDATE_DWELL_MS) return false;
+        return true;
+      });
+  const [bulkPending, startBulk] = useTransition();
+  const [bulkMsg, setBulkMsg] = useState<string | null>(null);
+  const { confirm, dialog } = useConfirm();
+  const eligibleNames = eligibleIdle.map((c) => c.name?.trim() || c.slug);
+
+  async function runBulkUpdate() {
+    const n = eligibleNames.length;
+    const ok = await confirm({
+      title: `Update ${n} idle pod${n === 1 ? "" : "s"}?`,
+      message: (
+        <>
+          <strong>{n}</strong> idle pod{n === 1 ? "" : "s"} will update to the latest build:{" "}
+          {eligibleNames.join(", ")}. Each restarts (about a minute) and its agent resumes where it
+          left off — your files are kept. Working, waiting, and auto-update-off pods are skipped.
+        </>
+      ),
+      confirmLabel: `Update ${n} pod${n === 1 ? "" : "s"}`,
+    });
+    if (!ok) return;
+    setBulkMsg(null);
+    startBulk(async () => {
+      const r = await updateIdlePods();
+      setBulkMsg(
+        "error" in r
+          ? r.error
+          : r.started === 0
+            ? "No idle pods were eligible just now."
+            : `Updating ${r.started} pod${r.started === 1 ? "" : "s"} — each resumes in ~1 min.`,
+      );
+    });
+  }
+
   const onDragEnd = (e: DragEndEvent) => {
     const { active, over } = e;
     if (!over || active.id === over.id) return;
@@ -124,14 +185,35 @@ export default function PodCardList({ cards }: { cards: PodCardProps[] }) {
   };
 
   return (
-    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
-      <SortableContext items={order} strategy={verticalListSortingStrategy}>
-        <ul className="flex flex-col gap-3">
-          {ordered.map((c) => (
-            <SortableCard key={c.slug} card={c} />
-          ))}
-        </ul>
-      </SortableContext>
-    </DndContext>
+    <>
+      {dialog}
+      {(eligibleIdle.length > 0 || bulkMsg) && (
+        <div className="mb-3 flex items-center justify-end gap-3">
+          {bulkMsg && <span className="text-[12.5px] text-muted-foreground">{bulkMsg}</span>}
+          {eligibleIdle.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={bulkPending}
+              onClick={() => void runBulkUpdate()}
+            >
+              <RefreshCw className="mr-1.5 size-3.5" />
+              {bulkPending
+                ? "Starting…"
+                : `Update ${eligibleIdle.length} idle pod${eligibleIdle.length === 1 ? "" : "s"}`}
+            </Button>
+          )}
+        </div>
+      )}
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+        <SortableContext items={order} strategy={verticalListSortingStrategy}>
+          <ul className="flex flex-col gap-3">
+            {ordered.map((c) => (
+              <SortableCard key={c.slug} card={c} />
+            ))}
+          </ul>
+        </SortableContext>
+      </DndContext>
+    </>
   );
 }

@@ -126,6 +126,19 @@ export interface SandboxProvider {
    * the source of truth and a later change re-attempts. No-op if the provider can't reach the
    * pod's filesystem. */
   patchPodSpec?(id: string, patch: Record<string, unknown>): Promise<void>;
+  /** Live config-refresh (docs/plans/live-config-refresh.md): push the CURRENT pod-base content —
+   * the env `.claude` layer + skills, plus freshly-resolved `permissions` — into a RUNNING pod and
+   * re-apply it WITHOUT recreating the instance or restarting the agent process. So a build that only
+   * carries hot-pushable content (skills, settings/hooks, rules) reaches existing 24/7 pods with no
+   * reboot: settings/hooks/permissions and skills reach the live session at once (Claude's file
+   * watcher / next skill invocation); `CLAUDE.md` prose lands at the agent's next compaction. Returns
+   * whether the in-pod refresh actually ran — an older image without the refresh script reports
+   * `refreshed:false` + a `note`. Best-effort delivery: MUST NOT throw for a suspended/unreachable
+   * pod. Optional + edition-symmetric (incus file-push + exec; local docker exec). */
+  refreshConfig?(
+    id: string,
+    opts: { claudeFiles?: { guest_path: string; raw_value: string }[]; permissions?: unknown },
+  ): Promise<{ refreshed: boolean; note?: string }>;
   /** Mint a short-lived Codex pairing code (the codex analog of the Claude session
    * URL): the user enters it in their Codex app to connect to this pod. Generated on
    * demand against the pod's RC daemon; the pod shows in the app as `deviceName`.

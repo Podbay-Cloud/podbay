@@ -35,6 +35,9 @@ export type PodEventType =
   | "codex_rc_toggled"
   // The owner edited the pod's Claude settings from the cockpit. meta: { keys: string[] }.
   | "claude_settings_changed"
+  // Live config-refresh: pod-base content (skills/rules/settings) pushed + re-applied to a
+  // RUNNING pod without a recreate. meta: { refreshed, files, note? }.
+  | "config_refreshed"
   | "admin_action"
   // The owner revealed a stored secret value in the cockpit. meta: { key }. Audited
   // because it is the one path that returns a plaintext secret to a browser.
@@ -76,6 +79,10 @@ export interface PodRecord {
   keepAwake: boolean;
   /** Lifecycle policy: auto (idle-sleep) | awake-hours | always-on | scheduled. */
   lifecycle: LifecyclePolicy;
+  /** Auto-update opt-out (fleet-updates): "inherit" = included in the "update idle pods" bulk action
+   * / future auto-update; "off" = never, and excluded from the bulk button (a pod running a service
+   * the owner updates deliberately). Default "inherit". */
+  autoUpdate: "inherit" | "off";
   /** Preview URL access: false = owner-authed only, true = public. */
   previewPublic: boolean;
   /** BYO-repo: "owner/name" GitHub repo cloned into ~/work at first boot, or null

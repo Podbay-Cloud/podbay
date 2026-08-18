@@ -109,6 +109,7 @@ export default async function Dashboard() {
       ) : (
         <section>
           <PodCardList
+            bulkUpdate={!editionOss()}
             cards={pods.map((p): PodCardProps => ({
               slug: p.id,
               name: p.name,
@@ -124,6 +125,8 @@ export default async function Dashboard() {
               sessionUrl: p.sessionUrl,
               updateReady: updateReady(p),
               updating: isUpdating(p),
+              autoUpdate: p.autoUpdate,
+              lastActiveAtIso: p.lastActiveAt,
               canRetry: !envMissing.get(p.environmentName),
               podAgents: p.agents ?? envAgents.get(p.environmentName) ?? [],
               codexDevices: p.codexDevices ?? [],

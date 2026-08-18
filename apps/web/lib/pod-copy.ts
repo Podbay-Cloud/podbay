@@ -6,9 +6,9 @@
  * different ideas of what a button does.
  */
 
-/** Shown before suspend and before update. Both restart the pod, so an agent
- * mid-task is killed where it stands: the point is that "your files are kept" is
- * NOT the same as "your work in progress is kept". Deliberately short — a warning
- * nobody finishes reading is not a warning. */
+/** Shown before suspend/update/resize. All recreate or stop the pod, but the home volume (incl.
+ * ~/work) is REATTACHED, so files persist and the agent resumes its session — the only real cost is
+ * that a running task stops mid-step. Say that calmly and accurately (the old copy claimed "work can
+ * be lost", which is false for a volumed pod and needlessly scared owners off applying fixes). */
 export const SESSION_INTERRUPT_WARNING =
-  "Stops any running agent session. Work in progress that isn't saved or committed can be lost — check the terminal first.";
+  "Your files are kept and the agent resumes where it left off — a running task is interrupted.";

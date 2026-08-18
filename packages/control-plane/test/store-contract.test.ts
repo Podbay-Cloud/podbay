@@ -21,6 +21,7 @@ function sample(id: string, ownerId: string, over: Partial<PodRecord> = {}): Pod
     region: "fra",
     keepAwake: false,
     lifecycle: "auto",
+    autoUpdate: "inherit",
     previewPublic: false,
     githubRepo: null,
     // Per-pod agent selection (migration 0023) — a real value, since these two are

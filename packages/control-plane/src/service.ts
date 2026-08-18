@@ -302,6 +302,7 @@ export class PodService {
       region: this.config.region ?? "",
       keepAwake: alwaysOn,
       lifecycle,
+      autoUpdate: "inherit",
       // Env-declared default (docs: first-10-customers wants a shareable landing
       // from launch; private surfaces gate themselves in-app). Owner can flip it.
       previewPublic: resolved.preview === "public",
@@ -1661,6 +1662,56 @@ export class PodService {
     return updated;
   }
 
+  /** Fleet-updates (C): the pod's auto-update opt-out. "off" excludes it from the "update idle pods"
+   * bulk action (a pod running a service the owner updates deliberately); "inherit" includes it. */
+  async setAutoUpdate(ownerId: string, id: string, autoUpdate: "inherit" | "off"): Promise<PodRecord> {
+    await this.owned(ownerId, id);
+    return this.store.update(id, { autoUpdate });
+  }
+
+  /** Fleet-updates (A): pods eligible for a bulk idle-update — behind the pinned image, running, NOT
+   * excluded (autoUpdate="off"), and genuinely IDLE (agent idle now AND no real activity for
+   * `dwellMs`, so an agent merely paused between turns isn't interrupted). `pin` is the image-digest
+   * pin (the web reads it from env, provider-specific); a null pin makes nothing eligible. */
+  async updatableIdlePods(ownerId: string, pin: string | null, dwellMs: number): Promise<string[]> {
+    if (!pin) return [];
+    const now = Date.now();
+    const [pods, live] = await Promise.all([this.listPods(ownerId), this.ownerLiveSignals(ownerId)]);
+    const liveBy = new Map(live.map((l) => [l.id, l]));
+    return pods
+      .filter((p) => {
+        if (!p.imageDigest || p.imageDigest === pin) return false; // not behind (matches imageState)
+        if (p.status !== "running" || p.updatingSince) return false; // must be up + not already updating
+        if (p.autoUpdate === "off") return false; // owner excluded it (C)
+        if (liveBy.get(p.id)?.agentStatus !== "idle") return false; // idle right now
+        if (now - Date.parse(p.lastActiveAt) < dwellMs) return false; // …and idle for the dwell window
+        return true;
+      })
+      .map((p) => p.id);
+  }
+
+  /** Fleet-updates (A): start an image update on every eligible idle pod. Kicks each off sequentially
+   * (startPodImageUpdate returns immediately; the recreate runs async) so we don't burst the box, and
+   * re-checks eligibility server-side — never trusts a client-supplied list. */
+  async updateIdlePods(
+    ownerId: string,
+    pin: string | null,
+    dwellMs: number,
+    image: string,
+  ): Promise<{ started: string[] }> {
+    const slugs = await this.updatableIdlePods(ownerId, pin, dwellMs);
+    const started: string[] = [];
+    for (const id of slugs) {
+      try {
+        await this.startPodImageUpdate(ownerId, id, image);
+        started.push(id);
+      } catch (e) {
+        this.log.warn("bulk_update_pod_failed", { id, err: String(e) });
+      }
+    }
+    return { started };
+  }
+
   /** Record that the owner has seen the post-create connect walkthrough, so it never
    * re-runs. Idempotent — the first timestamp stands. */
   async markWalkthroughSeen(ownerId: string, id: string): Promise<PodRecord> {
@@ -1964,6 +2015,50 @@ export class PodService {
     return this.getClaudeSettings(ownerId, id);
   }
 
+
+  /** Live config-refresh (docs/plans/live-config-refresh.md): push the CURRENT env `.claude` layer +
+   * skills + freshly-resolved permissions into a RUNNING pod and re-apply them WITHOUT a recreate or
+   * an agent restart. The same fresh resolve as an image update (`buildInitFiles` + `resolveWithConfig`),
+   * but delivered via `provider.refreshConfig` instead of `updateImage`. Cloud-shaped (incus) and
+   * self-host (local) both implement it; a provider without the capability, or a pod on an image that
+   * predates the in-pod refresh script, reports `refreshed:false` with a note (delivery still happened).
+   * Emits `config_refreshed`. Gated on a running pod. */
+  async refreshPodConfig(ownerId: string, id: string): Promise<{ refreshed: boolean; note?: string }> {
+    const rec = await this.owned(ownerId, id);
+    if (rec.status !== "running")
+      throw new ControlError("the pod must be running to refresh its config", "invalid");
+    const provider = this.providerFor(rec.provider);
+    if (!provider.refreshConfig)
+      throw new ControlError("this pod's provider can't refresh config in place", "invalid");
+    // Resolve the env FRESH so we deliver the CURRENT layer — identical to runPodImageUpdate's
+    // resolve. Best-effort: an env renamed out from under a live pod delivers nothing rather than
+    // failing the refresh (the pod keeps its existing layer).
+    let claudeFiles: { guest_path: string; raw_value: string }[] | undefined;
+    let permissions: unknown;
+    try {
+      const envDir = path.join(this.config.environmentsRoot, rec.environmentName);
+      const resolved = await resolveWithConfig(envDir);
+      permissions = resolved.permissions;
+      const files = await buildInitFiles({
+        id,
+        resolved,
+        envDir,
+        name: rec.name ?? undefined,
+        githubRepo: rec.githubRepo ?? undefined,
+        agents: (rec.agents as never) ?? undefined,
+      });
+      claudeFiles = files.filter((f) => f.guest_path.startsWith("/etc/podbay/claude/"));
+    } catch (e) {
+      this.log.warn("refresh_claude_layer_resolve_failed", { podId: id, err: e });
+    }
+    const result = await provider.refreshConfig(id, { claudeFiles, permissions });
+    await this.emit(rec, "config_refreshed", {
+      refreshed: result.refreshed,
+      files: claudeFiles?.length ?? 0,
+      ...(result.note ? { note: result.note } : {}),
+    });
+    return result;
+  }
 
   /** UNSCOPED lookup for preview routing (the requester may be anonymous when the
    * pod is public). Returns just what the gateway needs to make the auth + proxy

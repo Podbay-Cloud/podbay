@@ -32,6 +32,14 @@ SETUP_RUNNING=/home/dev/.podbay-setup-running
 SETUP_LOG=/home/dev/.podbay-setup.log
 WORK=/home/dev/work
 
+# The idempotent, hash-guarded config-refresh ops (rules / settings+hook / codex-agents / skills /
+# work-rules) live in refresh-common.sh — ONE source of truth shared with `podbay-refresh` (which
+# applies them to a RUNNING pod with no restart). init.sh calls the SAME functions at boot below.
+# shellcheck source=/dev/null
+. /usr/local/bin/refresh-common.sh 2>/dev/null \
+  || . "$(dirname "$0")/refresh-common.sh" 2>/dev/null \
+  || { echo "podbay: FATAL refresh-common.sh not found — pod-base packaging bug (make-payload must ship it); aborting boot" >&2; exit 1; }
+
 chown -R dev:dev /home/dev 2>/dev/null || true
 mkdir -p "$WORK" /home/dev/.claude
 # mkdir ran as root AFTER the chown above, so these NEW dirs are root-owned — and
@@ -261,35 +269,7 @@ fi
 # So: track what podbay last wrote in a marker. If the on-disk file is still exactly
 # what we wrote, refresh it. If the user changed it, leave theirs alone and drop the new
 # canonical copy beside it so an update is never silently lost.
-# >>> podbay:runtime-rules-refresh — base-image.test.ts extracts this block verbatim and
-# runs it against temp paths, so the three behaviours below are covered by a real test
-# rather than a source grep. Keep the sentinels and the ${VAR:-default} indirection.
-RULES_SRC="${RULES_SRC:-/opt/podbay/runtime-rules.md}"
-CLAUDE_MD="${CLAUDE_MD:-/home/dev/.claude/CLAUDE.md}"
-RULES_MARKER="${RULES_MARKER:-$(dirname "$CLAUDE_MD")/.podbay-runtime-hash}"
-RULES_OWNER="${RULES_OWNER:-dev:dev}"
-if [ -f "$RULES_SRC" ]; then
-  RULES_DIR="$(dirname "$CLAUDE_MD")"
-  mkdir -p "$RULES_DIR"
-  NEW_HASH="$(sha256sum "$RULES_SRC" | awk '{print $1}')"
-  if [ ! -f "$CLAUDE_MD" ]; then
-    cp "$RULES_SRC" "$CLAUDE_MD"
-    printf '%s' "$NEW_HASH" > "$RULES_MARKER"
-  else
-    CUR_HASH="$(sha256sum "$CLAUDE_MD" | awk '{print $1}')"
-    PREV_HASH="$(cat "$RULES_MARKER" 2>/dev/null || true)"
-    if [ "$CUR_HASH" = "$NEW_HASH" ]; then
-      printf '%s' "$NEW_HASH" > "$RULES_MARKER"          # already current — (re)assert marker
-    elif [ -n "$PREV_HASH" ] && [ "$CUR_HASH" = "$PREV_HASH" ]; then
-      cp "$RULES_SRC" "$CLAUDE_MD"                        # untouched since we wrote it → refresh
-      printf '%s' "$NEW_HASH" > "$RULES_MARKER"
-    else
-      cp "$RULES_SRC" "$RULES_DIR/podbay-runtime.md"      # user-edited → never clobber
-    fi
-  fi
-  chown "$RULES_OWNER" "$CLAUDE_MD" "$RULES_MARKER" "$RULES_DIR/podbay-runtime.md" 2>/dev/null || true
-fi
-# <<< podbay:runtime-rules-refresh
+pb_refresh_runtime_rules
 
 # Permission preset → ~/.claude/settings.json, refreshed EVERY boot (NOT seed-once).
 # Same lesson as the runtime-rules refresh above: settings.json lives on the persistent
@@ -297,123 +277,7 @@ fi
 # reached an existing pod (the 2026-08-01 git-push change reached zero of them). This
 # refreshes only the podbay-MANAGED fields (mode + allow/deny/ask) from the spec,
 # PRESERVES any other keys, and backs off if the user edited the managed fields.
-# >>> podbay:settings-refresh — base-image.test.ts extracts this block verbatim and runs
-# it against temp paths, so the behaviours (create / migrate-stale / preserve-user-edit /
-# propagate) are covered by a real test. Keep the sentinels and the ${VAR:-default} form.
-SETTINGS_SPEC="${SETTINGS_SPEC:-$SPEC}"
-SETTINGS_JSON="${SETTINGS_JSON:-/home/dev/.claude/settings.json}"
-SETTINGS_MARKER="${SETTINGS_MARKER:-$(dirname "$SETTINGS_JSON")/.podbay-settings-hash}"
-SETTINGS_OWNER="${SETTINGS_OWNER:-dev:dev}"
-if [ -f "$SETTINGS_SPEC" ]; then
-  python3 - "$SETTINGS_SPEC" "$SETTINGS_JSON" "$SETTINGS_MARKER" <<'PY' || true
-import json, hashlib, os, sys
-
-# Refresh the podbay-MANAGED permission fields in ~/.claude/settings.json from the pod's
-# preset, every boot — so a preset change (a new deny, a removed prompt) reaches EXISTING
-# pods instead of being frozen by a seed-once write. Never clobbers a user's own edits,
-# and always preserves keys podbay doesn't manage (e.g. app toggles).
-SPEC, SETTINGS, MARKER = sys.argv[1], sys.argv[2], sys.argv[3]
-
-try:
-    rules = json.load(open(SPEC)).get("permissions", {}).get("rules", {})
-except Exception:
-    sys.exit(0)
-
-# The MANAGED slice: mode + the three permission lists. Everything else in settings.json
-# is left untouched.
-MANAGED_ALLOW = list(rules.get("allow", []))
-desired = {
-    "defaultMode": rules.get("defaultMode", "acceptEdits"),
-    "allow": MANAGED_ALLOW,
-    "deny": list(rules.get("deny", [])),
-    "ask": list(rules.get("ask", [])),
-}
-
-def managed_of(d):
-    p = d.get("permissions", {})
-    return {
-        "defaultMode": d.get("defaultMode", "acceptEdits"),
-        "allow": list(p.get("allow", [])),
-        "deny": list(p.get("deny", [])),
-        "ask": list(p.get("ask", [])),
-    }
-
-def h(obj):
-    return hashlib.sha256(json.dumps(obj, sort_keys=True).encode()).hexdigest()
-
-def apply(cur):
-    # Merge the managed slice INTO cur, preserving every other key.
-    cur["defaultMode"] = desired["defaultMode"]
-    p = cur.setdefault("permissions", {})
-    p["allow"], p["deny"], p["ask"] = desired["allow"], desired["deny"], desired["ask"]
-    return cur
-
-new_hash = h(desired)
-os.makedirs(os.path.dirname(SETTINGS) or ".", exist_ok=True)
-
-if not os.path.exists(SETTINGS):
-    json.dump(apply({}), open(SETTINGS, "w"), indent=2)
-    open(MARKER, "w").write(new_hash)
-    sys.exit(0)
-
-cur = json.load(open(SETTINGS))
-cur_managed = managed_of(cur)
-cur_hash = h(cur_managed)
-prev_hash = ""
-try:
-    prev_hash = open(MARKER).read().strip()
-except Exception:
-    pass
-
-# Is the CURRENT settings a podbay-managed shape rather than a user's own? The allow list
-# is podbay's signature (Read/Edit/Bash(*)); if it matches, the managed fields are ours to
-# refresh even without a marker (migrates pods seeded before this refresh existed).
-looks_podbay = cur_managed["allow"] == MANAGED_ALLOW
-
-if cur_hash == new_hash:
-    open(MARKER, "w").write(new_hash)                       # already current → assert marker
-elif (prev_hash and cur_hash == prev_hash) or (not prev_hash and looks_podbay):
-    json.dump(apply(cur), open(SETTINGS, "w"), indent=2)    # untouched by user → refresh, keep other keys
-    open(MARKER, "w").write(new_hash)
-else:
-    # User-customized the managed fields → never clobber. Record a baseline so future
-    # podbay changes can be offered without a re-migration guess.
-    open(MARKER, "w").write(cur_hash)
-PY
-  chown "$SETTINGS_OWNER" "$SETTINGS_JSON" "$SETTINGS_MARKER" 2>/dev/null || true
-fi
-
-# ---- Stop hook: the enforcement half of the `relentless` rule ----------------------------
-# Every other part of relentless is a prompt asking the agent to remember it, and the
-# documented failure is momentum: an agent finishes something, writes a good summary, ends
-# with "Want me to X?" - and the loop dies, because a prose question reads as finished work.
-# The hook is the only piece that does not depend on the agent's own diligence. Registered
-# separately from the permission refresh above (which is hash-guarded against clobbering a
-# user's edits) and idempotently: any OTHER hooks the user has are preserved untouched.
-# >>> podbay:stop-hook - base-image.test.ts extracts and runs this python
-STOP_HOOK="${STOP_HOOK:-/opt/podbay/hooks/relentless-stop.py}"
-if [ -f "$STOP_HOOK" ]; then
-  python3 - "$SETTINGS_JSON" "$STOP_HOOK" <<'PY' || true
-import json, os, sys
-SETTINGS, HOOK = sys.argv[1], sys.argv[2]
-try:
-    cur = json.load(open(SETTINGS)) if os.path.exists(SETTINGS) else {}
-except Exception:
-    sys.exit(0)                      # unreadable settings: never make it worse
-entry = {"hooks": [{"type": "command", "command": HOOK}]}
-hooks = cur.setdefault("hooks", {})
-stop = hooks.get("Stop") or []
-if any(HOOK in json.dumps(g) for g in stop):
-    sys.exit(0)                      # already registered -> nothing to do
-hooks["Stop"] = stop + [entry]       # append: do not drop the user's own Stop hooks
-os.makedirs(os.path.dirname(SETTINGS) or ".", exist_ok=True)
-json.dump(cur, open(SETTINGS, "w"), indent=2)
-print("init: registered the relentless Stop hook")
-PY
-  chown "$SETTINGS_OWNER" "$SETTINGS_JSON" 2>/dev/null || true
-fi
-# <<< podbay:stop-hook
-# <<< podbay:settings-refresh
+pb_refresh_settings
 
 # ---- Codex rule literacy → ~/.codex/AGENTS.md (the codex analog of CLAUDE.md) ----
 # Claude reads ~/.claude/CLAUDE.md (universal rules) + ~/work/CLAUDE.md (env rules),
@@ -426,59 +290,7 @@ fi
 # non-destructive (anything the user/codex wrote outside the block is preserved),
 # idempotent, and regenerated every boot so a rules update reaches existing pods on
 # the next image cycle. Codex-pods only.
-# >>> podbay:codex-agents-rules — base-image.test.ts extracts this python and runs it
-# against PODBAY_CODEX_* overrides, so the assembly/replacement is covered by a test.
-python3 - <<'PY' || true
-import os, glob, json, tempfile
-agent = os.environ.get("PODBAY_AGENT")
-if agent is None:
-    try:
-        spec = os.environ.get("PODBAY_SPEC", "/etc/podbay/pod-spec.json")
-        a = json.load(open(spec)).get("agents") or []
-        # ANY declared agent, not agents[0]. A claude-PRIMARY pod that also declares
-        # codex still needs ~/.codex/AGENTS.md — without it codex runs with none of
-        # the podbay runtime rules, INCLUDING confirm-before-outbound. That is every
-        # `agents: [claude-code, codex]` pod we ship (found 2026-07-29).
-        agent = "codex" if "codex" in a else (a[0] if a else "")
-    except Exception:
-        agent = ""
-if agent != "codex":
-    raise SystemExit(0)                              # claude-only pods: nothing to do
-dst = os.environ.get("PODBAY_CODEX_AGENTS", "/home/dev/.codex/AGENTS.md")
-runtime = os.environ.get("PODBAY_RUNTIME_RULES", "/opt/podbay/runtime-rules.md")
-rulesdir = os.environ.get("PODBAY_ENV_RULES_DIR", "/etc/podbay/claude/rules")
-BEGIN = "<!-- BEGIN:podbay-runtime (authored by Podbay - do not edit; regenerated each boot) -->"
-END = "<!-- END:podbay-runtime -->"
-parts = []
-if os.path.exists(runtime):
-    parts.append(open(runtime, encoding="utf-8", errors="replace").read().rstrip())
-for rf in sorted(glob.glob(os.path.join(rulesdir, "*.md"))):
-    body = open(rf, encoding="utf-8", errors="replace").read().rstrip()
-    parts.append("<!-- source: .claude/rules/%s -->\n%s" % (os.path.basename(rf), body))
-if not parts:
-    raise SystemExit(0)                              # no rules to publish yet (pre-spec)
-block = BEGIN + "\n\n" + "\n\n".join(parts) + "\n\n" + END
-existing = ""
-if os.path.exists(dst):
-    try:
-        existing = open(dst, encoding="utf-8", errors="replace").read()
-    except Exception:
-        raise SystemExit(0)                          # unreadable: leave it alone
-if BEGIN in existing and END in existing:
-    new = existing.split(BEGIN)[0] + block + existing.split(END, 1)[1]
-else:
-    new = (existing.rstrip() + "\n\n" if existing.strip() else "") + block + "\n"
-if new == existing:
-    raise SystemExit(0)                              # already current
-os.makedirs(os.path.dirname(dst), exist_ok=True)
-fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dst))
-with os.fdopen(fd, "w") as f:
-    f.write(new)
-os.replace(tmp, dst)
-print("init: assembled codex AGENTS.md (%d rule sources)" % len(parts))
-PY
-chown dev:dev /home/dev/.codex/AGENTS.md 2>/dev/null || true
-# <<< podbay:codex-agents-rules
+pb_refresh_codex_agents
 
 # Agent credentials are NEVER injected (opsx per-pod-login): each pod does its
 # own /login on first boot; the login lives on the pod's persistent volume.
@@ -704,31 +516,7 @@ translate_codex_skills() {
     # each skill dir. Codex-pods only; the reserved .system/ built-ins are never touched.
     # Run-once like the .claude seed above (parity). Codex reads instructions from
     # AGENTS.md not CLAUDE.md, so env RULES are a separate concern — this is SKILLS only.
-    # >>> podbay:codex-skills-translate — base-image.test.ts extracts and runs this block
-    # against temp dirs via the CODEX_SKILLS_* overrides, so the copy is covered by a test.
-    # ANY declared agent, not agents[0] — same key as the standalone block above.
-    # Keying on the PRIMARY meant a claude-primary pod that also declares codex ran
-    # codex with NO skills at all, which is every `agents: [claude-code, codex]` pod
-    # we ship (byo-project, nextjs-starter). Found 2026-07-29 auditing the split.
-    CODEX_SKILLS_SPEC="${PODBAY_SPEC:-/etc/podbay/pod-spec.json}"
-    CODEX_SKILLS_AGENT="${CODEX_SKILLS_AGENT:-$(python3 -c 'import json,sys; a=json.load(open(sys.argv[1])).get("agents") or []; print("codex" if "codex" in a else (a[0] if a else ""))' "$CODEX_SKILLS_SPEC" 2>/dev/null)}"
-    CODEX_SKILLS_SRC="${CODEX_SKILLS_SRC:-/etc/podbay/claude/skills}"
-    CODEX_SKILLS_DEST="${CODEX_SKILLS_DEST:-/home/dev/.codex/skills}"
-    CODEX_SKILLS_OWNER="${CODEX_SKILLS_OWNER:-dev:dev}"
-    if [ "$CODEX_SKILLS_AGENT" = "codex" ] && [ -d "$CODEX_SKILLS_SRC" ]; then
-      mkdir -p "$CODEX_SKILLS_DEST"
-      n=0
-      for d in "$CODEX_SKILLS_SRC"/*/; do
-        [ -d "$d" ] || continue                       # no skills → glob stays literal
-        name=$(basename "$d")
-        [ "$name" = ".system" ] && continue           # never shadow codex's built-ins
-        rm -rf "$CODEX_SKILLS_DEST/$name"
-        cp -r "$d" "$CODEX_SKILLS_DEST/$name" && n=$((n+1))
-      done
-      chown -R "$CODEX_SKILLS_OWNER" "$CODEX_SKILLS_DEST" 2>/dev/null || true
-      echo "podbay: translated $n env skills -> $CODEX_SKILLS_DEST (codex)"
-    fi
-    # <<< podbay:codex-skills-translate
+    pb_translate_codex_skills
 }
 
 if [ -f "$MARKER" ]; then
@@ -785,38 +573,7 @@ else
     # delivered"). Now the same hash-marker pattern as ~/.claude/CLAUDE.md above:
     # regenerate when OUR last write is untouched; if the user edited it, it's
     # THEIR file — leave it alone (their edit outranks our refresh).
-    # >>> podbay:work-rules-refresh — base-image.test.ts extracts this block verbatim and
-    # exercises fresh-seed / refresh-on-change / never-clobber-user-edits with overridden paths.
-    if [ -z "$GH_REPO" ] && ls "$WORK/.claude/rules/"*.md >/dev/null 2>&1; then
-      WORK_RULES_MARKER="$WORK/.claude/.podbay-rules-hash"
-      ASSEMBLED="$(mktemp)"
-      {
-        echo "# Project rules (assembled by podbay from .claude/rules — always in effect)"
-        echo
-        for r in "$WORK/.claude/rules/"*.md; do
-          echo "<!-- source: .claude/rules/$(basename "$r") -->"
-          cat "$r"
-          echo
-        done
-      } > "$ASSEMBLED"
-      NEW_WORK_HASH="$(sha256sum "$ASSEMBLED" | cut -d' ' -f1)"
-      if [ ! -f "$WORK/CLAUDE.md" ]; then
-        cp "$ASSEMBLED" "$WORK/CLAUDE.md"
-        printf '%s' "$NEW_WORK_HASH" > "$WORK_RULES_MARKER"
-      else
-        CUR_WORK_HASH="$(sha256sum "$WORK/CLAUDE.md" 2>/dev/null | cut -d' ' -f1)"
-        PREV_WORK_HASH="$(cat "$WORK_RULES_MARKER" 2>/dev/null || true)"
-        if [ "$CUR_WORK_HASH" = "$PREV_WORK_HASH" ] && [ "$CUR_WORK_HASH" != "$NEW_WORK_HASH" ]; then
-          cp "$ASSEMBLED" "$WORK/CLAUDE.md"                 # untouched since we wrote it → refresh
-          printf '%s' "$NEW_WORK_HASH" > "$WORK_RULES_MARKER"
-        elif [ -z "$PREV_WORK_HASH" ]; then
-          : # pre-marker pod with an existing CLAUDE.md: can't tell ours from theirs — never clobber
-        fi
-      fi
-      rm -f "$ASSEMBLED"
-      chown dev:dev "$WORK/CLAUDE.md" "$WORK_RULES_MARKER" 2>/dev/null || true
-    fi
-    # <<< podbay:work-rules-refresh
+    pb_refresh_work_rules
     # (settings.json is now written by the every-boot podbay:settings-refresh block above,
     # not here — a seed-once write froze the preset on existing pods.)
   fi

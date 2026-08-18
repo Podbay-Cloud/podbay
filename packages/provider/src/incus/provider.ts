@@ -626,6 +626,51 @@ export class IncusProvider implements SandboxProvider {
     }
   }
 
+  /** Live config-refresh: deliver the CURRENT env `.claude` layer + refreshed spec permissions into
+   * the running instance and re-apply them via `/opt/podbay/podbay-refresh` — WITHOUT recreating the
+   * instance or restarting the agent (contrast updateImage, which recreates + `systemctl restart
+   * podbay-agent`). settings/hooks/permissions + skills reach the live agent via Claude's file watcher
+   * / next skill use; CLAUDE.md prose lands at the next compaction. An image that predates the refresh
+   * script returns `refreshed:false` + a note (the layer was still delivered). Best-effort: never
+   * throws. */
+  async refreshConfig(
+    id: string,
+    opts: { claudeFiles?: { guest_path: string; raw_value: string }[]; permissions?: unknown },
+  ): Promise<{ refreshed: boolean; note?: string }> {
+    try {
+      // Refresh the permission preset in the live spec (same freshening as updateImage).
+      const cur = await this.incus.exec(id, ["cat", "/etc/podbay/pod-spec.json"]);
+      if (cur.exitCode === 0 && cur.stdout) {
+        const specToPush = refreshSpecPermissions(cur.stdout, opts.permissions);
+        if (specToPush !== cur.stdout)
+          await this.incus.pushFile(id, "/etc/podbay/pod-spec.json", Buffer.from(specToPush, "utf8"));
+      }
+      // Deliver the current .claude layer (skills/rules/settings source) into /etc/podbay/claude.
+      const claudeFiles = opts.claudeFiles ?? [];
+      if (claudeFiles.length > 0) {
+        const dirs = [
+          ...new Set(claudeFiles.map((f) => f.guest_path.replace(/\/[^/]*$/, "")).filter(Boolean)),
+        ];
+        for (const d of dirs) await this.incus.exec(id, ["mkdir", "-p", d]);
+        for (const f of claudeFiles)
+          await this.incus.pushFile(id, f.guest_path, Buffer.from(f.raw_value, "base64"));
+      }
+      // Re-apply IN PLACE — re-runs the idempotent refresh blocks, NO agent restart. A pod on an
+      // image without the script degrades gracefully: the layer is delivered, apply awaits an update.
+      const r = await this.incus.exec(id, ["podbay-refresh"]);
+      if (r.exitCode !== 0)
+        return {
+          refreshed: false,
+          note: "delivered; this pod's image predates in-place refresh — update it to apply",
+        };
+      log.info("pod_config_refreshed", { podId: id, files: claudeFiles.length });
+      return { refreshed: true };
+    } catch (e) {
+      log.warn("pod_config_refresh_failed", { podId: id, err: String(e) });
+      return { refreshed: false, note: `refresh failed: ${String(e).slice(0, 120)}` };
+    }
+  }
+
   async endpoint(id: string): Promise<string> {
     return this.podAddress(id, this.config.agentPort);
   }

@@ -261,6 +261,7 @@ export default async function PodCockpitPage({ params }: { params: Promise<{ slu
         lifecycleLocked={envDetail?.lifecycle.locked ?? false}
         previewUrl={previewUrl}
         previewPublic={pod.previewPublic}
+        autoUpdate={pod.autoUpdate}
         sessionUrl={pod.sessionUrl}
         authUrl={pod.authUrl}
         authedAt={pod.authedAt}

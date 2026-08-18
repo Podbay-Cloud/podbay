@@ -20,6 +20,7 @@ function toRecord(row: Row): PodRecord {
     region: row.region,
     keepAwake: row.keepAwake,
     lifecycle: row.lifecycle as PodRecord["lifecycle"],
+    autoUpdate: (row.autoUpdate ?? "inherit") as PodRecord["autoUpdate"],
     previewPublic: row.previewPublic,
     githubRepo: row.githubRepo ?? null,
     agents: (row.agents as PodRecord["agents"]) ?? null,
@@ -62,6 +63,7 @@ export class DrizzlePodStore implements PodStore {
       region: record.region,
       keepAwake: record.keepAwake,
       lifecycle: record.lifecycle,
+      autoUpdate: record.autoUpdate,
       previewPublic: record.previewPublic,
       githubRepo: record.githubRepo,
       agents: record.agents,
@@ -123,6 +125,7 @@ export class DrizzlePodStore implements PodStore {
     if (patch.region !== undefined) set.region = patch.region;
     if (patch.keepAwake !== undefined) set.keepAwake = patch.keepAwake;
     if (patch.lifecycle !== undefined) set.lifecycle = patch.lifecycle;
+    if (patch.autoUpdate !== undefined) set.autoUpdate = patch.autoUpdate;
     if (patch.previewPublic !== undefined) set.previewPublic = patch.previewPublic;
     if (patch.authedAt !== undefined) set.authedAt = patch.authedAt ? new Date(patch.authedAt) : null;
     if (patch.sessionUrl !== undefined) set.sessionUrl = patch.sessionUrl;

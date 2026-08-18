@@ -36,8 +36,10 @@ type AttrMode = "default" | "hidden" | "custom";
 /** Per-row hint (the "subtitle"): reads as a distinct, quieter layer below the setting NAME via
  * three cues — a different family (mono vs the UI sans), a smaller size, and a dimmer grey
  * (#6b7688, a step below muted-foreground) against the label's near-white `foreground`. */
-const HINT = "mt-0.5 font-mono text-[11px] leading-snug text-[#6b7688]";
-const LABEL = "text-sm font-medium text-foreground";
+// Match the pod Settings tab's row description EXACTLY (SettingRow `desc`): same sans font, same
+// muted-foreground colour, same size — one settings design across the cockpit.
+const HINT = "mt-0.5 text-[12.5px] text-muted-foreground";
+const LABEL = "text-sm font-medium";
 
 /** Accessible switch (role="switch") hand-rolled to avoid pulling a second primitive library —
  * behaviour matches @/components/ui semantics (keyboard-focusable button, aria-checked). */

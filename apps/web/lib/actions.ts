@@ -798,6 +798,74 @@ export async function updatePodImage(slug: string): Promise<ActionResult> {
   }
 }
 
+/** "Idle for 10 min" — the dwell for the bulk idle-update button, so a pod merely paused between
+ * turns (reads `idle` instantly) isn't interrupted mid-task. See docs/plans/fleet-updates.md. */
+const IDLE_UPDATE_DWELL_MS = 10 * 60 * 1000;
+
+/** Fleet-updates (C): per-pod auto-update opt-out, from the pod Settings toggle. */
+export async function setPodAutoUpdate(slug: string, enabled: boolean): Promise<ActionResult> {
+  const user = await requireUser();
+  try {
+    await getPodService().setAutoUpdate(user.id, slug, enabled ? "inherit" : "off");
+    revalidatePath("/dashboard");
+  } catch (e) {
+    return { error: message(e) };
+  }
+}
+
+/** Fleet-updates (A): how many idle pods have an update available — drives the pods-list button's
+ * visibility + count. Cloud-only (self-host updates are a host-level compose pull, not per-pod). */
+export async function getUpdatableIdleCount(): Promise<number> {
+  if (editionOss()) return 0;
+  const user = await requireUser();
+  const pin = process.env.PODBAY_INCUS_IMAGE_DIGEST ?? null;
+  try {
+    const ids = await getPodService().updatableIdlePods(user.id, pin, IDLE_UPDATE_DWELL_MS);
+    return ids.length;
+  } catch {
+    return 0;
+  }
+}
+
+/** Fleet-updates (A): start an image update on every eligible idle pod. Recomputes eligibility
+ * server-side (never trusts the client). Cloud-only. */
+export async function updateIdlePods(): Promise<{ started: number } | { error: string }> {
+  if (editionOss()) return { error: "Bulk update is a cloud-only action." };
+  const user = await requireUser();
+  const pin = process.env.PODBAY_INCUS_IMAGE_DIGEST ?? null;
+  const image = process.env.PODBAY_BASE_IMAGE;
+  if (!image) return { error: "No pod image is configured." };
+  try {
+    const { started } = await getPodService().updateIdlePods(
+      user.id,
+      pin,
+      IDLE_UPDATE_DWELL_MS,
+      image,
+    );
+    revalidatePath("/dashboard");
+    return { started: started.length };
+  } catch (e) {
+    return { error: message(e) };
+  }
+}
+
+/** Live config-refresh (docs/plans/live-config-refresh.md): push the current pod-base content
+ * (skills / rules / settings) into this running pod and re-apply it WITHOUT a recreate — no reboot,
+ * the agent keeps running. Both editions. */
+export async function refreshPodConfig(
+  slug: string,
+): Promise<{ refreshed: boolean; note?: string } | { error: string }> {
+  const user = await requireUser();
+  try {
+    const r = await getPodService().refreshPodConfig(user.id, slug);
+    revalidatePath(`/dashboard/pods/${slug}`);
+    return r;
+  } catch (e) {
+    log.error("refresh_pod_config_failed", { userId: user.id, podId: slug, err: e });
+    return { error: message(e) };
+  }
+}
+
 /**
  * Add a second agent (a DIFFERENT type) to a running pod — multi-agent slice 3.
  * The control plane enforces the rules (different type, env-declared, running,

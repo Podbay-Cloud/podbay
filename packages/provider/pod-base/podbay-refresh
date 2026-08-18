@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# podbay-refresh — apply the CURRENT pod-base + env config to a RUNNING pod IN PLACE, with NO agent
+# restart (docs/plans/live-config-refresh.md). The control plane pushes the fresh /etc/podbay/claude
+# layer + pod-spec first, then execs this. It re-runs the SAME idempotent, hash-guarded refresh steps
+# that init.sh runs at boot — sourced from refresh-common.sh so there is ONE source of truth.
+#
+# What reaches the LIVE agent, and when:
+#   · settings.json (permissions + the relentless Stop hook) — Claude Code's file watcher, immediately
+#   · skills (~/.claude/skills, ~/.codex/skills) — on the next skill invocation
+#   · ~/work/CLAUDE.md (project rules) — at the agent's next /compact
+#   · ~/.claude/CLAUDE.md (universal rules) — user memory; next /compact at best, else next session
+#
+# Idempotent and never clobbers a user's own edits (each step is hash-marker-guarded). Safe to run
+# repeatedly. Intended to run as root (same as init.sh); it chowns everything back to dev:dev.
+set -u
+
+INIT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo /opt/podbay)"
+# shellcheck source=/dev/null
+. "$INIT_DIR/refresh-common.sh"
+
+export SPEC="${SPEC:-/etc/podbay/pod-spec.json}"
+export PODBAY_SPEC="$SPEC"
+
+echo "podbay-refresh: applying config in place (no restart)…"
+pb_refresh_runtime_rules
+pb_refresh_settings
+pb_refresh_codex_agents
+pb_refresh_claude_skills
+pb_translate_codex_skills
+pb_refresh_work_rules
+echo "podbay-refresh: done — agent NOT restarted"

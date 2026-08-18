@@ -121,6 +121,11 @@ export const pods = pgTable(
     region: text("region").notNull(),
     keepAwake: boolean("keep_awake").notNull().default(false),
     lifecycle: text("lifecycle").notNull().default("auto"),
+    // Auto-update opt-out (fleet-updates): "inherit" = follow the account default / included in the
+    // "update idle pods" bulk action; "off" = never auto-update and excluded from the bulk button
+    // (for a pod running a service the owner updates deliberately). Nullable-safe: default covers
+    // existing rows; old code ignores it. See docs/plans/fleet-updates.md.
+    autoUpdate: text("auto_update").notNull().default("inherit"),
     // Preview URL access: false = owner-authed only, true = anyone with the URL.
     previewPublic: boolean("preview_public").notNull().default(false),
     // BYO-repo: a "owner/name" GitHub repo cloned into ~/work at first boot
