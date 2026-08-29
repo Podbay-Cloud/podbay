@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -523,6 +523,36 @@ describe("agentStates + setCodexRc (agent-card truth)", () => {
   });
 });
 
+describe("sendAgentInput (per-agent sign-in code)", () => {
+  it("validates against LIVE agents, so a legacy null-`agents` pod running claude accepts its code", async () => {
+    const rec = await svc.launchPod("u", "nextjs-starter");
+    await svc.provisionPending();
+    // Legacy pod: the stored `agents` column was never populated (created before we tracked it) …
+    await store.update(rec.id, { agents: null });
+    // … but claude-code is genuinely running (live health), and the wizard shows its OAuth URL.
+    provider.agentStatesResult = [{ id: "claude-code", window: 0, authed: false, rcActive: false }];
+    await svc.sendAgentInput("u", rec.id, "claude-code", "the-code");
+    expect(provider.sentAgentInput).toEqual([{ id: rec.id, agent: "claude-code", text: "the-code" }]);
+  });
+
+  it("still rejects an agent the pod genuinely does not run", async () => {
+    const rec = await svc.launchPod("u", "nextjs-starter");
+    await svc.provisionPending();
+    provider.agentStatesResult = [{ id: "claude-code", window: 0, authed: false, rcActive: false }];
+    await expect(svc.sendAgentInput("u", rec.id, "codex", "x")).rejects.toMatchObject({ code: "invalid" });
+    expect(provider.sentAgentInput).toEqual([]);
+  });
+
+  it("needs a running pod", async () => {
+    const rec = await svc.launchPod("u", "nextjs-starter");
+    await svc.provisionPending();
+    await svc.sleep("u", rec.id);
+    await expect(svc.sendAgentInput("u", rec.id, "claude-code", "x")).rejects.toMatchObject({
+      code: "invalid",
+    });
+  });
+});
+
 describe("admin actions are visible to the OWNER", () => {
   it("marks what PODBAY did, distinctly from what the owner did", async () => {
     const rec = await svc.launchPod("u", "nextjs-starter");
@@ -873,6 +903,38 @@ describe("onboarding milestones (durable wizard state)", () => {
     await expect(svc.recordAuthed("other", rec.id)).rejects.toMatchObject({ code: "not_found" });
   });
 
+  it("re-captures the sign-in URL on a RECONNECT — a previously-authed pod that goes unauthed", async () => {
+    const rec = await svc.launchPod("u", ENV);
+    await svc.provisionPending(); // running
+    // A prior login: authed + a captured RC session URL.
+    await svc.recordAuthed("u", rec.id);
+    await svc.recordSessionUrl("u", rec.id, "https://claude.ai/code/session_OLD");
+    expect((await svc.getPod("u", rec.id)).authedAt).not.toBeNull();
+
+    // Now the login is wiped/expiring → the LIVE agent is unauthed again with a fresh sign-in URL, and
+    // no live session. This is the case the onboarding pull used to skip (gated on !authedAt/!sessionUrl),
+    // leaving the wizard hung on "Getting the sign-in link…".
+    provider.agentSession.set(rec.id, null);
+    const fresh = "https://claude.com/cai/oauth/authorize?code=true&state=xyz";
+    provider.agentStatesResult = [{ id: "claude-code", window: 0, authed: false, rcActive: false, authUrl: fresh }];
+
+    const after = await svc.reconcile(rec.id);
+    expect(after.authedAt, "stale authed marker is reset").toBeNull();
+    expect(after.sessionUrl, "the dead session URL is cleared").toBeNull();
+    expect(after.authUrl, "the fresh sign-in URL is captured for the wizard").toBe(fresh);
+  });
+
+  it("does NOT reset auth on a transient unauthed blip with no sign-in signal", async () => {
+    const rec = await svc.launchPod("u", ENV);
+    await svc.provisionPending();
+    await svc.recordAuthed("u", rec.id);
+    const authedAt = (await svc.getPod("u", rec.id)).authedAt;
+    // Unauthed but NO authUrl / loginExpired / needsReauth — a bare blip, not a real reconnect.
+    provider.agentStatesResult = [{ id: "claude-code", window: 0, authed: false, rcActive: false }];
+    const after = await svc.reconcile(rec.id);
+    expect(after.authedAt, "a bare unauthed blip must not clear the login").toBe(authedAt);
+  });
+
   it("records the remote-control session URL and is owner-scoped", async () => {
     const rec = await svc.launchPod("u", ENV);
     expect(rec.sessionUrl).toBeNull();
@@ -1049,6 +1111,63 @@ describe("idle policy (4.5)", () => {
       expect(slept, `state=${state}`).not.toContain(rec.id);
       expect((await store.get(rec.id))?.status, `state=${state}`).toBe("running");
     }
+  });
+});
+
+describe("updatableIdlePods — auto-update eligibility (idle-by-inactivity, exclude T3)", () => {
+  const PIN = "bbbbbbbbbbbbbbbb"; // the current image pods update TO
+  const BEHIND = "aaaaaaaaaaaaaaaa"; // an older image on the pod
+  const DWELL = 10 * 60 * 1000;
+
+  async function behindPod(overrides: Record<string, unknown> = {}) {
+    const rec = await svc.launchPod("u", ENV);
+    await svc.provisionPending();
+    await store.update(rec.id, { imageDigest: BEHIND, ...overrides });
+    return rec;
+  }
+
+  it("excludes a T3-controlled pod even when idle and behind", async () => {
+    const rec = await behindPod({ t3Control: true });
+    provider.agentStatusResult = "idle";
+    provider.lastActivityMsResult = 6 * 60 * 60 * 1000;
+    expect(await svc.updatableIdlePods("u", PIN, DWELL)).not.toContain(rec.id);
+  });
+
+  it("includes an UNKNOWN-status pod that is clearly inactive (idle-by-inactivity)", async () => {
+    const rec = await behindPod();
+    provider.agentStatusResult = null; // Claude not reporting
+    provider.codexStatusResult = null;
+    provider.lastActivityMsResult = 6 * 60 * 60 * 1000; // > the 4h unknown-status floor
+    expect(await svc.updatableIdlePods("u", PIN, DWELL)).toContain(rec.id);
+  });
+
+  it("excludes an UNKNOWN-status pod that is only briefly idle", async () => {
+    const rec = await behindPod();
+    provider.agentStatusResult = null;
+    provider.codexStatusResult = null;
+    provider.lastActivityMsResult = 30 * 60 * 1000; // < 4h
+    expect(await svc.updatableIdlePods("u", PIN, DWELL)).not.toContain(rec.id);
+  });
+
+  it("includes an affirmatively-idle pod past the dwell", async () => {
+    const rec = await behindPod();
+    provider.agentStatusResult = "idle";
+    provider.lastActivityMsResult = 20 * 60 * 1000; // > 10m dwell
+    expect(await svc.updatableIdlePods("u", PIN, DWELL)).toContain(rec.id);
+  });
+
+  it("excludes a busy pod regardless of idle-by-inactivity", async () => {
+    const rec = await behindPod();
+    provider.agentStatusResult = "busy";
+    provider.lastActivityMsResult = 6 * 60 * 60 * 1000;
+    expect(await svc.updatableIdlePods("u", PIN, DWELL)).not.toContain(rec.id);
+  });
+
+  it("excludes a pod already on the current image", async () => {
+    const rec = await behindPod({ imageDigest: PIN });
+    provider.agentStatusResult = "idle";
+    provider.lastActivityMsResult = 6 * 60 * 60 * 1000;
+    expect(await svc.updatableIdlePods("u", PIN, DWELL)).not.toContain(rec.id);
   });
 });
 
@@ -1282,4 +1401,102 @@ describe("pod image update (P2.5)", () => {
     expect(provider.updatedImages).toHaveLength(1); // update itself happened
     expect(provider.updateClaudeFiles[0]?.paths ?? []).toHaveLength(0); // no layer, no crash
   });
+});
+
+describe("startT3Enable idempotency (no double-enable)", () => {
+  // Three surfaces trigger an enable with no cross-coordination (completeSetupToken, the cockpit
+  // launch/auto-enable effect, the connect-panel button). Without a durable guard, a second call
+  // resets t3Stage back to "preparing" and spawns a second runT3Enable that stomps the first. These
+  // pin the guard added 2026-08-25.
+  async function runningPod(): Promise<string> {
+    const rec = await svc.launchPod("u", ENV);
+    await svc.provisionPending();
+    return rec.id;
+  }
+
+  it("is a no-op when the pod is already in T3 control (never resets the stage)", async () => {
+    const id = await runningPod();
+    await store.update(id, { t3Control: true, t3Stage: null, t3Since: null });
+    await svc.startT3Enable("u", id, "http://backend");
+    const after = await store.get(id);
+    expect(after?.t3Control).toBe(true);
+    expect(after?.t3Stage).toBe(null); // NOT flipped back to "preparing"
+    expect(after?.t3Since).toBe(null);
+  });
+
+  it("is a no-op while a RECENT enable is in flight (stage/started untouched)", async () => {
+    const id = await runningPod();
+    const inFlightSince = new Date(Date.now() - 5_000).toISOString(); // 5s ago → genuinely in flight
+    await store.update(id, { t3Since: inFlightSince, t3Stage: "downloading", t3Control: false });
+    await svc.startT3Enable("u", id, "http://backend");
+    const after = await store.get(id);
+    // The revert-to-"preparing" freeze started exactly here: a second call resetting stage + t3Since.
+    expect(after?.t3Stage).toBe("downloading");
+    expect(after?.t3Since).toBe(inFlightSince);
+  });
+
+  it("RE-RUNS a STALE (orphaned) enable — recovery after a gateway restart mid-enable", async () => {
+    const id = await runningPod();
+    const staleSince = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // 10min ago > stale window
+    await store.update(id, { t3Since: staleSince, t3Stage: "downloading", t3Control: false });
+    // Stub the detached provisioning so the guard decision is what's under test (no real exec/poll).
+    const run = vi.spyOn(svc as unknown as { runT3Enable: () => Promise<void> }, "runT3Enable").mockResolvedValue();
+    await svc.startT3Enable("u", id, "http://backend");
+    const after = await store.get(id);
+    expect(run).toHaveBeenCalledTimes(1); // NOT blocked — the orphan is re-run
+    expect(after?.t3Since).not.toBe(staleSince); // bumped to now
+    expect(after?.t3Stage).toBe("preparing");
+    run.mockRestore();
+  });
+
+  it("reconcileStuckT3Enables fails an orphaned enable so it's retryable, leaves live ones alone", async () => {
+    const orphan = await runningPod();
+    const live = await runningPod();
+    await store.update(orphan, { t3Since: new Date(Date.now() - 10 * 60 * 1000).toISOString(), t3Stage: "downloading" });
+    await store.update(live, { t3Since: new Date(Date.now() - 5_000).toISOString(), t3Stage: "downloading" });
+    const unstuck = await svc.reconcileStuckT3Enables();
+    expect(unstuck).toContain(orphan);
+    expect(unstuck).not.toContain(live);
+    expect((await store.get(orphan))?.t3Stage).toBe("error"); // surfaced → wizard shows it, owner retries
+    expect((await store.get(orphan))?.t3Since).toBe(null);
+    expect((await store.get(live))?.t3Stage).toBe("downloading"); // untouched
+  });
+
+  it("rejects enabling a pod that isn't running", async () => {
+    const rec = await svc.launchPod("u", ENV); // still provisioning, not running
+    await expect(svc.startT3Enable("u", rec.id, "http://backend")).rejects.toMatchObject({ code: "invalid" });
+  });
+});
+
+describe("destroy unlinks the T3 env (frees the account slot)", () => {
+  async function runningPod(): Promise<string> {
+    const rec = await svc.launchPod("u", ENV);
+    await svc.provisionPending();
+    return rec.id;
+  }
+  const isUnlink = (cmd: string[]) => cmd.some((a) => a.includes("connect unlink"));
+
+  it("a T3-linked pod runs `t3 connect unlink` before teardown, then destroys", async () => {
+    const id = await runningPod();
+    await store.update(id, { t3Connected: true });
+    provider.execStdout = ""; // clean exit → unlink succeeds on the first attempt (no retry/sleep)
+    await svc.destroy("u", id);
+    expect(provider.execCalls.some(isUnlink)).toBe(true);
+    expect(provider.destroyed).toContain(id);
+  });
+
+  it("a non-T3 pod is NOT unlinked (nothing to free)", async () => {
+    const id = await runningPod();
+    await svc.destroy("u", id);
+    expect(provider.execCalls.some(isUnlink)).toBe(false);
+    expect(provider.destroyed).toContain(id);
+  });
+
+  it("destroy still completes if the unlink can't run (best-effort)", async () => {
+    const id = await runningPod();
+    await store.update(id, { t3Control: true });
+    provider.execStdout = "upstream_unavailable"; // relay flaky → unlink never confirms; must not block
+    await expect(svc.destroy("u", id)).resolves.toBeUndefined();
+    expect(provider.destroyed).toContain(id);
+  }, 20000);
 });

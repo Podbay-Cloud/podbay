@@ -251,6 +251,29 @@ describe("buildInitFiles", () => {
     expect(a).toEqual(sorted);
   });
 
+  // Owner report, 2026-08-27: an agent handed over "Open your pod dashboard:
+  // https://podbay.cloud/pods/<slug> → Settings → Secrets" and it landed on the web TERMINAL.
+  // `/pods/<slug>` renders PodTerminalLoader; the cockpit (with the secrets/settings/stats tabs)
+  // is `/dashboard/pods/<slug>`. This one builder feeds Fly AND Incus, so the wrong URL was baked
+  // into every pod's spec — confirmed by reading a live pod's /etc/podbay/pod-spec.json.
+  it("writes the COCKPIT url (/dashboard/pods/…), never the bare terminal url (/pods/…)", async () => {
+    const { resolved, envDir } = await makePod();
+    // appOrigin is derived from PODBAY_PREVIEW_BASE (preview.podbay.cloud → podbay.cloud).
+    const prev = process.env.PODBAY_PREVIEW_BASE;
+    process.env.PODBAY_PREVIEW_BASE = "preview.podbay.cloud";
+    try {
+      const files = await buildInitFiles({ id: "partial-canidae-a766", resolved, envDir });
+      const f = files.find((x) => x.guest_path === "/etc/podbay/pod-spec.json")!;
+      const spec = JSON.parse(Buffer.from(f.raw_value, "base64").toString());
+      expect(spec.cockpitUrl).toBe("https://podbay.cloud/dashboard/pods/partial-canidae-a766");
+      // Guard the exact regression: the slug must not be preceded by a bare /pods/.
+      expect(spec.cockpitUrl).not.toMatch(/\.cloud\/pods\//);
+    } finally {
+      if (prev === undefined) delete process.env.PODBAY_PREVIEW_BASE;
+      else process.env.PODBAY_PREVIEW_BASE = prev;
+    }
+  });
+
   it("carries the user's display name as podName (null when unnamed)", async () => {
     const { resolved, envDir } = await makePod();
     const readSpec = async (name?: string) => {

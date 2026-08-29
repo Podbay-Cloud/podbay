@@ -103,6 +103,70 @@ test.describe("cockpit", () => {
     await expect(page.locator("[role=status]")).toHaveCount(0, { timeout: 25_000 });
   });
 
+  test("a signed-in-but-EXPIRING login offers a confirm-gated Reconnect in the Control tab", async ({
+    page,
+  }) => {
+    await login(page, "approved");
+    const slug = await launchPod(page);
+    // Claude is signed in and working, but its login hard-expires in ~3 days — the state that used to
+    // leave the dashboard ribbon ("reconnect soon in the Control tab") with no action to point to.
+    await scriptPodHealth(slug, { expiresAt: Date.now() + 3 * 24 * 60 * 60 * 1000 });
+    await page.goto(`/dashboard/pods/${slug}`);
+    await expect(page.getByRole("tab", { name: /admin/i })).toBeVisible();
+
+    const reconnect = page.getByRole("button", { name: /reconnect claude/i });
+    await expect(reconnect).toBeVisible({ timeout: 25_000 });
+
+    // It's confirm-gated (a reconnect interrupts the session), so a click opens the dialog — it does
+    // NOT immediately sign the working agent out.
+    await reconnect.click();
+    const dialog = page.getByRole("alertdialog");
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText(/still works/i);
+    await expect(dialog, "the session-interrupt warning must be shown").toContainText(/interrupted/i);
+
+    // Cancel leaves the signed-in agent exactly as it was.
+    await dialog.getByRole("button", { name: /cancel/i }).click();
+    await expect(dialog).toBeHidden();
+    await expect(reconnect).toBeVisible();
+  });
+
+  test("the reconnect wizard stays open on a still-authed agent (does not bounce to the cockpit)", async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    await login(page, "approved");
+    const slug = await launchPod(page); // signed in / authed
+    // Open the reconnect wizard the way the Control-tab Reconnect does (via ?wiz=). A reconnect starts
+    // on a STILL-authed agent; the wizard must NOT read that initial `authed` as "done" and close before
+    // the wipe (the bug where Reconnect just flashed back to the "Sign in to Claude" card).
+    await page.goto(`/dashboard/pods/${slug}?wiz=reconnect:claude-code`);
+    await expect(
+      page.getByText(/Preparing a fresh sign-in|Getting .*sign-in link/i).first(),
+      "the reconnect wizard should stay open, not bounce back to the cockpit",
+    ).toBeVisible({ timeout: 20_000 });
+  });
+
+  test("the sign-in wizard surfaces the URL from the persisted pod row (fallback path)", async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    await login(page, "approved");
+    const slug = await launchPod(page, "nextjs-starter", { name: "NO-SESSION wiz" });
+    await page.goto(`/dashboard/pods/${slug}?wiz=signin:claude-code`);
+    // Inject the URL onto the POD ROW (not the live agent) — the wizard now reads getPodAuthUrl as a
+    // fallback, so it surfaces even when the live scrape lags (the reconnect-hang class).
+    const res = await page.request.post("/api/e2e/record-auth-url", {
+      data: { slug, url: "https://claude.ai/oauth/authorize?wiz=1" },
+    });
+    expect(res.ok()).toBeTruthy();
+    await expect(page.getByRole("link", { name: /Open the Claude sign-in page/i })).toHaveAttribute(
+      "href",
+      /claude\.ai\/oauth/,
+      { timeout: 20_000 },
+    );
+  });
+
   test("doctor reports findings, and a fix marks them fixed", async ({ page }) => {
     await login(page, "approved");
     const slug = await launchPod(page);

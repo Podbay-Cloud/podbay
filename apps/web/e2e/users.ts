@@ -9,14 +9,20 @@ export const USERS = {
 export const ADMIN_EMAILS = USERS.admin.email;
 export const PREAPPROVE_EMAILS = `${USERS.admin.email},${USERS.approved.email}`;
 
-/** Fixed ephemeral-Postgres coordinates so the Playwright config can hardcode
- * DATABASE_URL (see global-setup.ts). Host port chosen to avoid clashes. */
+/**
+ * Naming defaults only — NOT a connection string.
+ *
+ * There used to be a `url` getter here (`postgresql://podbay:podbay@localhost:54329/podbay_e2e`)
+ * described as "fixed ephemeral-Postgres coordinates". It never matched reality: global-setup starts
+ * `new PostgreSqlContainer(...)` with no fixed port binding, so testcontainers assigns a RANDOM host
+ * port and its own credentials, and passes that real URL to the app as DATABASE_URL. Anything using
+ * the constant therefore connected to a dead port — `ECONNREFUSED 127.0.0.1:54329`, which failed
+ * cockpit.spec.ts's walkthrough test on every CI run and read as a mystery "e2e flake" (it blocked
+ * PR #49, 2026-08-27).
+ *
+ * The getter is deliberately gone rather than corrected: no constant CAN name a random port. Tests
+ * needing their own connection read `dbUrl` from `.e2e-state.json` (see helpers.ts).
+ */
 export const DB = {
   name: "podbay_e2e",
-  user: "podbay",
-  password: "podbay",
-  port: 54329,
-  get url() {
-    return `postgresql://${this.user}:${this.password}@localhost:${this.port}/${this.name}`;
-  },
 };

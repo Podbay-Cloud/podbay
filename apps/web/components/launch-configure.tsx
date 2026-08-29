@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useTransition } from "react";
 import { track } from "@/lib/track";
+import { scrollViewToTop } from "@/lib/scroll-to-top";
 import { useRouter } from "next/navigation";
 import { launchPod } from "@/lib/actions";
 import WizardProgress from "@/components/wizard-progress";
@@ -63,6 +64,8 @@ type Draft = {
   extraKeys: string[];
   githubRepo: string | null;
   agent: string;
+  providers: string[];
+  control: "podbay" | "t3";
   /** Persist the auth-mode choice, never the key value (a plaintext key must not sit
    * in sessionStorage). */
   agentAuth: "subscription" | "api-key";
@@ -110,15 +113,20 @@ export default function LaunchConfigure({
   const [extraKeys, setExtraKeys] = useState<string[]>([]);
   const [githubRepo, setGithubRepo] = useState<string | null>(null);
   const [agent, setAgent] = useState<string>(agentIds[0] ?? "claude-code");
+  // The pod's providers (agent CLIs) — multi-select, ≥1 (t3-unattended-integration 3.1). Defaults to the
+  // env's first agent so a single-agent env is unchanged. `control` picks Podbay vs T3 (unattended).
+  const offered = agentIds.length ? agentIds : ["claude-code"];
+  const [providers, setProviders] = useState<string[]>([offered[0]]);
+  const [control, setControl] = useState<"podbay" | "t3">("podbay");
   // Auth mode is a per-pod compliance choice (api-key-pod-mode.md): subscription
   // (default) or a BYO API key for unattended/automated pods.
   const [agentAuth, setAgentAuth] = useState<"subscription" | "api-key">("subscription");
   const [agentApiKey, setAgentApiKey] = useState("");
+  const toggleProvider = (id: string) =>
+    setProviders((prev) => (prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]));
 
-  // Which steps this env actually needs. GitHub only for BYO repos; Settings only when
-  // there's a real choice on it (a second agent, declared secrets, or — when enabled —
-  // the auth-mode picker). Empty otherwise, so we skip it.
-  const hasSettings = agentIds.length > 1 || secrets.length > 0 || SHOW_API_KEY_MODE;
+  // The Settings step now always carries the Agents + Control (Podbay/T3) picker, so it always shows.
+  const hasSettings = true;
   const steps: LaunchStep[] = [
     "basics",
     ...(byoRepo ? (["github"] as const) : []),
@@ -128,6 +136,20 @@ export default function LaunchConfigure({
 
   const DRAFT_KEY = `podbay:launch-draft:${env}`;
   const [step, setStep] = useState<LaunchStep>("basics");
+  // Each step swaps the panel's content but the view keeps its SCROLL OFFSET, so advancing from a
+  // Next button at the bottom of a long step (exactly where a phone user is when they tap it)
+  // opened the next one already scrolled past its heading. Same class of bug as the cockpit's
+  // full-page takeovers (owner report, 2026-08-27). scrollViewToTop — not window.scrollTo — because
+  // the dashboard shell scrolls its <main>, so the window never moves here. Skips the initial mount
+  // so a restored draft doesn't yank a deliberately-positioned page.
+  const steppedOnce = useRef(false);
+  useEffect(() => {
+    if (!steppedOnce.current) {
+      steppedOnce.current = true;
+      return;
+    }
+    scrollViewToTop();
+  }, [step]);
   // Restore the draft once, on mount. Done in an effect (not a lazy initializer) so
   // server and first client render agree — sessionStorage doesn't exist on the server.
   const restored = useRef(false);
@@ -152,6 +174,8 @@ export default function LaunchConfigure({
       if (typeof draft.githubRepo === "string" || draft.githubRepo === null)
         setGithubRepo(draft.githubRepo ?? null);
       if (draft.agent) setAgent(draft.agent);
+      if (Array.isArray(draft.providers) && draft.providers.length) setProviders(draft.providers.filter((p) => offered.includes(p)));
+      if (draft.control === "podbay" || draft.control === "t3") setControl(draft.control);
       if (draft.agentAuth) setAgentAuth(draft.agentAuth);
     }
     // Initial step: the saved draft wins (true resume), else the ?step= hint, else first.
@@ -165,12 +189,12 @@ export default function LaunchConfigure({
   useEffect(() => {
     if (!restored.current) return;
     try {
-      const draft: Draft = { step, name, size, cpus, memoryMb, values, extraKeys, githubRepo, agent, agentAuth };
+      const draft: Draft = { step, name, size, cpus, memoryMb, values, extraKeys, githubRepo, agent, providers, control, agentAuth };
       sessionStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
     } catch {
       /* storage full/blocked — durability is best-effort */
     }
-  }, [DRAFT_KEY, step, name, size, cpus, memoryMb, values, extraKeys, githubRepo, agent, agentAuth]);
+  }, [DRAFT_KEY, step, name, size, cpus, memoryMb, values, extraKeys, githubRepo, agent, providers, control, agentAuth]);
 
   // Pasting a `.env` blob into any secret field fills the declared keys and turns any
   // unknown valid keys into extra variables (rendered below, sent with launch).
@@ -268,9 +292,9 @@ export default function LaunchConfigure({
         cpus: oss ? cpus ?? undefined : undefined,
         memoryMb: oss ? memoryMb ?? undefined : undefined,
         githubRepo: githubRepo ?? undefined,
-        // Only send an explicit choice when the env actually offers a choice;
-        // otherwise let the env's declared default stand.
-        agents: agentIds.length > 1 ? [agent] : undefined,
+        // The owner's explicit provider pick (≥1) + control mode (Podbay or T3 unattended).
+        agents: providers.length ? providers : undefined,
+        control,
         agentAuth,
         agentApiKey: agentAuth === "api-key" ? agentApiKey.trim() || undefined : undefined,
       });
@@ -284,7 +308,20 @@ export default function LaunchConfigure({
       } catch {
         /* best-effort */
       }
-      router.push(`/dashboard/pods/${r.id}`);
+      // Launch-into-T3 (3.2): a t3-control pod lands DIRECTLY on the URL-backed setup-token wizard
+      // (?wiz=renew-then-t3) — its single 1-year login — instead of a transient ?enableT3=1 flag. This
+      // is what makes the flow feel solid: the wizard is the FIRST thing rendered (no cockpit flash) and
+      // it survives a refresh (the ?wiz param persists), where the old flag was stripped and fell back to
+      // "Sign in to Claude" (fix/t3-wizard-polish, #1 + #6). Its onDone runs the T3 enable.
+      const t3Suffix =
+        control === "t3"
+          ? // Claude → straight to its setup-token wizard (the single 1-year login); a Codex-only T3 pod
+            // has no Claude token, so fall back to the legacy enable path (Codex keeps its device login).
+            providers.includes("claude-code")
+            ? "?wiz=renew-then-t3"
+            : "?enableT3=1"
+          : "";
+      router.push(`/dashboard/pods/${r.id}${t3Suffix}`);
     });
   }
 
@@ -398,37 +435,96 @@ export default function LaunchConfigure({
 
           {step === "settings" && (
             <>
-              {agentIds.length > 1 && (
-                <div className="flex flex-col gap-2">
-                  <Label>Agent</Label>
-                  <div
-                    className="inline-flex w-fit rounded-md border border-border p-0.5"
-                    role="radiogroup"
-                    aria-label="Agent"
-                  >
-                    {agentIds.map((id) => (
+              {/* Agents — multi-select, ≥1 (t3-unattended-integration 3.1). Always shown so Control is pickable. */}
+              <div className="flex flex-col gap-2.5">
+                <div className="flex items-baseline gap-2">
+                  <Label>Agents</Label>
+                  <span className="text-[12px] font-normal text-muted-foreground/80">pick one or more</span>
+                </div>
+                <div className="flex flex-wrap gap-2.5">
+                  {offered.map((id) => {
+                    const on = providers.includes(id);
+                    return (
                       <button
                         key={id}
                         type="button"
-                        role="radio"
-                        aria-checked={agent === id}
-                        onClick={() => setAgent(id)}
-                        className={`flex items-center gap-2 rounded px-3 py-1.5 text-sm font-medium transition-colors ${
-                          agent === id
-                            ? "bg-accent text-foreground"
-                            : "text-muted-foreground hover:text-foreground"
+                        aria-pressed={on}
+                        onClick={() => {
+                          if (on && providers.length === 1) return; // enforce ≥1
+                          toggleProvider(id);
+                        }}
+                        className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                          on ? "border-primary/50 bg-accent text-foreground" : "border-border text-muted-foreground hover:text-foreground"
                         }`}
                       >
+                        <span
+                          aria-hidden
+                          className={`flex size-[15px] items-center justify-center rounded border text-[10px] ${
+                            on ? "border-primary bg-primary text-primary-foreground" : "border-border"
+                          }`}
+                        >
+                          {on ? "✓" : ""}
+                        </span>
                         <AgentLogo agent={id} className="size-4" />
                         {AGENT_LABELS[id] ?? id}
                       </button>
-                    ))}
-                  </div>
-                  <p className="text-[13px] text-muted-foreground">
-                    Which coding agent runs in this pod. You can add the other later.
-                  </p>
+                    );
+                  })}
                 </div>
-              )}
+                <p className={`text-[13px] ${providers.length === 0 ? "text-warning" : "text-muted-foreground"}`}>
+                  {providers.length === 0
+                    ? "Pick at least one agent — a pod must run at least one."
+                    : "The agent CLIs that run on this pod. You'll sign in to each during setup."}
+                </p>
+              </div>
+
+              {/* Control — Podbay vs T3 Code (t3-unattended-integration 3.1). */}
+              <div className="flex flex-col gap-2.5">
+                <Label>Control</Label>
+                <div className="inline-flex w-fit rounded-md border border-border p-0.5" role="radiogroup" aria-label="Control">
+                  {(["podbay", "t3"] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      role="radio"
+                      aria-checked={control === m}
+                      onClick={() => setControl(m)}
+                      className={`inline-flex items-center gap-2 rounded px-3 py-1.5 text-sm font-medium transition-colors ${
+                        control === m ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {m === "t3" && <AgentLogo agent="t3" className="size-4" />}
+                      {m === "podbay" ? "Podbay" : "T3 Code"}
+                    </button>
+                  ))}
+                </div>
+                {control === "podbay" ? (
+                  <p className="text-[13px] text-muted-foreground">
+                    Podbay drives your agents. Subscription sign-in — great for interactive use, but needs a re-login
+                    roughly monthly.
+                  </p>
+                ) : (
+                  <div className="rounded-lg border border-sky-400/25 bg-sky-400/[0.04] p-3.5">
+                    <div className="text-[13.5px] font-semibold text-sky-300">T3 Code — control all agents from one app</div>
+                    <p className="mt-1.5 text-[13px] text-muted-foreground">
+                      Use T3 Code on phone or desktop to control your agents on this pod&mdash;even while you&rsquo;re away.
+                      While enabled, it replaces Podbay&rsquo;s built-in agent controls.
+                    </p>
+                    <ul className="mt-2 list-disc space-y-1 pl-4 text-[12.7px] text-muted-foreground">
+                      <li>Stay signed in for one year: sign in once during setup, with no monthly reauthentication.</li>
+                      <li>Turn off T3 Code anytime to return to Podbay&rsquo;s controls.</li>
+                    </ul>
+                    <a
+                      href="https://t3.codes"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-2.5 inline-block text-[12.7px] font-medium text-sky-400 hover:underline"
+                    >
+                      Learn more about T3 Code ↗
+                    </a>
+                  </div>
+                )}
+              </div>
 
               {SHOW_API_KEY_MODE && (
               <div className="flex flex-col gap-2">

@@ -67,6 +67,40 @@ test.describe("launch wizard", () => {
     await expect(page.getByLabel("Name")).toHaveValue("e2e Chef");
   });
 
+  // Owner report, 2026-08-27: on mobile, advancing a wizard (or pressing Update) left the page at
+  // its OLD scroll offset, so the next step opened already scrolled past its heading. The Next
+  // button sits at the bottom of the step, which is exactly where a phone user is when they tap it.
+  test("advancing a step scrolls back to the top (mobile)", async ({ page }) => {
+    test.setTimeout(120_000);
+    // Deliberately short, so the step's content is guaranteed taller than the viewport and the
+    // page genuinely scrolls — the precondition the bug needs.
+    await page.setViewportSize({ width: 390, height: 620 });
+    await login(page, "approved");
+
+    await page.goto("/dashboard/pods/new?env=doc-qa");
+    await expect(page.getByText(/step 1 of 3 — basics/i)).toBeVisible();
+    await page.getByLabel("Name").fill("e2e Scroll");
+
+    // The dashboard shell scrolls its <main> (dashboard-shell.tsx: `overflow-y-auto`), NOT the
+    // window — window.scrollY is always 0 inside the shell, which is precisely why the original
+    // window.scrollTo fix was a silent no-op. Assert against the real scroller.
+    const offset = () => page.evaluate(() => document.querySelector("main")?.scrollTop ?? 0);
+
+    // Put the view where a phone user is when they reach Next: at the bottom.
+    await page.evaluate(() => {
+      const m = document.querySelector("main");
+      if (m) m.scrollTop = m.scrollHeight;
+    });
+    expect(await offset(), "step 1 must be scrollable for this test to mean anything").toBeGreaterThan(0);
+
+    await page.getByRole("button", { name: /^next$/i }).click();
+    await expect(page.getByText(/step 2 of 3 — settings/i)).toBeVisible();
+
+    // The new step starts at its beginning, not wherever the previous one was scrolled to.
+    await expect.poll(offset).toBe(0);
+    await expect(page.getByText(/step 2 of 3 — settings/i)).toBeInViewport();
+  });
+
   test("wizard without an env redirects to the environments gallery", async ({ page }) => {
     await login(page, "approved");
     await page.goto("/dashboard/pods/new");

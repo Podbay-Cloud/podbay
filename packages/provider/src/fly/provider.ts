@@ -437,6 +437,24 @@ export class FlyProvider implements SandboxProvider {
     return narrow && windowMs ? narrowSnapshot(snap, windowMs) : snap;
   }
 
+  async previewShot(id: string): Promise<Buffer | null> {
+    const m = await this.findMachine(id);
+    if (!m || mapStatus(m.state) !== "running" || !m.private_ip) return null;
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 12_000); // a capture is slower than a JSON probe
+    try {
+      const res = await fetch(`http://[${m.private_ip}]:${this.config.agentPort}/preview-shot`, {
+        signal: ctrl.signal,
+      });
+      if (!res.ok) return null;
+      return Buffer.from(await res.arrayBuffer());
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
 
   /** Write /etc/podbay/secrets.env on a running pod (0600, dev-owned) from the
    * given key→value map, replacing prior contents. Content travels base64 via

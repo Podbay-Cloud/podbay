@@ -26,7 +26,7 @@ export function agentGone(paneText: string): boolean {
  * was "exit". Treat a known gate as NOT ready and let it be answered/seeded, never typed at.
  */
 const BLOCKING_GATE_RE =
-  /bypass permissions mode|do you want to proceed|select login method|use this api key|do you trust the files|yes, i accept/i;
+  /bypass permissions mode|do you want to proceed|select login method|use this api key|do you trust the files|yes, i accept|oauth error/i;
 
 /** True when the pane is showing a gate that swallows keystrokes — never type here. */
 export function atBlockingGate(paneText: string): boolean {
@@ -62,4 +62,50 @@ export function atBypassGate(paneText: string): boolean {
  */
 export function paneAcceptsInput(paneText: string): boolean {
   return !agentGone(paneText) && !atBlockingGate(paneText);
+}
+
+/** Which known blocking gate a pane is showing. `atBlockingGate` only says "some gate is up, don't
+ * type"; the menu WATCHDOG needs to know WHICH one so it can drive the right answer (or surface an
+ * owner-decision one). `bypass` is tested with its dual-match so the working status line never counts;
+ * `proceed` is the one we deliberately do NOT auto-answer (owner decision). */
+export type GateKind =
+  | "login-menu"
+  | "api-key"
+  | "bypass"
+  | "trust"
+  | "proceed"
+  | "login-continue"
+  | "oauth-retry";
+export function classifyGate(paneText: string): GateKind | null {
+  if (atBypassGate(paneText)) return "bypass";
+  if (/select login method/i.test(paneText)) return "login-menu";
+  if (/use this api key|custom api key in your environment/i.test(paneText)) return "api-key";
+  if (/do you trust the files/i.test(paneText)) return "trust";
+  if (/do you want to proceed/i.test(paneText)) return "proceed";
+  // The post-login "Login successful. Press Enter to continue…" screen: a dismiss-with-Enter
+  // confirmation, NOT an owner decision. Left unhandled it sat forever as `dialog open`, which the
+  // dashboard reads as "Needs you" even though sign-in fully succeeded (makore.app dev, 2026-08-26).
+  if (/press enter to continue/i.test(paneText)) return "login-continue";
+  // A pasted OAuth code the server rejected: "OAuth error: Invalid code … Press Enter to retry."
+  // Enter here RESUBMITS the same dead code — it is not a dismiss-and-move-on gate like the one
+  // above, so it must stay unanswerable and route to login-required (test:1, 2026-08-26/27).
+  if (/oauth error/i.test(paneText)) return "oauth-retry";
+  return null;
+}
+
+/**
+ * The agent's own LIVE auth-failure output — the signal a mid-session logout leaves in the terminal
+ * that the credential FILE misses (a refresh that failed while the stored hard-expiry is still in the
+ * future). Claude prints "Login expired · Please run /login"; the remote-control worker reports
+ * `worker_auth_expired` / "sign in again" (velsa hit both, 2026-08-23). A rejected OAuth code during a
+ * fresh /login is the same shape of blind spot — the OLD credential file still parses as unexpired, so
+ * file-based `authed` alone reports fine while the pane is stuck needing a human to retry sign-in
+ * (test:1, 2026-08-26/27). Kept deliberately specific so it never matches ordinary output. A caller
+ * debounces (must persist across ticks) before acting, and clears it the moment the agent reads authed
+ * again. `login method` is EXCLUDED — that is the menu (classifyGate handles it), not a failure.
+ */
+const AUTH_FAILURE_RE =
+  /login expired|please run \/login|worker[_ ]auth[_ ]expired|(?:needs to |please )?sign in again|session initialization failed|oauth error/i;
+export function authFailureInPane(paneText: string): boolean {
+  return AUTH_FAILURE_RE.test(paneText) && !/select login method/i.test(paneText);
 }

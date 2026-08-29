@@ -64,3 +64,26 @@ corresponding e2e flow spec in the same change.
 - **WHEN** an opsx change introduces a new user-facing flow
 - **THEN** its tasks include an e2e flow spec and the suite passes before archive
 
+### Requirement: The fake provider can script Claude's RC lifecycle
+
+The fake sandbox provider SHALL let a test script a Claude agent's RC lifecycle classification
+(`active`/`recovering`/`down`/`login-required`/`unknown`) directly on `podHealth()`, and SHALL
+simulate the `/agent/rc-restore` endpoint's response for a scripted pod, so the cockpit's RC
+recovery states and the Restore-remote-control action can be exercised without a real pod-agent,
+Anthropic broker, or Claude app.
+
+#### Scenario: A scripted rcState reaches the cockpit
+
+- **GIVEN** a test scripts a pod's Claude `rcState`
+- **WHEN** the cockpit polls that pod's health
+- **THEN** the reported `rcState` (and its derived `rcActive`) reflect the scripted value, and an
+  unscripted pod behaves exactly as before this capability existed
+
+#### Scenario: A scripted restore outcome reclassifies the pod
+
+- **GIVEN** a test scripts a pod's post-restore `rcState`
+- **WHEN** the cockpit's Restore-remote-control action execs the simulated `/agent/rc-restore`
+  call
+- **THEN** the fake provider returns the same `{ok, reason?, rcState?}` shape the real endpoint
+  does and updates the pod's scripted `rcState` so the next health poll reflects it
+

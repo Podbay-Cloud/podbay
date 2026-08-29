@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { imageState, shortDigest, sameDigest } from "@/lib/pod-image";
+import { imageState, shortDigest, sameDigest, imageVersionLabel } from "@/lib/pod-image";
 
 const pod = (over: Record<string, unknown> = {}) =>
   ({ provider: "incus", imageDigest: "abc", updatingSince: null, ...over }) as never;
@@ -70,5 +70,26 @@ describe("sameDigest matches across digest FORMS (the 'nothing changed' bug)", (
     process.env.PODBAY_INCUS_IMAGE_DIGEST = short;
     const s = imageState({ provider: "incus", imageDigest: full, updatingSince: null });
     expect(s.behind).toBe(false); // was TRUE with raw !== → false "update available"
+  });
+});
+
+describe("imageVersionLabel — version alongside the digest, never instead of it", () => {
+  it("shows version WITH the short digest (a version is not unique per build)", () => {
+    expect(imageVersionLabel("0.1.0", "a1b2c3d4e5f6aaaa")).toBe("v0.1.0 (a1b2c3d4e5f6)");
+  });
+
+  it("falls back to the short digest alone when there is no version — the common path today (§1.4)", () => {
+    expect(imageVersionLabel(null, "a1b2c3d4e5f6aaaa")).toBe("a1b2c3d4e5f6");
+    expect(imageVersionLabel(undefined, "sha256:0a5baad9021a37dd")).toBe("0a5baad9021a");
+    expect(imageVersionLabel("   ", "a1b2c3d4e5f6aaaa")).toBe("a1b2c3d4e5f6");
+  });
+
+  it("normalizes a leading v so '0.1.0' and 'v0.1.0' render identically", () => {
+    expect(imageVersionLabel("v0.1.0", "a1b2c3d4e5f6aaaa")).toBe("v0.1.0 (a1b2c3d4e5f6)");
+  });
+
+  it("degrades sanely when the digest is unknown", () => {
+    expect(imageVersionLabel("0.1.0", null)).toBe("v0.1.0");
+    expect(imageVersionLabel(null, null)).toBe("—");
   });
 });

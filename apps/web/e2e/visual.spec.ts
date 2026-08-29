@@ -63,6 +63,13 @@ test("VISUAL mobile — launch wizard, walkthrough, github wizard", async ({ pag
 
   // A pod's cockpit → the connect walkthrough, EVERY step, on a phone.
   const slug = await launchPod(page);
+  // The walkthrough is PER-USER and once-ever, and both visual tests share the "approved" user —
+  // so the wide-viewport test above consumes it and this one finds it already dismissed. Reset it
+  // here too, exactly as that test and cockpit.spec.ts do.
+  //
+  // This surfaced only once resetWalkthroughSeen was FIXED: while it pointed at a dead DB port it
+  // threw, so the first visual test failed outright and never got far enough to consume the tour.
+  await resetWalkthroughSeen(USERS.approved.email);
   await page.goto(`/dashboard/pods/${slug}`);
   const tour = page.getByTestId("connect-walkthrough");
   await tour.waitFor({ state: "visible", timeout: 60_000 });

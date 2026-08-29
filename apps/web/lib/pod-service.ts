@@ -112,6 +112,9 @@ class DisabledProvider implements SandboxProvider {
   async fetchMetrics() {
     return null;
   }
+  async previewShot() {
+    return null;
+  }
   async githubStatus() {
     return { connected: false, login: null };
   }

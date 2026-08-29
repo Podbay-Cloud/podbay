@@ -47,6 +47,44 @@ one-line update prompt SHALL likewise prefer the `summary` over the commit-deriv
 - **WHEN** an image without a `summary` is shown
 - **THEN** the cockpit SHALL show the parsed commit changelog rather than an empty summary
 
+### Requirement: The derived changelog is cleaned and grouped for owners
+
+The commit-derived changelog is DEVELOPER text and SHALL be cleaned before an owner sees it or it is
+published. Commits whose conventional-commit type marks them internal (`chore`, `test`, `ci`, `build`,
+`refactor`, `style`, `docs`) SHALL be dropped, and issue/pull-request references SHALL be removed —
+they resolve against a private repository, so an owner following one reaches nothing.
+
+Entries SHALL be grouped by what the change means to an owner — New / Fixed / Improved, derived from
+the commit type — rather than shown as an undifferentiated list; an entry whose type is unrecognised
+SHALL remain ungrouped rather than be guessed into a group. The one-line prompt SHALL state the kinds
+of change present rather than only a count.
+
+Cleaning SHALL be applied at generation (so stored and published text is already clean) as well as at
+presentation. It is a floor and not the goal: a derived changelog can be no better than the commit
+subjects behind it, and a single commit bundling several unrelated changes cannot be split by any
+parser — which is why a written release description leads it (see the summary-first requirement).
+
+#### Scenario: Internal churn is not shown to an owner
+
+- **WHEN** a build's range contains chore, test, CI, build, refactor, style or docs commits
+- **THEN** those entries SHALL NOT appear in the owner-facing changelog
+
+#### Scenario: A build of only internal churn is not called a rebuild
+
+- **WHEN** every commit in a build's range is internal churn
+- **THEN** the owner SHALL be told the build contains internal changes only, distinctly from the
+  "same software, rebuilt" case — the build genuinely differs, there is simply nothing to act on
+
+#### Scenario: Private references never reach an owner
+
+- **WHEN** a commit subject carries an issue or pull-request reference
+- **THEN** it SHALL NOT appear in the owner-facing changelog or in published release text
+
+#### Scenario: Changes are grouped by meaning
+
+- **WHEN** an owner views a build's changelog
+- **THEN** entries SHALL be grouped New / Fixed / Improved, with unrecognised entries ungrouped
+
 ### Requirement: Each published image is recorded with a git-derived changelog
 The system SHALL record one manifest row per published pod-base image, keyed by its image digest,
 capturing the git commit range it was built from (`fromSha..toSha`) and release `notes` auto-derived
@@ -62,6 +100,49 @@ default to `pod-base` (the current monolith) so the manifest generalizes to per-
 - **WHEN** the record request is submitted through the admin-authenticated path
 - **THEN** the release notes SHALL be the commit summaries of `fromSha..toSha` (computed by the caller,
   which has the git checkout) and the row SHALL be persisted by the server (which has the database)
+
+### Requirement: A recorded image may carry a release version, additive to its digest
+
+A manifest row MAY carry a release version label. The canonical 64-char digest SHALL remain the
+image's identity for every decision about what boots or what is compared — the launch alias, the
+pinned digest, digest normalization, and prune protection. The version SHALL affect presentation
+only, SHALL be stored per row, and SHALL be optional: a row without one is valid and renders with the
+existing digest-and-date presentation (every pre-versioning row is in this state, so it is the common
+path, not an edge case). Version is stored per row rather than derived so a re-promoted (rolled-back)
+image shows its OWN earlier version rather than the newest ever recorded.
+
+#### Scenario: A row without a version stays valid
+
+- **WHEN** a manifest row has no version
+- **THEN** it SHALL remain valid and SHALL render with the existing digest-and-date presentation
+
+#### Scenario: Recording accepts an optional version
+
+- **WHEN** an image is recorded (or re-recorded) with a version supplied
+- **THEN** the version SHALL be stored on that row; when no version is supplied the row SHALL keep a
+  null version rather than being assigned one
+
+#### Scenario: A partial re-record preserves fields it does not supply
+
+- **WHEN** an already-recorded image is re-recorded with only some fields (e.g. attaching just a
+  version)
+- **THEN** the fields the caller did NOT supply — summary, build time, size, alias, changelog — SHALL
+  retain their stored values rather than being cleared, so a partial update never destroys the rest of
+  the row
+
+#### Scenario: Version never displaces the digest as identity
+
+- **WHEN** an image carries a version
+- **THEN** pinning, promotion, comparison and prune protection SHALL continue to use the canonical
+  digest, and the version SHALL affect presentation only
+
+#### Scenario: The version is shown WITH the digest, never instead of it
+
+- **WHEN** a build's identity is shown to an owner or an admin (the cockpit's up-to-date line, the
+  update dialog, the bulk-update dialog, the admin image and pod views)
+- **THEN** the version SHALL be shown together with the short digest (e.g. `v0.4.2 (a1b2c3)`), and the
+  digest SHALL NOT be dropped — a version is not unique per build, so the digest remains needed to
+  disambiguate two builds that share a version
 
 ### Requirement: Canonical digest form
 

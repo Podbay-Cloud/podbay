@@ -1,0 +1,1 @@
+ALTER TABLE "pod_base_images" ADD COLUMN "version" text;

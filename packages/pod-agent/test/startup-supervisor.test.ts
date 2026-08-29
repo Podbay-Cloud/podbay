@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  collectDescendants,
   declaredStartupProcesses,
   devServerProcess,
   devServerDisabledPath,
+  parseListeningPids,
   isSupervisionPaused,
   nextCacheDir,
   pausePath,
@@ -10,6 +12,7 @@ import {
   respawnStartupProcess,
   shouldCleanNextCache,
   type StartupProcess,
+  leadingCdPath,
 } from "../src/startup-supervisor.js";
 
 const HOME = "/home/dev";
@@ -64,6 +67,65 @@ describe("declaredStartupProcesses", () => {
     expect(
       declaredStartupProcesses(HOME, WORK, files({ [`${HOME}/.podbay/startup.json`]: "not json" })),
     ).toEqual([]);
+  });
+
+  it("carries a valid declared port as probePort, ignores an invalid one", () => {
+    const read = files({
+      [`${HOME}/.podbay/startup.json`]: JSON.stringify({
+        commands: [
+          { slug: "ops", command: "ops.sh run", port: 3000 },
+          { slug: "bad", command: "x.sh", port: 70000 }, // out of range → ignored
+          { slug: "str", command: "y.sh", port: "3000" }, // wrong type → ignored
+        ],
+      }),
+    });
+    const procs = declaredStartupProcesses(HOME, WORK, read);
+    expect(procs.find((p) => p.slug === "ops")!.probePort).toBe(3000);
+    expect(procs.find((p) => p.slug === "bad")!.probePort).toBeUndefined();
+    expect(procs.find((p) => p.slug === "str")!.probePort).toBeUndefined();
+  });
+});
+
+describe("collectDescendants — the process-tree reaper for a race-free restart", () => {
+  // A tree where the port-binding LEAF (400) is a grandchild that escaped the tracked pid's group —
+  // the exact shape a group-kill misses (afisha-crawler: wrapper 100 → node 200 → next-server 400).
+  const tree: Record<number, number[]> = { 100: [200, 300], 200: [400], 300: [], 400: [] };
+  const children = (pid: number) => tree[pid] ?? [];
+
+  it("returns every descendant, excluding the root", () => {
+    expect(collectDescendants(100, children).sort((a, b) => a - b)).toEqual([200, 300, 400]);
+  });
+
+  it("reaches the deep grandchild that binds the port", () => {
+    expect(collectDescendants(100, children)).toContain(400);
+  });
+
+  it("returns [] for a leaf with no children", () => {
+    expect(collectDescendants(400, children)).toEqual([]);
+  });
+
+  it("is cycle-safe — a malformed ppid loop can't hang it", () => {
+    const loop: Record<number, number[]> = { 1: [2], 2: [3], 3: [1] };
+    expect(collectDescendants(1, (p) => loop[p] ?? []).sort((a, b) => a - b)).toEqual([2, 3]);
+  });
+
+  it("ignores pid 0/1 and non-finite children", () => {
+    expect(collectDescendants(10, (p) => (p === 10 ? [0, 1, NaN, 42] : []))).toEqual([42]);
+  });
+});
+
+describe("parseListeningPids — the port-anchored reaper's ss parser", () => {
+  it("extracts every listening pid, deduped, skipping pid<=1", () => {
+    const ss = [
+      'LISTEN 0 511 *:3000 *:* users:(("node",pid=2251,fd=20),("node",pid=2275,fd=21))',
+      'LISTEN 0 511 [::]:3000 [::]:* users:(("node",pid=2251,fd=22))',
+    ].join("\n");
+    expect(parseListeningPids(ss).sort((a, b) => a - b)).toEqual([2251, 2275]);
+  });
+
+  it("returns [] for empty / pid-less output", () => {
+    expect(parseListeningPids("")).toEqual([]);
+    expect(parseListeningPids("LISTEN 0 511 *:3000 *:*")).toEqual([]);
   });
 });
 
@@ -194,5 +256,41 @@ describe("respawnStartupProcess", () => {
     });
     expect(pid).toBe(0);
     expect(Object.keys(written)).toEqual([]);
+  });
+});
+
+describe("leadingCdPath", () => {
+  // Startup commands are shell strings; the common shape is `cd <dir> && <run>`. If that directory
+  // has been deleted the command can never succeed, and saying so turns an unactionable "keeps
+  // failing" into a one-line fix. Wrong answers are worse than none, hence the refusals below.
+  it("finds the directory a command cds into", () => {
+    expect(
+      leadingCdPath("cd /home/dev/worktrees/dashboard-concepts && pnpm -F @podbay/web exec next dev"),
+    ).toBe("/home/dev/worktrees/dashboard-concepts");
+  });
+
+  it("handles quoting and a semicolon separator", () => {
+    expect(leadingCdPath('cd "/home/dev/my dir" && ls')).toBe("/home/dev/my dir");
+    expect(leadingCdPath("cd '/home/dev/other' ; ls")).toBe("/home/dev/other");
+  });
+
+  it("returns null when the command does not start with cd", () => {
+    expect(leadingCdPath("pnpm dev")).toBeNull();
+    expect(leadingCdPath("npx serve && cd /tmp")).toBeNull();
+  });
+
+  it("REFUSES to guess an unexpanded path — a wrong 'folder is missing' is worse than silence", () => {
+    expect(leadingCdPath("cd $HOME/work && pnpm dev")).toBeNull();
+    expect(leadingCdPath("cd ~/work && pnpm dev")).toBeNull();
+    expect(leadingCdPath("cd /home/dev/*/build && ls")).toBeNull();
+  });
+
+  it("refuses a relative path, which is meaningless without knowing the cwd", () => {
+    expect(leadingCdPath("cd work && pnpm dev")).toBeNull();
+    expect(leadingCdPath("cd ../sibling && pnpm dev")).toBeNull();
+  });
+
+  it("requires a separator, so a bare cd is not treated as a prefix", () => {
+    expect(leadingCdPath("cd /home/dev/work")).toBeNull();
   });
 });

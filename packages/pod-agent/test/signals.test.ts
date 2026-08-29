@@ -77,3 +77,37 @@ describe("codexActivityFromDisk (rollout-mtime activity)", () => {
     expect(codexActivityFromDisk(NOW, seed(null))).toBeNull();
   });
 })
+
+import { lastAgentActivityMs } from "../src/signals.js";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+describe("lastAgentActivityMs — honest 'last active' from transcript entries", () => {
+  function claudeTranscript(root: string, name: string, lines: object[]): void {
+    const dir = join(root, "proj");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, name), lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  }
+
+  it("returns ms since the NEWEST transcript entry (tool calls count), across files", () => {
+    const root = mkdtempSync(join(tmpdir(), "pa-claude-"));
+    const now = 1_000_000_000_000;
+    // session A: last entry is a tool_result 5 min ago
+    claudeTranscript(root, "a.jsonl", [
+      { type: "user", timestamp: new Date(now - 3600_000).toISOString() },
+      { type: "tool_result", timestamp: new Date(now - 300_000).toISOString() },
+    ]);
+    // session B (older): last entry 2h ago
+    claudeTranscript(root, "b.jsonl", [
+      { type: "assistant", timestamp: new Date(now - 2 * 3600_000).toISOString() },
+    ]);
+    const ms = lastAgentActivityMs(now, root, join(root, "no-codex"));
+    expect(ms).toBe(300_000); // the 5-min-ago tool result is newest
+  });
+
+  it("returns null when there are no transcripts", () => {
+    const root = mkdtempSync(join(tmpdir(), "pa-empty-"));
+    expect(lastAgentActivityMs(Date.now(), join(root, "none"), join(root, "none2"))).toBeNull();
+  });
+});

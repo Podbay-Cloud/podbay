@@ -75,10 +75,13 @@ const CLAUDE = "env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN claude";
 // pattern + rationale as CLAUDE above.
 const CODEX = "env -u OPENAI_API_KEY -u OPENAI_BASE_URL codex";
 
-/** How a pod authenticates its agent: the user's subscription /login (default), or a
- * BYO API key (the ToS-clean path for unattended / agent-to-agent automation — see
- * docs/plans/api-key-pod-mode.md). */
-export type AgentAuth = "subscription" | "api-key";
+/** How a pod authenticates its agent:
+ *  - `subscription` (default): the user's `/login` session. ~monthly hard expiry; native Remote Control.
+ *  - `api-key`: a BYO API key (shelved — see docs/plans/api-key-pod-mode.md).
+ *  - `setup-token`: a ~1-year `claude setup-token` (`CLAUDE_CODE_OAUTH_TOKEN`). Inference-only — no native
+ *    Remote Control (drive via T3 instead) — for unattended pods that don't need "Open in Claude".
+ *    See docs/strategy/agent-auth-lifecycle.md. */
+export type AgentAuth = "subscription" | "api-key" | "setup-token";
 
 // Reserved secret names that carry the BYO API key past the ToS env denylist (which
 // forbids a user-declared ANTHROPIC_API_KEY/OPENAI_API_KEY). The control plane stores
@@ -89,6 +92,10 @@ export const RESERVED_ANTHROPIC_KEY = "PODBAY_AGENT_ANTHROPIC_KEY";
 export const RESERVED_OPENAI_KEY = "PODBAY_AGENT_OPENAI_KEY";
 const CLAUDE_APIKEY = `env ANTHROPIC_API_KEY="$${RESERVED_ANTHROPIC_KEY}" claude`;
 const CODEX_APIKEY = `env OPENAI_API_KEY="$${RESERVED_OPENAI_KEY}" codex`;
+// setup-token mode: the ~1-year OAuth token carried past the env denylist under a reserved name and
+// mapped onto CLAUDE_CODE_OAUTH_TOKEN for the agent PROCESS ONLY (same shape as the api-key mapping).
+export const RESERVED_CLAUDE_OAUTH_TOKEN = "PODBAY_AGENT_CLAUDE_OAUTH_TOKEN";
+const CLAUDE_SETUP_TOKEN = `env CLAUDE_CODE_OAUTH_TOKEN="$${RESERVED_CLAUDE_OAUTH_TOKEN}" claude`;
 
 /** Codex's approval + sandbox flags — now `--dangerously-bypass-approvals-and-sandbox`,
  * claude's bypassPermissions analog, so both agents behave the same on a pod.
@@ -128,6 +135,7 @@ function codexPermFlags(): string {
  * subscription login, and the app-key strip is deliberately NOT applied. */
 function agentInvocation(cli: string, mode: string, agentAuth: AgentAuth = "subscription"): string {
   const apiKey = agentAuth === "api-key";
+  const setupToken = agentAuth === "setup-token"; // claude-only: run on the 1-year OAuth token
   if (cli !== "claude") {
     // codex: launch with the safe approval/sandbox flags. No hidden-system-prompt flag
     // exists, so the kickoff travels as a positional (kept short by the env; the
@@ -165,6 +173,17 @@ function agentInvocation(cli: string, mode: string, agentAuth: AgentAuth = "subs
   const resume =
     `D="$HOME/.claude/projects/$(pwd | sed "s|/|-|g")"; ` +
     `if ls "$D"/*.jsonl >/dev/null 2>&1; then C=--continue; else C=; fi; `;
+  // Claude Code v2.1.x shows a first-run THEME picker ("Choose the text style…") that BLOCKS launch
+  // until dismissed — an authed boot sat at it and a `/login` never reached the sign-in URL (velsa,
+  // 2026-08-25, on the image that bumped claude to v2.1.215). Seed `theme` in ~/.claude/settings.json
+  // so the picker is skipped. Idempotent + non-destructive: only set when absent (respects a user's
+  // own choice), merged into any existing settings.
+  // Written with escaped DOUBLE quotes (no single quotes): the whole boot command is embedded in
+  // `bash -lc '…'`, so any single quote would terminate it (a bare `node -e '…'` breaks the launch).
+  const seedTheme =
+    `node -e "const fs=require(\\"fs\\"),d=process.env.HOME+\\"/.claude\\",p=d+\\"/settings.json\\";` +
+    `fs.mkdirSync(d,{recursive:true});let s={};try{s=JSON.parse(fs.readFileSync(p,\\"utf8\\"))}catch(e){}` +
+    `if(!s.theme){s.theme=\\"dark\\";fs.writeFileSync(p,JSON.stringify(s,null,2))}" 2>/dev/null || true; `;
   // bypassPermissions via `--permission-mode bypassPermissions` shows an INTERACTIVE
   // "Bypass Permissions mode" accept gate on every launch — and seeding
   // `bypassPermissionsModeAccepted` in ~/.claude.json does NOT suppress it (verified
@@ -177,10 +196,20 @@ function agentInvocation(cli: string, mode: string, agentAuth: AgentAuth = "subs
     mode === "bypassPermissions"
       ? "--dangerously-skip-permissions"
       : `--permission-mode ${mode}`;
-  const launch = `${apiKey ? CLAUDE_APIKEY : CLAUDE} $C ${permFlag}`;
+  // A stale/foreign/corrupt transcript makes `--continue` exit FAST with "No conversation found
+  // to continue" — which, retried as-is, crash-loops the pod to a dead shell (seen live 2026-08-20
+  // when a second agent harness wrote the same ~/work transcript). So run claude through `__cl`:
+  // try `--continue`, and if it dies within 8s non-zero, drop it and start a FRESH session ONCE.
+  // A genuinely resumable transcript continues normally; a bad one never bricks boot.
+  const claudeBin = apiKey ? CLAUDE_APIKEY : setupToken ? CLAUDE_SETUP_TOKEN : CLAUDE;
+  const runClaude =
+    `__cl() { __t=$(date +%s); ${claudeBin} $C ${permFlag} "$@"; __rc=$?; ` +
+    `if [ -n "$C" ] && [ "$__rc" -ne 0 ] && [ $(( $(date +%s) - __t )) -lt 8 ]; then ` +
+    `echo "podbay: --continue could not resume; starting a fresh session"; ` +
+    `${claudeBin} ${permFlag} "$@"; fi; }; `;
   return (
-    `${WAIT_FOR_SETUP}; ${resume} if [ -s ${KICKOFF_PATH} ]; then ` +
-    `${launch} --append-system-prompt-file ${KICKOFF_PATH}; else ${launch}; fi`
+    `${WAIT_FOR_SETUP}; ${seedTheme}${resume}${runClaude}` +
+    `if [ -s ${KICKOFF_PATH} ]; then __cl --append-system-prompt-file ${KICKOFF_PATH}; else __cl; fi`
   );
 }
 
@@ -243,6 +272,11 @@ export function bootCommandForAgent(
   const cli = agent === "codex" ? "codex" : "claude";
   if (agentAuth === "api-key") {
     return `bash -lc 'cd ~/work 2>/dev/null || cd ~; ${superviseAgent(agentInvocation(cli, mode, "api-key"))}'`;
+  }
+  // setup-token is Claude-only: the ~1-year OAuth token IS the auth (no /login), so claude always
+  // launches on it. Codex on a setup-token pod keeps its own device-auth login (below).
+  if (agentAuth === "setup-token" && cli === "claude") {
+    return `bash -lc 'cd ~/work 2>/dev/null || cd ~; ${superviseAgent(agentInvocation(cli, mode, "setup-token"))}'`;
   }
   // Strip the app's API key from /login too, so it isn't hijacked by the "use this
   // API key?" prompt (see CLAUDE/CODEX above). Codex: `--device-auth` is REQUIRED on a

@@ -54,7 +54,10 @@ export default async function ImagesPage() {
                 <CardContent className="flex flex-col gap-2 py-4">
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant={s.variant}>{s.label}</Badge>
-                    <code className="text-[13px] font-medium">{short(img.digest)}</code>
+                    {img.version && (
+                      <code className="text-[13px] font-semibold">v{img.version.replace(/^v/i, "")}</code>
+                    )}
+                    <code className="text-[13px] font-medium text-muted-foreground">{short(img.digest)}</code>
                     {img.alias && <span className="text-xs text-muted-foreground">{img.alias}</span>}
                     <span className="ml-auto text-xs text-muted-foreground">
                       {when(img.builtAt ?? img.recordedAt)} · {size(img.sizeBytes)}

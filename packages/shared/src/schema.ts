@@ -10,7 +10,7 @@ export type AgentCli = z.infer<typeof AgentCli>;
  * automation and escapes the subscription OAuth-rotation fragility — see
  * docs/plans/api-key-pod-mode.md. A per-pod choice by default (the key is a user secret);
  * an env may set a default. */
-export const AgentAuth = z.enum(["subscription", "api-key"]);
+export const AgentAuth = z.enum(["subscription", "api-key", "setup-token"]);
 export type AgentAuth = z.infer<typeof AgentAuth>;
 
 const kebab = z

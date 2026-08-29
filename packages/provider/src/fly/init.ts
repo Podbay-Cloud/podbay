@@ -148,7 +148,12 @@ export async function buildInitFiles(
       : previewBase
         ? `https://${previewBase}`
         : null);
-  const cockpitUrl = appOrigin ? `${appOrigin}/pods/${input.id}` : null;
+  // `/dashboard/pods/<slug>` is the COCKPIT (tabs: control/settings/secrets/stats/…).
+  // `/pods/<slug>` is the bare web TERMINAL — a different page. This built the terminal URL and
+  // called it the cockpit, so every "open your pod dashboard: …" link an agent handed the owner
+  // dropped them into a terminal instead (owner report, 2026-08-27; verified in a live pod-spec).
+  // One shared builder feeds Fly AND Incus, so this was wrong on every pod.
+  const cockpitUrl = appOrigin ? `${appOrigin}/dashboard/pods/${input.id}` : null;
 
   const spec: PodSpec = {
     podId: input.id,

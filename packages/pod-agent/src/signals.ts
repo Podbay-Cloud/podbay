@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 
 const URL_RE = /https?:\/\/[^\s"'<>)]+/g;
@@ -10,14 +10,46 @@ export function credentialState(agent: string, credsPath: string): {
   agent: string;
   authed: boolean;
   hash: string;
+  /** The credentials file exists but its token is DEAD (past its hard expiry) — the agent is
+   * effectively logged out even though the file is present. This is the blind spot that hid an
+   * expired claude login on a prod pod for weeks (2026-08-22): `authed` used to be file-presence. */
+  expired: boolean;
+  /** The HARD-expiry epoch (ms) of the refresh token, when the credential shape exposes it — the
+   * moment past which no refresh is possible. Drives the "sign-in expiring soon" fault (the
+   * keepalive isn't keeping up). null when unknown (odd shape, API key, or unreadable). */
+  expiresAt: number | null;
 } {
   try {
     const content = readFileSync(credsPath, "utf8");
     const hash = createHash("sha256").update(content).digest("hex").slice(0, 16);
-    return { agent, authed: content.trim().length > 0, hash };
+    if (content.trim().length === 0) return { agent, authed: false, hash, expired: false, expiresAt: null };
+    const expiresAt = credentialExpiresAt(agent, content);
+    const expired = expiresAt != null && expiresAt < Date.now();
+    return { agent, authed: !expired, hash, expired, expiresAt };
   } catch {
-    return { agent, authed: false, hash: "" };
+    return { agent, authed: false, hash: "", expired: false, expiresAt: null };
   }
+}
+
+/** The hard-expiry epoch (ms) from a credential blob, or null when the shape doesn't expose one.
+ * Same fields credentialExpired reads — factored so both the expired check and the "expiring soon"
+ * fault share ONE definition of where the ceiling lives. */
+function credentialExpiresAt(agent: string, content: string): number | null {
+  try {
+    const j = JSON.parse(content) as Record<string, unknown>;
+    if (agent === "codex") {
+      const t = ((j.tokens as Record<string, unknown>) ?? j) as Record<string, unknown>;
+      return num(t.refresh_token_expires_at) ?? num(t.expires_at) ?? num(t.expiry);
+    }
+    const o = ((j.claudeAiOauth as Record<string, unknown>) ?? j) as Record<string, unknown>;
+    return num(o.refreshTokenExpiresAt);
+  } catch {
+    return null;
+  }
+}
+
+function num(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 /** Chars that may legally continue a URL on the next screen row (no whitespace). */
 const URL_CONTINUATION = /^[A-Za-z0-9\-._~:/?#@!$&'()*+,;=%]+$/;
@@ -59,12 +91,8 @@ export async function extractLinks(
   const limit = opts.limit ?? 5;
   const exec: TmuxExecOpts = { uid: opts.uid, gid: opts.gid };
 
-  const [widthRaw, text] = await Promise.all([
-    tmux(["display-message", "-p", "-t", sessionName, "#{pane_width}"], exec),
-    tmux(["capture-pane", "-pJ", "-S", `-${scrollback}`, "-t", sessionName], exec),
-  ]);
+  const text = await tmux(["capture-pane", "-pJ", "-S", `-${scrollback}`, "-t", sessionName], exec);
   if (!text) return [];
-  const width = Number.parseInt(widthRaw.trim(), 10) || 80;
 
   const lines = text.split("\n");
   const found: string[] = [];
@@ -74,15 +102,20 @@ export async function extractLinks(
     let m: RegExpExecArray | null;
     while ((m = URL_RE.exec(line))) {
       let url = m[0];
-      // TUI rejoin: the match must hit the end of a row that fills the pane.
-      if (m.index + m[0].length === line.length && line.length >= width - 1) {
-        let row = i;
-        for (;;) {
-          const next = lines[row + 1] ?? "";
+      // The claude /login TUI slices a long URL across consecutive rows, each cut at the pane boundary
+      // — but ~2 chars SHORT of the full pane width, so the OLD gate `line.length >= paneWidth - 1`
+      // never fired (and its `next.length < paneWidth - 1` broke on every middle row): the trailing
+      // `&state=…` was dropped, the URL never completed, and the wizard hung on "Getting the sign-in
+      // link…", flaky by pane width (velsa, 2026-08-25). Now: if the match runs to the row end, keep
+      // appending the following PURE-URL rows — with NO width math. A row that isn't wholly URL-charset
+      // (empty, a shell prompt with its trailing space, or prose with spaces) ends the rejoin, which is
+      // exactly the real URL's boundary.
+      if (m.index + m[0].length === line.length) {
+        for (let row = i + 1; row < lines.length; row++) {
+          const next = lines[row];
           if (!next || !URL_CONTINUATION.test(next)) break;
           url += next;
-          row += 1;
-          if (next.length < width - 1) break; // short row = URL tail
+          i = row; // consumed — don't re-scan these rows as fresh fragments
         }
       }
       found.push(url);
@@ -310,7 +343,92 @@ export function sessionStateFromDisk(): { url?: string; status?: string; waiting
   return out;
 }
 
+const CLAUDE_PROJECTS_DIR = "/home/dev/.claude/projects";
 const CODEX_SESSIONS_DIR = "/home/dev/.codex/sessions";
+
+/** Parse the timestamp of the LAST entry in a Claude transcript. Reads only the file's TAIL so a huge
+ * transcript costs a bounded read, not a full slurp. Claude appends one JSON object per line, each
+ * with a top-level `"timestamp":"<ISO>"`. Returns epoch ms of the newest line that has one, else 0. */
+function lastTimestampInJsonl(file: string): number {
+  let fd = -1;
+  try {
+    const size = statSync(file).size;
+    if (size === 0) return 0;
+    const readBytes = Math.min(size, 65536);
+    fd = openSync(file, "r");
+    const buf = Buffer.alloc(readBytes);
+    readSync(fd, buf, 0, readBytes, size - readBytes);
+    const lines = buf.toString("utf8").split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const m = lines[i].match(/"timestamp"\s*:\s*"([^"]+)"/);
+      if (m) {
+        const t = Date.parse(m[1]);
+        if (Number.isFinite(t)) return t;
+      }
+    }
+    return 0;
+  } catch {
+    return 0;
+  } finally {
+    if (fd >= 0) try { closeSync(fd); } catch { /* already closed */ }
+  }
+}
+
+/**
+ * The HONEST "last active" signal: ms since the agent's most recent transcript entry — a message,
+ * tool CALL, or tool RESULT — across Claude and Codex. This is the same source the Claude app shows
+ * ("active 5h ago"), and it correctly reports a pod that's mid-task (running a tool logs entries) as
+ * recent, while a genuinely-quiet pod ages. It is NOT `idleMs` (terminal OUTPUT time — spinners and
+ * redraws tick it) and NOT the file mtime (touched by non-message re-saves). Claude carries a
+ * per-entry ISO `timestamp` we parse; Codex has no such field we read, so its rollout file MTIME
+ * stands in (honest per codexActivityFromDisk). Returns null when nothing has been written yet.
+ */
+export function lastAgentActivityMs(
+  now = Date.now(),
+  claudeRoot = CLAUDE_PROJECTS_DIR,
+  codexRoot = CODEX_SESSIONS_DIR,
+): number | null {
+  let newest = 0;
+  const walk = (dir: string, depth: number, maxDepth: number, onFile: (path: string, name: string) => void): void => {
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const name of entries) {
+      const p = `${dir}/${name}`;
+      try {
+        const st = statSync(p);
+        if (st.isDirectory()) {
+          if (depth < maxDepth) walk(p, depth + 1, maxDepth, onFile);
+        } else {
+          onFile(p, name);
+        }
+      } catch {
+        /* skip */
+      }
+    }
+  };
+  // Claude: newest per-entry timestamp across all transcripts.
+  walk(claudeRoot, 0, 5, (p, name) => {
+    if (!name.endsWith(".jsonl")) return;
+    const ts = lastTimestampInJsonl(p);
+    if (ts > newest) newest = ts;
+  });
+  // Codex: rollout file mtime (no parseable per-entry timestamp).
+  walk(codexRoot, 0, 3, (p, name) => {
+    if (!name.startsWith("rollout-") || !name.endsWith(".jsonl")) return;
+    try {
+      const m = statSync(p).mtimeMs;
+      if (m > newest) newest = m;
+    } catch {
+      /* skip */
+    }
+  });
+  if (newest === 0) return null;
+  return Math.max(0, now - newest);
+}
 /** Codex writes NO live state file (unlike Claude), and its TUI can't be reliably scraped
  * (stripped binary; the pane is often not even rendering). But it APPENDS to a rollout log
  * `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` as it works — every message / tool call /

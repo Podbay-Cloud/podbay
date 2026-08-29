@@ -16,10 +16,16 @@ interface ConfirmOptions {
   title: string;
   /** Body text/JSX under the title. */
   message?: ReactNode;
+  /** Amber caution block, rendered as its own `role="note"` OUTSIDE the description (which is a
+   * `<p>`, so it can't legally nest one). The canonical session-interrupt copy lives in
+   * `lib/pod-copy.ts`. */
+  warning?: ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
-  /** Style the confirm button as destructive (red). */
+  /** Style the confirm button as destructive (red). `danger` is an accepted alias (the cockpit's
+   * older `setConfirm` used that name) so both spellings work while callsites converge. */
   destructive?: boolean;
+  danger?: boolean;
 }
 
 type State = ConfirmOptions & { resolve: (ok: boolean) => void };
@@ -53,12 +59,20 @@ export function useConfirm(): { confirm: (opts: ConfirmOptions) => Promise<boole
           <AlertDialogTitle>{state?.title}</AlertDialogTitle>
           {state?.message != null && <AlertDialogDescription>{state.message}</AlertDialogDescription>}
         </AlertDialogHeader>
+        {state?.warning != null && (
+          <p
+            role="note"
+            className="rounded-lg border border-warning/35 bg-warning/10 px-3 py-2 text-[12.5px] text-warning"
+          >
+            {state.warning}
+          </p>
+        )}
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => settle(false)}>{state?.cancelLabel ?? "Cancel"}</AlertDialogCancel>
           <AlertDialogAction
             onClick={() => settle(true)}
             className={
-              state?.destructive
+              state?.destructive || state?.danger
                 ? "bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive/40"
                 : undefined
             }

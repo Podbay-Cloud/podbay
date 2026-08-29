@@ -3,6 +3,13 @@
 All notable changes to `relay` (the Podbay relay CLI). This mirrors the package published to
 npm as [`@podbay/relay`](https://www.npmjs.com/package/@podbay/relay).
 
+## 0.2.3
+
+- **Clearer setup documentation.** The README now explains fetch and tunnel modes in plain
+  language, uses the current `relay` command, and removes repeated detail. A new headless-host guide
+  covers missing `npx`, starting the relay at boot on a NAS or server, reconnecting without a new
+  pairing code, and opening the local dashboard through SSH.
+
 ## 0.2.2
 
 - **`relay start --keep-awake`** — opt-in mode for a Mac meant to stay online 24/7: while the relay

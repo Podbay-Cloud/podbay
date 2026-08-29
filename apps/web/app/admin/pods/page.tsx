@@ -223,7 +223,7 @@ export default async function PodsPage({
           </thead>
           <tbody>
             {sorted.map((p) => (
-              <tr key={p.pod.id} className="border-t border-border/60 hover:bg-white/[0.02]">
+              <tr key={p.pod.id} className="border-t border-border/60 hover:bg-white/[0.06]">
                 <td className={td}>
                   <CellLink id={p.pod.id} first className="font-medium hover:underline">
                     {p.pod.name?.trim() || p.pod.id}

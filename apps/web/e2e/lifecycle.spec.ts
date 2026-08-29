@@ -13,7 +13,12 @@ test.describe("pod launch + lifecycle", () => {
   test("sleep then wake from the cockpit (via the confirm dialog)", async ({ page }) => {
     await login(page, "approved");
     const slug = await launchPod(page);
-    await page.goto(`/dashboard/pods/${slug}`);
+    // Suspend lives on the SETTINGS tab (pod-cockpit.tsx renders it in
+    // `TabsContent value="settings"`), but the cockpit's default tab is Control — so landing on
+    // the bare pod URL and reaching for Suspend waited 90s for a button that was never on screen.
+    // Deep-link straight to the tab that owns the control (the cockpit reads `?tab=`), rather than
+    // clicking through, so the test fails on the ACTION if it breaks, not on navigation.
+    await page.goto(`/dashboard/pods/${slug}?tab=settings`);
 
     // The verb is "Suspend"/"Resume" — the product renamed it from sleep/wake and
     // this spec kept clicking the old label (the suite was unrunnable, so nothing
@@ -35,8 +40,26 @@ test.describe("pod launch + lifecycle", () => {
     await expect(page.getByText(/hidden while suspended/i)).toBeVisible();
 
     await resume.click();
-    await expect(page.locator("[data-testid=pod-status]")).toContainText(/running|waking|resuming/i, {
-      timeout: 10_000,
+    // Resume is confirm-gated too ("Resume <pod>? It starts using compute again and counts toward
+    // your slots"), same as Suspend. The spec answered the SUSPEND dialog but not this one, so it
+    // sat waiting for a status badge that could not appear while the dialog held the screen — more
+    // drift from the period when the suite was unrunnable.
+    await page
+      .locator("[role=alertdialog]")
+      .getByRole("button", { name: /^resume$/i })
+      .click();
+    // What "resumed" actually looks like: the suspended takeover is gone and the card is no longer
+    // reporting Suspended. Do NOT assert a specific word — `data-testid=pod-status` is carried by
+    // TWO different chips by design (ui-patterns.md "Chips / pills"): the flat lifecycle StatusBadge
+    // (Running/Suspended) and the bordered agent-ACTIVITY pill (Working/Idle/Waiting for you/Needs
+    // you), whichever is currently truthful. Once the pod is back and live signals arrive, activity
+    // wins — so a /running|waking|resuming/ match raced the signal and failed on the perfectly
+    // correct "Waiting for you".
+    await expect(page.getByRole("button", { name: /^resume pod/i })).toHaveCount(0, {
+      timeout: 15_000,
+    });
+    await expect(page.locator("[data-testid=pod-status]")).not.toContainText(/suspended/i, {
+      timeout: 15_000,
     });
   });
 
@@ -80,7 +103,9 @@ test.describe("pod launch + lifecycle", () => {
     // controls inside the tabs, so the old settings-tab line ("settings are read-only until it
     // finishes") no longer renders during one. Assert the promise the dedicated state actually
     // makes — that nothing is lost — which is the reassurance this test exists to protect.
-    await expect(page.getByText(/Nothing is lost/i)).toBeVisible();
+    // The standalone "Nothing is lost." block was removed as redundant (2026-08-29): the intro
+    // line already carries that promise, so assert IT rather than dropping the guarantee.
+    await expect(page.getByText(/Your workspace stays exactly as it is/i)).toBeVisible();
     await expect(page.getByText(/comes back automatically/i)).toBeVisible();
     // The settings CONTROLS must be unreachable while it runs. They used to be disabled
     // in place; the takeover removes them outright, which is strictly stronger — so assert

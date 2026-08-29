@@ -46,6 +46,16 @@
   --ring: #2f6bff;
   --success: #34d399;
   --warning: #fbbf24;
+  /* "Enable / connect" affordance — distinct from --accent (the primary open-a-window blue) and from
+     the status colours. Use `text-enable`, `border-enable/50`, `bg-enable/[0.06]`, `hover:bg-enable/10`
+     for Enable / Connect buttons (T3, Codex, sign-in). See .claude/rules/ui-patterns.md. */
+  --enable: #38bdf8;
+  /* "An EXTERNAL harness is driving this pod" (T3 Code today). A STATUS colour, not an affordance —
+     it must never equal --enable: the T3 status chip previously reused --enable and so rendered the
+     EXACT same #38bdf8 as the sky-400 "Waiting for you" chip, making the two states distinguishable
+     only by reading their labels (owner report, 2026-08-27). Violet is unused elsewhere in the
+     status palette (success green / warning amber / destructive red / sky "waiting"). */
+  --external: #a78bfa;
 }
 
 @theme inline {
@@ -74,6 +84,8 @@
   --color-ring: var(--ring);
   --color-success: #34d399;
   --color-warning: var(--warning);
+  --color-enable: #38bdf8;
+  --color-external: #a78bfa;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);

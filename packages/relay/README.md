@@ -1,87 +1,84 @@
-# pb — the Podbay relay
+# Podbay Relay
 
-`relay` runs a small relay on your own machine so a Podbay pod can reach the web
-**from your network** instead of from a datacenter. Many sites block cloud IPs at the
-edge; the relay lets your pod read them from your home address — and, only where you
-choose, using sites you're signed into.
+The Podbay relay lets your pods reach websites through your network instead of
+a datacenter. This helps with sites that block cloud IPs. For sites you choose,
+the relay can also use a separate browser session that you sign into.
 
-One command serves **two** things, and you never pick between them:
+One relay handles two kinds of traffic:
 
-| | what the pod gets | used by |
+| mode | what the pod gets | used by |
 |---|---|---|
-| **fetch** | a page, fetched by this machine — optionally **as you** (your cookies) | the agent's `podbay fetch get` |
-| **tunnel** | a proxy: your **IP**, with the live page/DOM intact (no cookies) | a crawler, a script, Playwright — anything that fetches its own way |
+| **fetch** | a page loaded by this machine, optionally with a session you provided | the agent's `podbay fetch get` command |
+| **tunnel** | a proxy connection through your IP, without your cookies | crawlers, scripts, Playwright, and other tools that load pages themselves |
 
-The tunnel is why a pod can run a real browser against a site that blocks datacenters:
-the pod drives the browser (so JS challenges are solved) while the connection comes
-from you. Pods have it pre-wired as `$PODBAY_RELAY_PROXY` and it **fails closed** —
-with no relay running, those connections are refused rather than quietly leaving from
-the datacenter.
+The tunnel lets a pod run a real browser while the connection comes from your
+network. Pods receive it through `$PODBAY_RELAY_PROXY`. It **fails closed**: if
+the relay is not running, those connections are refused instead of quietly
+leaving from the datacenter.
 
 ```bash
-# your pod will print the exact command, pinned to a version and pairing code:
-npx @podbay/relay@<version> relay start --code <code> --accept
+# Your pod prints the exact command, pinned to a version and pairing code:
+npx @podbay/relay@<version> start --code <code> --accept
 ```
 
-That's it — it runs in the background and serves fetches for your pods.
+Once started, the relay runs in the background and handles both modes.
 
-## What it does, and doesn't
+## What it does — and what it does not do
 
-- **Open by default, clean by default.** Once running, your pod can fetch the public
-  web through it. Every fetch uses a **fresh, cookie-less browser** — your residential
-  IP, but none of your accounts.
-- **Fetch a site *as you* only when you say so.** `relay login <site>` opens a
-  browser, you sign in once, and from then on **that site** is fetched with your
-  session. Everything else stays clean. A pod can never read an account you didn't
-  explicitly lend.
-- **Never your private network.** It refuses localhost, your LAN, and private IPs — a
-  pod cannot make your machine reach your own router or internal services.
-- **Never your session, only pages.** It returns page content to the pod, never a
-  cookie or a login.
-- **The tunnel carries your IP, never your accounts.** Sites reached through the proxy
-  get a clean context — "as you" stays a `relay login` thing, and the tunnel does not
-  replicate it.
-- **You can inspect and narrow it.** `relay dashboard` opens a loopback-only command
-  center with live state, chronological activity, per-pod and per-site summaries, and
-  explicit outcomes (site refusal, owner block, safety block, rate limit, or network
-  error). Pause one pod, block one site, revoke a site's signed-in use, export or clear
-  history, change retention, or stop the whole relay there.
-- **Rate-limited per site**, so a misbehaving pod can't hammer a source in your name.
+- **Public pages are clean by default.** They load in a fresh browser without
+  your cookies or accounts.
+- **Signed-in access is explicit.** `relay login <domain>` opens a browser so
+  you can sign in. Only that domain may use the saved session. The relay returns
+  page content, never cookies, credentials, or session tokens.
+- **The tunnel shares your IP, not your accounts.** Tools using the proxy get a
+  clean connection without your signed-in sessions.
+- **Your private network stays blocked.** Pods cannot reach localhost, your LAN,
+  private IPs, routers, or other internal services through the relay.
+- **You stay in control.** `relay dashboard` shows activity and lets you pause a
+  pod, block a site, revoke signed-in access, manage history, or stop the relay.
+- **Requests are rate-limited per site**, so one pod cannot hammer a source
+  through your connection.
 
 ## Commands
 
-| command | what |
+| command | description |
 |---|---|
-| `relay start --code <c> --gateway <url> --accept` | run the relay in the background |
-| `relay login <domain>` | let one site be fetched as you |
-| `relay dashboard` | open the local command center; show saved history read-only when stopped |
-| `relay status` | is it running, and what's lent |
+| `relay start --code <code> --gateway <url> --accept` | start the relay in the background |
+| `relay login <domain>` | allow signed-in fetches for one domain |
+| `relay dashboard` | open the local command center |
+| `relay status` | show the relay, gateway, and signed-in site status |
 | `relay stop` | stop it |
-| `relay reset` | wipe its saved sessions |
+| `relay reset` | remove saved sessions, logins, and pairing |
 
 ## Trust
 
-This program holds the browser sessions you sign into and fetches on your behalf, so
-it is **open source (Apache-2.0)** — read exactly what it does before you run it. It
-uses a **separate browser profile it owns**; your everyday browser, history and
-cookies are never touched. Automating a signed-in session may breach a site's terms,
-and the account at risk is yours.
+The relay stores browser sessions for sites you sign into, so treat it as
+sensitive software. It is open source under Apache-2.0 and uses its own browser
+profile; it never touches your everyday browser, history, or cookies. Automating
+a signed-in session may violate a site's terms, and the account risk is yours.
 
 ## Local command center and history
 
-Return to the command center to verify the relay is connected, see which pod borrowed
-your connection, diagnose a refusal, review signed-in use, or narrow access. While the
-daemon runs it serves live state and controls. When stopped, the same command serves
-retained history read-only. The CLI always prints the URL; opening a browser is
-best-effort, so it remains usable on headless machines without `xdg-open`.
+`relay dashboard` shows the connection state, recent activity, and access
+controls. While the relay runs, the dashboard is live. When stopped, it shows
+saved history in read-only mode. The CLI always prints its local URL, so it also
+works on headless machines without `xdg-open`.
 
-Detailed events stay under `~/.podbay/relay/events` in owner-only, day-partitioned
-files. They include the gateway-attributed pod id when available, mode, sanitized
-target, timing, outcome, status, signed-in use, and tunnel bytes. The default retention
-is 30 days; the command center offers 7, 30, or 90 days and a hard disk ceiling.
+Activity is stored in owner-only, daily files under `~/.podbay/relay/events`.
+Events include the pod ID when available, mode, sanitized target, timing,
+outcome, HTTP status, signed-in use, and tunnel byte counts. History is kept for
+30 days by default; the dashboard offers 7, 30, or 90 days and enforces a
+storage limit.
 
-Before disk write, fetch URLs lose usernames, passwords, query strings, and fragments.
-Cookies, authorization headers, browser storage, request/response bodies, and tunnel
-content are never event fields. Podbay does not receive the local path-level history or
-exports; hosted telemetry remains coarse and domain-level. Clearing history does not
-clear pairing, sessions, paused pods, or blocked sites.
+Before an event is written, URLs are stripped of usernames, passwords, query
+strings, and fragments. Logs never include cookies, authorization headers,
+browser storage, request or response bodies, or tunnel content. Detailed
+history and exports stay on your machine; Podbay receives only coarse,
+domain-level telemetry. Clearing history does not clear pairing, sessions,
+paused pods, or blocked sites.
+
+## Running headless
+
+Running the relay on a NAS, Raspberry Pi, or another always-on machine? See
+[FAQ.md](FAQ.md) for help with missing `npx`, starting at boot, and opening the
+dashboard remotely.

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { PhaseHeader } from "@/components/phase-header";
 import { Play, Moon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
@@ -80,13 +81,7 @@ export default function PodSuspended({
 
   return (
     <div className="mx-auto w-full max-w-lg px-4 py-8">
-      <div className="mb-1 flex items-center gap-2.5">
-        <span className="size-2.5 rounded-full bg-muted-foreground/50" />
-        <h1 className="text-lg font-semibold tracking-tight">{name || slug}</h1>
-        <span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[10.5px] font-bold uppercase tracking-wider text-muted-foreground">
-          Suspended
-        </span>
-      </div>
+      <PhaseHeader title={name || slug} label="Suspended" tone="muted" />
       <p className="font-mono text-[12px] text-muted-foreground/70">
         {environmentName} · {agentsLabel}
       </p>

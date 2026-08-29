@@ -162,12 +162,15 @@ describe("podbay info — the owner's dashboard link is ALWAYS surfaced", () => 
   const infoWith = (e: NodeJS.ProcessEnv) => execFileSync("bash", [cli, "info"], { env: e, encoding: "utf8" });
 
   it("uses the spec's cockpitUrl when present", async () => {
+    // NB the fixture is a /dashboard/pods/ URL: `/pods/<slug>` is the bare web TERMINAL, a
+    // different page from the cockpit. buildInitFiles used to write the terminal URL here (see
+    // fly-provider.test.ts's regression test), so a fixture using that shape would enshrine the bug.
     const e = await withSpec({
       slug: "pod-x",
       previewUrl: "https://pod-x.preview.podbay.cloud",
-      cockpitUrl: "https://podbay.cloud/pods/pod-x",
+      cockpitUrl: "https://podbay.cloud/dashboard/pods/pod-x",
     });
-    expect(infoWith(e)).toMatch(/cockpit:\s+https:\/\/podbay\.cloud\/pods\/pod-x/);
+    expect(infoWith(e)).toMatch(/cockpit:\s+https:\/\/podbay\.cloud\/dashboard\/pods\/pod-x/);
   });
 
   it("DERIVES a dashboard link from previewUrl when an older spec has cockpitUrl null", async () => {

@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { Check, GitBranch } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { githubConnStatus } from "@/lib/actions";
+import { qk } from "@/lib/query-keys";
 
 /**
  * The GitHub row in a pod's Settings: shows the connection status and links to the
@@ -12,22 +13,15 @@ import { githubConnStatus } from "@/lib/actions";
  * Renders nothing when GitHub connect isn't configured.
  */
 export default function GithubConnect({ slug }: { slug: string }) {
-  const [configured, setConfigured] = useState<boolean | null>(null);
-  const [connected, setConnected] = useState(false);
-  const [login, setLogin] = useState<string | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    githubConnStatus(slug).then((s) => {
-      if (!live) return;
-      setConfigured(s.configured);
-      setConnected(s.connected);
-      setLogin(s.login);
-    });
-    return () => {
-      live = false;
-    };
-  }, [slug]);
+  // Cached connection status (qk.github) — shared with the wizard page. A reject retries then errors
+  // rather than sticking; until it resolves the row renders nothing (as before).
+  const { data: status } = useQuery({
+    queryKey: qk.github(slug),
+    queryFn: () => githubConnStatus(slug),
+  });
+  const configured = status?.configured ?? null;
+  const connected = status?.connected ?? false;
+  const login = status?.login ?? null;
 
   if (configured === null || configured === false) return null;
 

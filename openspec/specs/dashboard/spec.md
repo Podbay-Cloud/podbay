@@ -112,7 +112,12 @@ as a broken page; a dedicated progress view reads as a busy pod that is working 
 - **WHEN** an owner updates or resizes a pod
 - **THEN** the cockpit SHALL be replaced by a dedicated progress view that names the operation
   (Updating/Resizing), lists the stages with the active one and total elapsed time, and reassures that
-  `~/work` is preserved — and the terminal, stats, secrets, preview and settings SHALL NOT be shown
+  the workspace is preserved — and the terminal, stats, secrets, preview and settings SHALL NOT be shown
+- **AND** the progress view SHALL NOT repeat the release changelog: by this point the owner has already
+  chosen to update, so "what's new" belongs to the pre-update dialog. Showing it here duplicated the
+  decision surface AND was the one place raw commit subjects reached the owner with no summary-first
+  path (2026-08-29). One reassurance line is enough — a second standalone block restating it was
+  redundant with the view's own opening sentence.
 
 #### Scenario: A suspended pod shows a dedicated resume view, not the cockpit
 
@@ -384,7 +389,8 @@ wherever the flow appears.
 ### Requirement: The cockpit's active tab survives a reload
 
 The selected cockpit tab SHALL be reflected in the URL so that reloading, or opening a shared link,
-restores that tab instead of resetting to Settings.
+restores that tab instead of resetting to the default. The default tab is **Control** (the agents +
+T3 Code control — the primary thing an owner does with a pod), shown first.
 
 #### Scenario: Reloading on a non-default tab
 
@@ -394,13 +400,39 @@ restores that tab instead of resetting to Settings.
 #### Scenario: An unknown tab value
 
 - **WHEN** the URL carries a `tab` value that is not a cockpit tab
-- **THEN** the cockpit falls back to Settings
+- **THEN** the cockpit falls back to the default Control tab
+
+### Requirement: A replaced view starts at its top, not the previous view's scroll offset
+
+When a view is REPLACED rather than navigated to — a cockpit full-page takeover (update/resize,
+T3 enabling, Codex pairing, agent sign-in, T3 connect, token renew) or a launch-wizard step change —
+the scroll position SHALL be reset to the top of the new content. Otherwise the new view inherits the
+previous one's offset and opens already scrolled past its heading, which is the normal case on mobile:
+the control that triggers the change (Update, Next) sits at the BOTTOM of a long page, which is exactly
+where the user is when they tap it (owner report, 2026-08-27).
+
+The reset SHALL target the actual scrolling element. The dashboard shell scrolls its `<main>`
+container, so the window's own scroll position never moves inside the dashboard and scrolling the
+window alone is a silent no-op there. The reset SHALL be instant, not animated: the content is being
+swapped, so animating the outgoing view reads as a glitch rather than as motion.
+
+#### Scenario: Opening a full-page takeover from the bottom of a long cockpit
+
+- **GIVEN** the owner has scrolled down the cockpit on a narrow screen
+- **WHEN** they press Update (or open any of the cockpit's full-page wizards)
+- **THEN** the takeover renders from its beginning, not at the previous scroll offset
+
+#### Scenario: Advancing a launch-wizard step
+
+- **GIVEN** the owner has scrolled to the Next button at the bottom of a wizard step
+- **WHEN** they advance to the following step
+- **THEN** the next step renders from its heading, not at the previous step's scroll offset
 
 ### Requirement: The cockpit controls appear only once the pod is ready
 
 While a pod is still onboarding — being created, or waiting for the owner to sign the agent in — the
-cockpit SHALL show only the guided setup, and SHALL NOT show the controls tabs (Settings / Secrets /
-Stats / Details / Admin). Half of those controls cannot act on a pod that isn't up yet, and the setup
+cockpit SHALL show only the guided setup, and SHALL NOT show the controls tabs (Control / Settings /
+Secrets / Stats / Details / Admin). Half of those controls cannot act on a pod that isn't up yet, and the setup
 is the only thing the owner can act on, so the tabs would be noise. The tabs SHALL appear once the pod
 reaches ready.
 
@@ -464,22 +496,33 @@ SHALL NOT appear in the OSS edition.
 
 A pod is **update-eligible** for this control when ALL hold: it is behind the current pinned image
 (its recorded `imageDigest` differs from the provider's pin), it is `running` and not already
-updating, its agent(s) are idle — at least one reports `idle` and NONE is busy/waiting/shell (so a
-codex-only pod counts on its codex status, and a busy codex blocks even when Claude reads idle) — it
-has had no real activity for a fixed
-idle dwell (≈10 minutes, so a pod merely paused between turns is not interrupted mid-task), and it is
-not excluded from auto-update (`autoUpdate !== "off"`). The control SHALL render only when at least
-one pod is eligible, and its label SHALL carry the count.
+updating, it is not excluded from auto-update (`autoUpdate !== "off"`), it is **not T3-controlled**,
+NO agent is busy/waiting/shell, and it is idle by one of two arms. The idle test: at least one agent
+AFFIRMATIVELY reports `idle` and has been idle for a fixed dwell (≈10 minutes, so a pod merely paused
+between turns is not interrupted mid-task) — OR the agent status is UNKNOWN (null, e.g. Claude not
+reporting because it is sitting at a gate) but the pod has been demonstrably inactive for a MUCH
+longer window (≈4 hours), a conservative "clearly abandoned" bar that lets a genuinely-idle pod we
+cannot confirm live still be updated. **T3-controlled pods are always excluded** — Claude yields its
+session to T3 so its status is always null, and an update recreates the pod and would interrupt the
+live T3 session; a T3 pod updates only via the per-pod Settings → Update. The idle duration — and the
+idle time shown per pod in the confirmation — SHALL come from the AGENT's true idle (its session
+activity, which counts remote-control and autonomous turns), NOT from a client-connection activity
+timestamp that goes stale; the client timestamp MAY be a fallback only when the pod does not report
+the agent idle. The control SHALL render only when at least one pod is eligible, and its label SHALL
+carry the count.
 
 The action SHALL recompute eligibility server-side and update only the pods that still qualify —
 never a client-supplied list — and SHALL start the updates without blocking the dashboard. Each
 updated pod keeps its files and login and resumes its agent after the restart, exactly as a single
-Update does.
+Update does. The recreates SHALL run with a BOUNDED CONCURRENCY (a few pods at a time) rather than
+all at once, so a large fleet updates in waves instead of a thundering herd of simultaneous recreates
+on the host; each pod flips to "updating" as its recreate actually starts.
 
-Activating the control SHALL first open a confirmation that names the pods to be updated and states
-plainly what happens (each restarts about a minute, its agent resumes, files are kept, and
-working/waiting/excluded pods are skipped); the updates start only on confirm, and cancelling changes
-nothing.
+Activating the control SHALL first open a confirmation that shows WHAT the update brings and WHICH
+pods it affects — the target build (like the single-pod update) with its "what's new" summary, and a
+scannable LIST of the eligible pods — not a prose sentence of names. It SHALL state concisely what
+happens (each restarts about a minute, its agent resumes, files are kept, and working/waiting/excluded
+pods are skipped); the updates start only on confirm, and cancelling changes nothing.
 
 #### Scenario: Some pods are idle and behind
 
@@ -489,8 +532,15 @@ nothing.
 #### Scenario: Confirming the bulk update
 
 - **WHEN** the owner activates the "Update N idle pods" control
-- **THEN** a confirmation names the eligible pods and what will happen, and only on confirm does it
-  start an image update on each of them (cancel starts nothing)
+- **THEN** a confirmation shows the target build with its "what's new" summary and a list of the
+  eligible pods, and only on confirm does it start an image update on each of them (cancel starts
+  nothing)
+
+#### Scenario: A large batch updates in bounded waves
+
+- **WHEN** the bulk action runs against many eligible pods
+- **THEN** it SHALL recreate only a few at a time (bounded concurrency), starting the next as earlier
+  ones finish, rather than triggering every recreate simultaneously
 
 #### Scenario: A pod is behind but busy, recently active, or excluded
 
@@ -652,6 +702,14 @@ temporarily-unavailable service, not a 4xx), with `Retry-After` and an auto-retr
 cases that recover without a human (starting, no-app) but NOT for suspended (the owner must resume — the
 page links to the dashboard instead).
 
+Beyond owner-only and public, a THIRD preview visibility — **delegated-auth** (`previewAppAuth`) — SHALL
+forward the preview as public transport WITHOUT requiring a podbay session, for a pod running an
+agent-harness backend (e.g. T3 Code) that guards its OWN endpoint with a pairing token. A podbay cookie
+would block the third-party app, which carries only its own token, so the UPSTREAM app is the gate. It
+is DISTINCT from `public` so the UX can label it honestly ("guarded by the app's own login") and a
+backend flavor sets it, rather than the owner flipping a generic public toggle; the gateway treats it
+like `public` for transport but the two are separate flags on the pod.
+
 #### Scenario: Agent working
 
 - **WHEN** a running pod reports `agentStatus: busy`
@@ -704,6 +762,12 @@ device changes. There SHALL be NO automatic grouping of the list; hand order win
 sort. A pod created after the owner last sorted SHALL appear ABOVE the hand-ordered pods (easy to
 find and drag into place) rather than buried by a default sort.
 
+Every pod SHALL be assigned a concrete order position AT CREATION (placed above the owner's existing
+pods), so the hand order is authoritative for the whole list. A card SHALL NOT change position in
+response to its own lifecycle status or agent activity: once placed, it moves only when the owner
+drags it. Leaving a pod unpositioned is what previously let a card sort itself by status rank and
+physically move as its pod went Working → Waiting → Idle (owner report, 2026-08-27).
+
 #### Scenario: Drag to reorder
 
 - **WHEN** the owner drags a card to a new place and reloads the dashboard
@@ -712,7 +776,15 @@ find and drag into place) rather than buried by a default sort.
 #### Scenario: A new pod after sorting
 
 - **WHEN** the owner has hand-ordered pods and then creates a new one
-- **THEN** the new pod appears at the top, above the hand-ordered cards
+- **THEN** the new pod appears at the top, above the hand-ordered cards, with a persisted position of
+  its own — not as an unpositioned card that floats
+
+#### Scenario: A status change never reorders the list
+
+- **GIVEN** the owner has hand-ordered their pods
+- **WHEN** a pod's lifecycle status or agent activity changes (e.g. it starts working, begins waiting
+  for input, goes idle, or errors)
+- **THEN** its card SHALL stay exactly where the owner placed it
 
 ### Requirement: The sign-in link survives a refresh mid-login
 
@@ -741,6 +813,38 @@ client via no frame) appears without a manual refresh. Polling stops as soon as 
 
 - **WHEN** the pod becomes authed
 - **THEN** the stored sign-in URL is cleared and no longer shown
+
+#### Scenario: Reconnecting a previously-authed pod re-surfaces its sign-in URL
+
+A pod that was signed in before carries `authedAt` and a session URL from that login. When its login is
+later wiped or expires and the agent returns to `/login` with a FRESH sign-in URL, the backend MUST
+detect that authed→unauthed transition, reset the stale authed markers + dead session URL, and capture
+the new URL — otherwise the onboarding capture (gated on first-login) never runs and the wizard hangs
+on "Getting the sign-in link…" while the URL sits unread. The wizard SHALL read the sign-in URL from
+BOTH the live agent state and the persisted pod row, so a lag in either path still surfaces it.
+
+- **GIVEN** a pod with `authedAt` set (a prior login) whose agent is now unauthed with a fresh sign-in URL
+- **WHEN** the backend reconciles it
+- **THEN** it SHALL clear the stale `authedAt`/session URL, persist the fresh sign-in URL, and the wizard
+  SHALL surface it (from the pod row or the live state) rather than hang
+
+#### Scenario: The reconnect wizard does not close on the still-authed agent it starts from
+
+- **WHEN** the owner opens the reconnect wizard for an agent whose login is only EXPIRING (still authed)
+- **THEN** the wizard SHALL NOT treat that initial authed state as "done" and close — it stays open
+  through the wipe, and only returns to the cockpit once the re-login actually completes
+
+#### Scenario: The pasted code is validated against the LIVE agents, not stale stored config
+
+The cockpit shows an agent's sign-in step by reading that agent from LIVE health, so accepting the
+pasted code MUST validate against the same live truth — not the pod row's stored `agents` list, which
+a legacy pod (created before that field was tracked) can have empty while genuinely running the agent.
+
+- **GIVEN** a running pod whose stored `agents` list is empty/unknown, but whose live health reports
+  `claude-code` running with a sign-in URL the cockpit is showing
+- **WHEN** the user pastes the code for `claude-code`
+- **THEN** the code SHALL be delivered to that agent's window (NOT rejected with "this pod does not run
+  claude-code"); the guard only refuses when a KNOWN, non-empty agent set positively excludes the agent
 
 ### Requirement: The admin pod drill-in surfaces oversight data without impersonation
 
@@ -924,23 +1028,38 @@ the dialog.
 ### Requirement: The preview is presented as a live preview card
 
 The pod's preview SHALL be presented as a card — a browser-chrome bar carrying the URL (copyable)
-and its visibility (public / owner-only), a live scaled view of the running app, and an Open action
-— rather than a lone button. The card SHALL remain informative when the frame does not paint (app
-not started, crashed, still building): the URL, the visibility, and Open SHALL always be present,
-and a blank frame SHALL never be the only thing the card communicates. Because the frame is
-cross-origin its contents can never be inspected, so the card SHALL decide whether to warn from the
-pod's own report of whether anything is LISTENING on the app port — and SHALL stay silent when the
+and its visibility (public / owner-only), a view of the running app, and an Open action — rather than
+a lone button. The card SHALL remain informative when the app view is not available (app not started,
+crashed, still building): the URL, the visibility, and Open SHALL always be present, and a blank
+frame SHALL never be the only thing the card communicates. The card SHALL decide whether to warn from
+the pod's own report of whether anything is LISTENING on the app port — and SHALL stay silent when the
 app is up, rather than captioning a working page with a permanent "blank?" hedge.
+
+The app view SHALL be a LIVE scaled-down iframe of the running app (owner preference: a live view is
+more useful than a static thumbnail). The card SHALL NOT render any app view until liveness is
+CONFIRMED (`appListening` true) — never optimistically while still checking — so it never flashes a
+view it is about to hide.
+
+(A pod-side self-screenshot capability exists — the pod-agent can capture its own loopback `:3000`
+with the image's prebaked headless Chromium and serve a PNG on `/preview-shot`, surfaced via the
+provider/control-plane and a web route — but it is currently DORMANT: the cockpit renders the live
+iframe, not the thumbnail. It is kept in place for a possible lighter-weight thumbnail return later.)
 
 #### Scenario: Running pod
 
 - **WHEN** the pod is running and a preview URL exists
-- **THEN** the card SHALL show the live view, the URL, its visibility, a reload control, and Open
+- **THEN** the card SHALL show the live app view, the URL, its visibility, and Open
 
 #### Scenario: The app is serving
 
 - **WHEN** the pod reports something listening on the app port
-- **THEN** the card SHALL show the live view with NO warning caption
+- **THEN** the card SHALL show the live app view with NO warning caption, and SHALL NOT have flashed it
+  before liveness was confirmed
+
+#### Scenario: Still confirming liveness
+
+- **WHEN** the pod is running but whether anything is listening is not yet known
+- **THEN** the card SHALL show a light "checking" placeholder, NOT an app view it may immediately hide
 
 #### Scenario: Nothing is serving
 
@@ -1172,6 +1291,23 @@ pod recorded nothing across a gap, and carrying a state over it would assert kno
 - **WHEN** activity is summarised over a window whose samples come from more than one tier
 - **THEN** each sample SHALL count for the time it represents
 
+### Requirement: Cockpit reads run in parallel, so one slow read can't freeze the others
+
+The cockpit's polled reads — the live-signals feed, the Secrets tab, the Stats tab — SHALL be served
+by HTTP Route Handlers (`GET /api/...`) consumed via `fetch`, NOT by Next.js server actions. Server
+actions run one-at-a-time per client on a single serialized lane; the always-on live-signals poll can
+stall on a wedged pod's health probe and monopolize that lane, leaving every other read stuck in its
+loading skeleton until a full page reload resets the client's action queue. Route Handlers run on the
+parallel HTTP lane, so a slow poll can never starve a tab's read. Each read stays owner-scoped (the
+service authorizes by the session user) and never returns a secret's value, only whether it is set.
+
+#### Scenario: A wedged pod does not freeze the cockpit's other tabs
+
+- **GIVEN** one of the owner's pods is unresponsive, so its health probe is slow
+- **WHEN** the owner opens the Secrets or Stats tab while the live-signals poll is mid-sweep
+- **THEN** that tab's data SHALL load on its own parallel request rather than queue behind the poll and
+  stick in a skeleton until a manual refresh
+
 ### Requirement: Switching cockpit tabs keeps you oriented
 
 Cockpit tab panels differ in height by hundreds of pixels, and the dashboard's scroll container
@@ -1269,14 +1405,12 @@ a device from that list edits ONLY Podbay's record: the Codex CLI exposes `start
 no revoke, so the pod CANNOT disconnect a paired device. The control SHALL therefore confirm first
 and state plainly that the device stays connected and must be removed in the Codex app — it SHALL
 NOT present as a disconnect; a generic "remote control is on" sentence with the devices buried in the wizard is
-not acceptable. The pairing wizard SHALL expand inside the card behind an explicit open control,
-SHALL have an explicit close, and SHALL collapse after a confirmed pairing. It auto-opens at most
-once, only when remote control is on and no device has ever been confirmed.
+not acceptable. The pairing wizard SHALL open ONLY from an explicit open control (never on its own —
+see below), SHALL have an explicit close, and SHALL collapse/close after a confirmed pairing.
 
 A Codex card with at least one paired device is DONE: its wizard SHALL stay collapsed and the card
 SHALL offer exactly ONE control — "Pair another device". No disclosure that merely reveals another
-button. The auto-open decision SHALL treat "devices not yet loaded" as unknown, never as "nothing
-paired" — otherwise the wizard springs open on a pod that has been paired all along. There is deliberately NO
+button. There is deliberately NO
 "turn remote control off" control — switching it off only breaks the owner's own devices, and
 forgetting a device is the actual remedy. "Turn remote control on" exists solely as RECOVERY from a
 stopped/dead daemon (the off state names the consequence: paired devices can't reach the pod).
@@ -1301,11 +1435,15 @@ the Claude card SHALL state the fact rather than fake a toggle.
 - **THEN** the card SHALL show its status line (devices inline) and a single "Pair another device"
   control, with the wizard collapsed
 
-#### Scenario: Loading is not "unpaired"
+#### Scenario: An empty or loading device list is not a readiness gate
 
-- **WHEN** the cockpit opens and the paired-device list has not yet loaded
-- **THEN** the pairing wizard SHALL NOT auto-open; it may only auto-open once both the device list
-  and the pod's agent report have loaded AND no device has ever been confirmed
+- **WHEN** Codex remote control is on and the owner's remembered-device list is empty, still
+  loading, or the pod's agent report hasn't arrived yet — including across a reload, a delayed
+  Codex-live update, or completing another agent's onboarding
+- **THEN** the pairing wizard SHALL NOT open on its own: an empty/unloaded list means "Podbay
+  remembers no labels," not "nothing is paired" (OpenAI-side enrollment is invisible to Podbay) and
+  not "onboarding is incomplete"; the normal cockpit SHALL remain visible with its explicit "Pair a
+  device" control until the owner clicks it
 
 #### Scenario: Recovering a stopped daemon
 
@@ -1486,3 +1624,284 @@ renders a pod that looks untouched beside a message saying something went wrong.
 - **WHEN** a pod action fails after server state may already have moved
 - **THEN** the page SHALL still be invalidated, so the owner is never shown a stale pod
   alongside an error describing it
+
+### Requirement: Connect a pod to the T3 Code app
+
+The pod cockpit SHALL offer a T3 Code control action that turns the pod into a backend for the T3 Code
+app (iOS/Android/desktop), as a **confirmed, reversible, first-class control mode** — not a silent
+one-shot. Enabling SHALL first present a confirm dialog (the shared cockpit `AlertDialog` pattern)
+that states what T3 takes over, that currently-running Claude/Codex sessions will end and restart
+under T3, that files and sign-ins are preserved (nothing is logged out), and that it can be turned off
+at any time. On confirm, enabling SHALL: run `t3 serve` on a DEDICATED port (NOT :3000) DURABLY
+(via `podbay startup`, surviving restarts) — registering the startup is NOT enough, enabling SHALL
+also LAUNCH it in-session (`podbay startup start`) and wait for that port to actually answer before
+reporting ready. Enabling SHALL **leave the pod's own :3000 dev server running** — T3 is reached by
+the T3 app via T3's own relay (which follows the serve port), NOT via the podbay preview, so :3000
+stays the user's app and its preview keeps working while T3 drives the agents. (Consequently the enable
+does NOT flip the preview to delegated-auth — that was only needed when t3 occupied :3000.) Because
+provisioning downloads the T3 runtime (a large, native-compiled package) and can take a minute or two,
+enabling SHALL run as an **asynchronous, refresh-safe full-page setup flow** that replaces the cockpit
+(the same pattern as an image update), showing progress through its stages — and the download stage
+SHALL report a REAL percentage (measured from the runtime cache growing), not a static spinner.
+
+If a gateway restart orphans an in-flight enable (its detached task dies with `t3_since` still set), a
+maintenance sweep SHALL reconcile it — failing the stale enable so the wizard surfaces an error and the
+owner can retry — and a re-enable of a stale (orphaned) pod SHALL be allowed rather than blocked as a
+duplicate.
+
+When the enable completes, the cockpit SHALL guide the owner straight into a **T3 Connect** wizard step
+(in the flow, not the control page): sign the pod's t3 into the OWNER'S T3 cloud account and LINK this
+environment, via T3's headless out-of-band OAuth (`t3 connect login --headless` → `t3 connect link`) —
+the same open-a-link, approve, paste-a-code shape as the Claude 1-year token. This account link
+(recorded durably as `t3Connected`) is what makes the pod appear in the T3 app on EVERY signed-in
+device, synced and remotely reachable; a per-device pairing token/QR does not, so it is NOT used. The
+connect step is skippable (the pod still runs t3 locally) and re-enterable from the Control tab.
+
+While T3 Code is in control, the cockpit SHALL show a persistent "T3 Code is in control" indication
+and SHALL hide the Open-in-Claude and Codex-pairing controls (which are inert while T3 owns the
+agents). The enable and turn-off triggers SHALL follow the cockpit's button conventions — tinted
+outline actions, not the blue/primary style reserved for opening an external window. The cockpit SHALL
+offer a "Turn off T3 control" action (its own confirm dialog) that fully reverses the mode: stops
+`t3 serve`, removes the durable startup entry, returns the preview to owner-auth, restores the Podbay
+dev server on :3000, and restores Podbay's own agent controls — leaving the agents signed in.
+
+#### Scenario: A completed enable guides the owner into connecting their T3 account
+
+- **WHEN** the owner enables T3 Code control on a running pod and it reaches ready
+- **THEN** `t3 serve` SHALL be provisioned durably, the preview SHALL become delegated-auth, and the
+  cockpit SHALL present the T3 Connect wizard step (sign into the T3 account + link this environment)
+  so the pod syncs to the owner's devices — not a per-device pairing QR
+
+#### Scenario: The setup flow leaves the progress screen the moment T3 takes control
+
+- **WHEN** the durable enable state reports the pod is now in T3 control (the enable finished, so the
+  in-progress marker `t3Since` has cleared and `t3Control` is set)
+- **THEN** the cockpit SHALL treat that as completion and advance to the T3 Connect step, and SHALL
+  NOT keep showing the progress screen. Completion SHALL be recognised by the pod being **in control**,
+  never by the presence of the in-progress marker alone — a finished enable and a not-yet-started
+  enable both clear that marker, and conflating them once froze the setup flow on its first stage
+  ("Preparing") while the pod was already fully in T3 control. An unrecognised or terminal progress
+  stage SHALL NOT render as the first stage.
+
+#### Scenario: Concurrent enable triggers do not double-provision
+
+- **WHEN** a T3 enable is requested for a pod that is already in T3 control, or whose enable is already
+  in flight (multiple triggers exist — the post-token server action, the launch/auto-enable path, and
+  the Control-tab button — with no cross-coordination)
+- **THEN** the request SHALL be a no-op: it SHALL NOT reset the progress stage back to the start nor
+  start a second provisioning run that would race the first, and the skip SHALL be logged
+
+#### Scenario: A failed enable rolls the pod back, not stranded
+
+- **WHEN** enabling T3 Code fails partway (e.g. `t3 serve` never answers on :3000)
+- **THEN** the pod SHALL be restored to its pre-enable state — the Podbay dev server re-enabled on
+  :3000, the t3 startup entry removed, and agent remote-control handed back — rather than left with
+  its preview dark, and the cockpit SHALL surface the failure (t3 stage = error)
+
+#### Scenario: Enabling is confirmed before anything changes
+
+- **WHEN** the owner clicks the T3 Code enable action
+- **THEN** a confirm dialog explains the hand-off (T3 takes control, running sessions restart,
+  files/sign-ins preserved, reversible) and nothing is provisioned until the owner confirms
+
+#### Scenario: Enabling runs as an async, refresh-safe setup flow
+
+- **WHEN** the owner confirms enabling T3 Code control on a running pod
+- **THEN** the cockpit shows a full-page setup flow with progress stages while `t3 serve` is
+  provisioned durably and the preview becomes delegated-auth, the flow survives a page refresh, and it
+  resolves into the T3 Connect step (T3-account sign-in + environment link)
+
+#### Scenario: The dashboard card AND cockpit reflect T3 control, not a false "needs sign-in"
+
+- **WHEN** a pod is in T3 Code control (or an enable is in flight) and its Podbay Claude agent
+  therefore reads as not-signed-in (its remote-control is yielded to T3, and it has no Podbay session)
+- **THEN** BOTH the pod's dashboard card AND its cockpit header SHALL show a **T3 Code** state (an
+  "Enabling T3…" state while the enable is in flight) and SHALL NOT present it as onboarding
+  ("Finish setup"/"Cancel") nor as "Needs you — Claude needs sign-in". An in-flight image update
+  SHALL still take precedence over the T3 indication.
+
+#### Scenario: The cockpit shows who is in control
+
+- **WHEN** T3 Code is in control of a pod
+- **THEN** the cockpit shows a persistent "T3 Code is in control" indication and hides the
+  Open-in-Claude and Codex-pairing controls
+
+#### Scenario: Turning off T3 control restores Podbay control
+
+- **WHEN** the owner turns off T3 control and confirms
+- **THEN** `t3 serve` is stopped and its startup entry removed, the preview returns to owner-auth, the
+  Podbay dev server and Podbay's own agent controls are restored, and the agents remain signed in
+
+#### Scenario: Destroying a T3-linked pod frees its T3 account slot
+
+- **WHEN** a pod connected to the owner's T3 account (or under T3 control) is destroyed
+- **THEN** its T3 Connect environment SHALL be unlinked from the relay (freeing the per-account
+  environment/tunnel slot) BEFORE the machine is torn down — a best-effort step that RETRIES the
+  relay's transient failures and NEVER blocks teardown if it cannot complete. Orphaned env links
+  otherwise accumulate and exhaust the account's tunnel quota, which makes new connects be refused.
+
+### Requirement: The dashboard card reflects an expired agent login
+
+A logged-out agent reads as "idle" from its activity signal, so the dashboard pod card MUST NOT show
+a signed-out pod as merely idle. When any agent on a running pod reports `loginExpired`, the card
+SHALL show a "Sign-in expired" state (a needs-you amber chip, outranking activity) so the owner sees
+it from the dashboard grid, not only inside the cockpit.
+
+#### Scenario: A card surfaces an expired login instead of "idle"
+
+- **WHEN** a running pod's agent has `loginExpired: true` while its status signal reads idle
+- **THEN** the card SHALL render "Sign-in expired", not "Idle"
+
+### Requirement: An expiring-but-valid login can be reconnected from the Control tab
+
+A login has a hard expiry (`expiresAt`, the refresh token's end) past which no auto-refresh is
+possible. While it is STILL VALID but within the expiring-soon window, the dashboard warns "expires in
+~Nd — reconnect soon in the Control tab"; the Control tab MUST therefore actually offer a reconnect for
+that state, not only once the login has already expired. Because a reconnect is a full re-login that
+INTERRUPTS the running session (a refresh token cannot be extended past its hard expiry without signing
+in again), the action SHALL be OPTIONAL and CONFIRMED — never an instant sign-out of a working agent —
+with the confirmation stating the login still works and that the session is interrupted. The affordance
+SHALL NOT appear for an agent whose session is managed by T3.
+
+#### Scenario: The dashboard warning has a matching Control-tab action
+
+- **GIVEN** an agent that is signed in and working but whose login hard-expires within the warning window
+- **WHEN** the owner opens the pod's Control tab
+- **THEN** it SHALL show an optional "Reconnect" for that agent — so the dashboard's "reconnect soon in
+  the Control tab" is never a dead end
+
+#### Scenario: Reconnecting an expiring login is confirmed, not instant
+
+- **WHEN** the owner triggers that reconnect
+- **THEN** a confirmation SHALL appear first, stating the login still works and that reconnecting
+  interrupts the current session; only on confirm does the re-login begin. Cancel leaves the working
+  agent untouched.
+
+### Requirement: The Control tab exposes actionable Claude RC recovery
+
+The Claude row SHALL render the shared `rcState` classification rather than deriving bridge health
+from `authed` plus a historical session URL. `active` SHALL offer the live session; `recovering` SHALL
+show bounded progress; `down` with a valid login SHALL offer **Restore remote control**;
+`login-required` SHALL offer **Reconnect Claude**; and `unknown` SHALL say that RC could not be
+verified and offer diagnosis rather than claiming success. The restore action SHALL call the same
+bounded recovery primitive as doctor, prevent concurrent attempts, and render the observed state after
+reclassification rather than assuming command submission succeeded. On a pod image that predates this
+classification (`rcState` absent), the row SHALL fall back to today's `authed` + session-URL signal
+rather than showing any of these new states.
+
+#### Scenario: Valid login plus RC-down is actionable
+
+- **GIVEN** Claude reports `rcState: "down"` with a valid login and control is not yielded to T3
+- **WHEN** the Control tab renders
+- **THEN** it SHALL show **Restore remote control**, and invoking it SHALL show bounded recovery
+  progress followed by the reclassified result
+
+#### Scenario: Blocked authentication offers Reconnect
+
+- **GIVEN** current Claude state is `login-required`, including a recognized blocking OAuth retry
+  dialog despite a still-present credential file
+- **WHEN** the Control tab renders
+- **THEN** it SHALL offer **Reconnect Claude**, SHALL NOT offer RC restore, and SHALL NOT remain on
+  "Signed in — turning on remote control…"
+
+#### Scenario: Unknown is not an endless transition
+
+- **GIVEN** current CLI evidence cannot establish whether RC is live or down
+- **WHEN** the Control tab renders
+- **THEN** it SHALL report that RC could not be verified and offer diagnosis without claiming active,
+  repeatedly restoring, or showing an unbounded turning-on state
+
+### Requirement: Cockpit and pod-list data is near-realtime, renders immediately, and never gets stuck
+
+The dashboard pod list and the pod cockpit SHALL present live data that is near-realtime, renders
+without a jarring empty-then-populate jump, refreshes in the background, and never leaves a surface
+stuck on a loading state when a fetch fails or is slow.
+
+#### Scenario: Data is shown immediately, not after a fetch round-trip
+
+- **WHEN** the owner opens a pod's cockpit, or switches to a cockpit tab, they have viewed this session
+- **THEN** the surface renders its last-known data immediately from cache rather than a blank/loading
+  first paint, and updates in place once fresh data arrives (a genuine cold first load shows a skeleton)
+
+#### Scenario: Displayed data stays near-realtime, never silently stale
+
+- **WHEN** a surface is shown from cache
+- **THEN** it refetches in the background right away so what is displayed reflects the current state
+  within about a second — it SHALL NOT present cached, minute-old data as if it were current
+
+#### Scenario: A failed or slow fetch never sticks on loading
+
+- **WHEN** a data fetch rejects, times out, or returns a transient empty result
+- **THEN** the surface does not hang on a loading placeholder forever — it retries (bounded), keeps
+  the last-known data visible rather than clobbering it with an empty result, and surfaces an error
+  state only when there is genuinely nothing to show
+
+#### Scenario: Switching tabs does not lose or wrongly reset data
+
+- **WHEN** the owner navigates away from a cockpit tab and back
+- **THEN** that tab shows its data immediately (not "Status unavailable" / a fresh loading spinner),
+  because the data is cached rather than cold-refetched from scratch on every switch
+
+### Requirement: Loading placeholders are skeletons, not blank space or a bare spinner
+
+While a surface has no data to show yet (a first-ever load with no cache/prefetch), it SHALL present a
+skeleton that mirrors the shape of the content, not an empty panel or a lone centered spinner.
+
+#### Scenario: First load shows a skeleton
+
+- **WHEN** a pod card, or a cockpit tab, has no cached or prefetched data yet
+- **THEN** it renders a skeleton placeholder matching the content layout, replaced in place when data
+  arrives
+
+### Requirement: Agent sign-in and reconnect run as a full-page wizard
+
+When an owner signs a pod's Claude agent in (or reconnects it) from the Control tab, the cockpit SHALL present a **full-page takeover** flow that replaces the normal cockpit tabs (the same pattern as pod update / T3-enable), not a block squeezed inside the agent card. The wizard SHALL show a header (a status dot, the pod name, and a "Claude sign-in" label), the line "Sign this pod in to Claude so you can drive it from the Claude app or browser." (no additional reassurance copy), a **Step 1** that opens the agent's sign-in page (the OAuth URL) with the caption "Approve it, then Claude shows you a code to paste back.", and a **Step 2** with a paste-the-code input and a submit control. After the code is submitted it SHALL show a "Signing in…" progress state, and SHALL return to the cockpit automatically once the agent reports authed. Reconnect SHALL reuse the same screen titled "Reconnect Claude". The sign-in mechanics (OAuth URL, code submission, reconnect action) are unchanged — only the presentation moves to full-page.
+
+#### Scenario: Signing in takes over the cockpit and returns on success
+
+- **WHEN** the owner starts (or reconnects) Claude sign-in on a running pod
+- **THEN** the cockpit SHALL replace its tabs with the full-page sign-in wizard (open-sign-in-page + paste-code + "Signing in…"), and SHALL return to the normal cockpit automatically once the agent is authed
+
+#### Scenario: The wizard omits the removed reassurance copy
+
+- **WHEN** the Claude sign-in wizard renders
+- **THEN** it SHALL NOT show a "files/git/settings are untouched" reassurance line or a "safe to close this tab" note
+
+### Requirement: Codex pairing runs as a full-page wizard
+
+Connecting the ChatGPT app to a pod's Codex agent SHALL be presented as a **full-page takeover** wizard (like update/T3-enable), not an inline card block. It SHALL keep the existing Phone/Desktop step-1 pairing instructions (how to reach the pair screen and enter the code, with the QR on a wide viewport + Phone), a **step 2 "Open your session"** that renders the shared "continue this Codex session" guidance (below), and SHALL refer to the **ChatGPT app** (not "Codex app"). It SHALL NOT show a "Remote control needs the pod awake…" footer line.
+
+#### Scenario: Pairing takes over the cockpit and keeps the pairing steps
+
+- **WHEN** the owner opens Codex pairing on a running pod
+- **THEN** the cockpit SHALL show the full-page pairing wizard with the Phone/Desktop step-1 pairing instructions intact and step-2 "Open your session" showing the shared continue-session guidance, and no "pod awake" footer
+
+The full-page wizard SHALL await and inspect the owner-confirmation ("I've paired this") action's
+result, the same as the inline card panel it wraps. On success it SHALL invalidate/refetch the shared
+confirmed-device query and return to the normal cockpit, where the newly confirmed device pill is
+visible. On failure it SHALL remain open with the entered device label intact and display the action's
+error — it SHALL NOT mimic success (first10 incident: the device was recorded server-side but the
+full-page wrapper never closed or refetched, because it did not forward the panel's completion
+callback).
+
+#### Scenario: Successful confirmation returns to the cockpit with the device pill
+
+- **WHEN** the owner enters a device label in the full-page wizard and "I've paired this" succeeds
+- **THEN** the wizard SHALL close, returning to the normal cockpit, and the Control tab SHALL show
+  that label as a confirmed-device pill without a manual page reload
+
+#### Scenario: A failed confirmation stays put
+
+- **WHEN** "I've paired this" returns an error
+- **THEN** the wizard SHALL remain open with the entered label unchanged and the error shown, and
+  SHALL NOT add or display a confirmed-device pill
+
+### Requirement: One shared "Continue this Codex session" guidance
+
+The guidance for continuing a Codex session in the ChatGPT app SHALL be defined ONCE and rendered verbatim by BOTH the Codex info "(i)" modal and the Codex pairing wizard's "Open your session" step, so the two cannot drift. It SHALL be titled "Continue this Codex session" and cover the **ChatGPT app** on mobile and desktop: on **mobile**, once paired the pod appears automatically under Remote → Projects as a project named "work" with the pod name shown underneath, and the owner taps it; on **desktop**, the pod is added once as a remote project (+ next to Projects → Remote → name it after the pod → pick the pod as Remote host → set Source folder to `work`, replacing the `/home/dev` default → Add project), and thereafter opened from the sidebar. The pod name SHALL be interpolated wherever "[pod name]" appears.
+
+#### Scenario: The info modal and the pairing wizard show identical continue-session copy
+
+- **WHEN** the owner opens the Codex "(i)" info modal OR reaches step 2 of the pairing wizard
+- **THEN** both SHALL render the same "Continue this Codex session" mobile + desktop guidance from a single shared source, referring to the ChatGPT app and naming the pod where "[pod name]" appears
+

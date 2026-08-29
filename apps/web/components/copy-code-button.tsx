@@ -34,7 +34,7 @@ export function CopyCodeButton({
     <button
       type="button"
       onClick={copy}
-      className={`inline-flex min-w-0 items-center gap-2 rounded-md border border-border/60 bg-background font-mono font-semibold tabular-nums hover:bg-white/[0.04] ${className}`}
+      className={`inline-flex min-w-0 items-center gap-2 rounded-md border border-border/60 bg-background font-mono font-semibold tabular-nums hover:bg-white/[0.06] ${className}`}
       title={title}
     >
       {/* The VALUE truncates; the icon never does. `truncate` on the button itself

@@ -86,4 +86,9 @@ export interface GatewayConfig {
   maintenanceDormantMs?: number;
   /** Max pods to maintenance-wake per sweep (bounds cost). */
   maintenanceMaxPerSweep?: number;
+  /** Running-but-idle token-refresh threshold (ms): a RUNNING pod whose agent has been idle beyond
+   * this gets one trivial headless call so its rotating login refreshes before hard expiry (the
+   * afisha class — the fleet never idle-sleeps, so nothing else renews it). undefined = default 7d;
+   * 0 disables. */
+  maintenanceRefreshIdleMs?: number;
 }

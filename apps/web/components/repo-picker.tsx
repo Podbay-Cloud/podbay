@@ -86,7 +86,7 @@ export function RepoPicker({
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex w-full items-center justify-between gap-2 rounded-md border border-border/60 bg-transparent px-3 py-2 text-sm hover:bg-white/[0.03]"
+        className="flex w-full items-center justify-between gap-2 rounded-md border border-border/60 bg-transparent px-3 py-2 text-sm hover:bg-white/[0.06]"
       >
         <span className={value ? "truncate font-medium" : "truncate text-muted-foreground"}>
           {value || placeholder}

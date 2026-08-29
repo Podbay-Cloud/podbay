@@ -11,6 +11,11 @@ export const HANDOFF_DIR = "/home/dev/.podbay/handoff";
 const HANDOFF_REQUEST =
   "/handoff — this pod is about to restart (update, resize, or suspend). Write your handoff note now, then stop.";
 
+/** Same `/handoff` mechanism, different trigger: control of this pod is being handed to T3 Code, which
+ * will start its OWN fresh session. The note is how that session picks up where you left off. */
+export const T3_HANDOFF_REQUEST =
+  "/handoff — control of this pod is being handed to T3 Code, which will start a FRESH session. Write your handoff note now (what you were doing, current state, next steps) so it can continue where you left off, then stop.";
+
 /** Default budget for the whole best-effort attempt. 60s (owner decision,
  * 2026-07-28: "update can take its time") — the timeout only ever costs anything
  * when a pane LOOKS ready but its agent doesn't finish writing (a dead or gated
@@ -28,6 +33,10 @@ export interface RequestHandoffOptions {
   podId: string;
   log: Logger;
   timeoutMs?: number;
+  /** The line typed into each live pane. Defaults to the restart-interrupt phrasing; callers on a
+   * different trigger (e.g. yielding control to T3 Code) pass their own so the note's framing is
+   * honest about WHY the handoff is being written. */
+  request?: string;
   /** Injectable clock for tests. */
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -73,6 +82,7 @@ async function listWindows(provider: SandboxProvider, id: string): Promise<strin
  */
 export async function requestHandoff(opts: RequestHandoffOptions): Promise<string[]> {
   const { provider, podId, log } = opts;
+  const request = opts.request ?? HANDOFF_REQUEST;
   const timeoutMs = opts.timeoutMs ?? HANDOFF_TIMEOUT_MS;
   const now = opts.now ?? (() => Date.now());
   const sleep = opts.sleep ?? defaultSleep;
@@ -106,7 +116,7 @@ export async function requestHandoff(opts: RequestHandoffOptions): Promise<strin
       await exec(
         provider,
         podId,
-        `tmux send-keys -t main:${w} ${JSON.stringify(HANDOFF_REQUEST)} 2>/dev/null && ` +
+        `tmux send-keys -t main:${w} ${JSON.stringify(request)} 2>/dev/null && ` +
           `sleep 0.3 && tmux send-keys -t main:${w} Enter 2>/dev/null`,
       );
       asked.push(w);
@@ -187,5 +197,66 @@ export async function writeResizeNote(o: ResizeNoteOptions): Promise<void> {
     o.log.info("resize_note_written", { podId: o.podId, label: o.label });
   } catch (e) {
     o.log.warn("resize_note_failed", { podId: o.podId, err: e });
+  }
+}
+
+export interface T3HandoffNoteOptions {
+  provider: SandboxProvider;
+  podId: string;
+  /** `to-t3`: control just passed TO T3 (read by T3's fresh session). `to-podbay`: control just
+   * returned FROM T3 (read by the resumed Podbay agent). */
+  direction: "to-t3" | "to-podbay";
+  at: string;
+  log: Logger;
+}
+
+/**
+ * A self-describing pointer note for the T3 control hand-off, written to a fixed filename in the same
+ * `~/.podbay/handoff/` dir the resume-from-handoff rule already tells every fresh agent to read.
+ *
+ * Two directions, two very different guarantees — and the note is honest about which:
+ *  - `to-t3`: Podbay's live agents just wrote their own per-window notes (via `requestHandoff`), so
+ *    this note points T3's fresh session at them — a real context handoff.
+ *  - `to-podbay`: T3 drove the pod from its OWN sessions, which are NOT in Podbay's tmux and cannot be
+ *    asked for a note. There is no transcript to move — so this note points the resumed Podbay agent
+ *    at the real evidence instead: the working tree (`git diff`) T3 edited, and T3's history under `~/.t3`.
+ *
+ * Best-effort, never throws — a failed note must never fail the enable/disable. Overwrites a fixed
+ * filename and is marked one-time so an unrelated later restart disregards it.
+ */
+export async function writeT3HandoffNote(o: T3HandoffNoteOptions): Promise<void> {
+  try {
+    if (typeof o.provider.exec !== "function") return;
+    const body =
+      o.direction === "to-t3"
+        ? [
+            "# Control handed to T3 Code",
+            "",
+            `At ${o.at}, the owner switched this pod to T3 Code control, and you are a fresh session started by T3.`,
+            "",
+            "The Podbay session(s) that were driving this pod just left handoff notes in this directory",
+            "(the per-window `*.md` files next to this one). Read them and continue that work where it left off.",
+            "",
+            "This is a one-time notice; disregard it on later restarts.",
+            "",
+          ].join("\n")
+        : [
+            "# Control returned to Podbay from T3 Code",
+            "",
+            `At ${o.at}, the owner turned off T3 Code control and Podbay is driving this pod again.`,
+            "",
+            "While T3 was in control it ran its OWN agent sessions (not in this tmux), so there is no transcript",
+            "to resume — but its file edits are in your working tree. Run `git status` and `git diff` to see what",
+            "changed and continue from there. T3's own session history, if you need it, is under `~/.t3`.",
+            "",
+            "This is a one-time notice; disregard it on later restarts.",
+            "",
+          ].join("\n");
+    // Quoted heredoc delimiter → no shell expansion of the note body.
+    const script = `mkdir -p '${HANDOFF_DIR}' && cat > '${HANDOFF_DIR}/t3-control.md' <<'PBT3NOTE'\n${body}PBT3NOTE\n`;
+    await o.provider.exec(o.podId, ["su", "-", "dev", "-c", script]);
+    o.log.info("t3_handoff_note_written", { podId: o.podId, direction: o.direction });
+  } catch (e) {
+    o.log.warn("t3_handoff_note_failed", { podId: o.podId, err: e });
   }
 }

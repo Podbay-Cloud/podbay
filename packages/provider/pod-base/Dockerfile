@@ -256,6 +256,8 @@ COPY packages/provider/pod-base/init.sh /usr/local/bin/podbay-init
 # runtime-rules doc (init.sh copies it to ~/.claude/CLAUDE.md at first boot).
 COPY packages/provider/pod-base/podbay /usr/local/bin/podbay
 COPY packages/provider/pod-base/podbay-doctor /usr/local/bin/podbay-doctor
+# Recovery command the PODBAY-AGENT-EXITED banner points at — relaunches a dead agent.
+COPY packages/provider/pod-base/podbay-agent-restart /usr/local/bin/podbay-agent-restart
 # Live config-refresh (docs/plans/live-config-refresh.md): the shared refresh ops + the on-demand
 # entry the control plane execs to apply config to a RUNNING pod with no restart. refresh-common.sh
 # is sourced (no +x needed); podbay-refresh is executable and on PATH.
@@ -265,7 +267,7 @@ COPY packages/provider/pod-base/runtime-rules.md /opt/podbay/runtime-rules.md
 # Stop hook: the only part of `relentless` that does not depend on the agent remembering it.
 COPY packages/provider/pod-base/hooks/relentless-stop.py /opt/podbay/hooks/relentless-stop.py
 RUN chmod +x /opt/podbay/hooks/relentless-stop.py
-RUN chmod +x /usr/local/bin/podbay-init /usr/local/bin/podbay /usr/local/bin/podbay-doctor /usr/local/bin/podbay-refresh
+RUN chmod +x /usr/local/bin/podbay-init /usr/local/bin/podbay /usr/local/bin/podbay-doctor /usr/local/bin/podbay-refresh /usr/local/bin/podbay-agent-restart
 
 # The provider injects /etc/podbay/pod-spec.json and /etc/podbay/claude/* at create.
 # pod-agent is the entrypoint: it runs podbay-init (first-boot seeding) then serves

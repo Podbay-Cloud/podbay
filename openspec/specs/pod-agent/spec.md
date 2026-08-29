@@ -106,6 +106,15 @@ persistent session. On subsequent connections it SHALL boot straight into the ag
 - **WHEN** a pod already has CLI credentials and a client connects
 - **THEN** the agent SHALL attach to the persistent session with the agent CLI running
 
+#### Scenario: A first-run onboarding prompt never blocks launch or sign-in
+
+- **GIVEN** the Claude CLI shows a first-run onboarding step (e.g. the v2.1.x theme picker) BEFORE the
+  agent is usable or before `/login` reaches its method menu
+- **THEN** the pod SHALL not stall on it: the launch SHALL pre-seed the known non-interactive setting
+  (the theme) so the picker is skipped, AND the login-drive SHALL also accept such a pre-login prompt
+  with its highlighted default — so an authed boot reaches the agent and an unauthed `/login` reaches
+  the sign-in URL, rather than sitting on the onboarding screen
+
 #### Scenario: Codex login uses the headless device-code flow
 
 - **WHEN** a Codex pod boots without credentials
@@ -146,6 +155,17 @@ chips without relying on in-buffer link detection.
 - **WHEN** the agent captures the sign-in URL for the client
 - **THEN** it SHALL NOT surface the truncated OAuth URL, and SHALL keep re-capturing until the URL is
   complete — a partial link that Claude would reject as "Missing redirect_uri" is never presented
+
+#### Scenario: A sign-in URL sliced across TUI rows is rejoined regardless of pane width
+
+- **GIVEN** the login TUI has painted a long OAuth URL as consecutive rows, each cut at the pane
+  boundary but SHORTER than the full pane width (so the rows do not "wrap" from tmux's view)
+- **WHEN** the agent captures the sign-in URL
+- **THEN** it SHALL rejoin the sliced rows into the whole URL (including the trailing `&state=…`) by
+  appending following pure-URL rows until one is not — WITHOUT relying on the pane width. A URL that
+  happens to be sliced a couple characters short of the pane SHALL still be recovered complete, so the
+  sign-in wizard never hangs on "Getting the sign-in link…" (the pane-width-dependent flakiness fixed
+  2026-08-25).
 
 ### Requirement: Activity and idle reporting
 
@@ -670,4 +690,463 @@ network, auth) SHALL leave `~/work` exactly as it was.
 
 - **WHEN** a forced (overwrite) clone is requested but the fetch fails
 - **THEN** `~/work` SHALL be left unchanged, with its existing contents intact
+
+### Requirement: Agent CLIs are updatable by the unprivileged user
+
+The agent CLIs (`claude`, `codex`) are baked into the pod image at pinned versions, owned by root
+under `/usr`. The pod runs as the unprivileged `dev` user, so a bare `npm install -g …@latest`
+fails with EACCES. To let a pod update its agent CLIs WITHOUT root and have the update persist, the
+pod SHALL provide a dev-writable global npm prefix at `~/.npm-global` (on the persistent home
+volume) placed FIRST on `PATH` — for interactive shells, for processes the owner launches as `dev`,
+and for the agent the pod-agent itself launches (its tmux session env). An updated CLI installed
+there SHALL shadow the baked one. `podbay agent update [claude | codex | --all]` performs the
+update; `podbay agent versions` reports the effective (dev-prefix-first) and latest versions.
+
+Codex is a special case: it is BOTH an npm package AND a standalone RC-daemon build under
+`~/.codex/packages/standalone` that shares `~/.codex` state and MUST match the npm version. So
+`podbay agent update codex` SHALL bring both to the same version in lockstep and record the chosen
+release in `~/.config/podbay/codex-pin`, which the boot-time standalone pin-enforcer SHALL honour in
+preference to the image default — so a deliberate update survives restart while the pod stays
+reproducible (pinned to the chosen version, never a silent self-update).
+
+#### Scenario: The owner updates claude without root
+
+- **WHEN** `podbay agent update claude` runs as the `dev` user
+- **THEN** the latest `@anthropic-ai/claude-code` SHALL be installed into `~/.npm-global` and SHALL
+  shadow the baked CLI for the agent, surviving a pod restart
+
+#### Scenario: A codex update keeps npm and the standalone in lockstep
+
+- **WHEN** `podbay agent update codex` runs
+- **THEN** the npm codex and the standalone RC-daemon build SHALL both be at the chosen version, the
+  choice SHALL be recorded in `~/.config/podbay/codex-pin`, and a subsequent boot SHALL pin the
+  standalone to that recorded version rather than reverting to the image default
+
+### Requirement: A crashed agent is recoverable, and a stale transcript never bricks boot
+
+The agent boot command SHALL be resilient to an unresumable transcript. `claude --continue` is
+attempted only when a prior transcript file exists, but that file may not be resumable (stale,
+corrupt, or written by a DIFFERENT agent harness sharing the workspace). If `--continue` exits fast
+(within a few seconds) with a non-zero status, the boot SHALL fall back to a FRESH session ONCE
+rather than crash-loop the pane to a dead shell.
+
+When an agent nonetheless exits to a bare shell (the `PODBAY-AGENT-EXITED` state), the pod SHALL
+provide a working recovery path: a `POST /agent/restart` endpoint on the pod-agent (optional `agent`
+in the body; defaults to the primary agent) that relaunches the agent in its existing window, and a
+`podbay-agent-restart` command that calls it — the exact command the exit banner tells the user to
+run. `podbay doctor` SHALL detect this state — a window that exists but whose agent process has died
+(the pane shows `PODBAY-AGENT-EXITED`) — and, with `--fix`, repair it via that endpoint; reporting
+"no problems" for a window-present-but-agent-dead pod is a defect.
+
+#### Scenario: A foreign or stale transcript does not crash-loop boot
+
+- **WHEN** the agent boots with `--continue` but the transcript cannot be resumed and claude exits
+  within a few seconds non-zero
+- **THEN** the boot SHALL start a fresh session instead of retrying `--continue` into a dead shell
+
+#### Scenario: doctor detects and repairs a dead agent
+
+- **WHEN** `podbay doctor --fix` runs on a pod whose agent window exists but shows `PODBAY-AGENT-EXITED`
+- **THEN** it SHALL report the dead agent and relaunch it via `POST /agent/restart`
+
+### Requirement: An expired agent login is detected, not hidden
+
+`authed` on `/healthz` SHALL reflect whether the agent can actually authenticate, NOT merely whether a
+credentials file exists. When the file is present but the login token has hard-expired (claude's
+`claudeAiOauth.refreshTokenExpiresAt` in the past, or codex's OAuth token expiry), the pod SHALL report
+`authed: false` and `loginExpired: true` for that agent, and SHALL emit an agent-scoped health issue
+("<Agent> sign-in expired") so the cockpit and `podbay doctor` surface it instead of reporting the pod
+healthy. Detection is conservative: only a KNOWN expiry field in the past marks a login expired, so an
+unrecognised credential shape never false-alarms.
+
+#### Scenario: A dead token is reported as logged out, not authed
+
+- **WHEN** an agent's credentials file exists but its refresh token has expired
+- **THEN** `/healthz` SHALL report `authed: false`, `loginExpired: true`, and an agent-scoped
+  "sign-in expired" issue — never `authed: true` with no issue
+
+#### Scenario: The owner can reconnect an expired agent from the cockpit
+
+- **WHEN** the owner clicks Reconnect on an agent whose login has expired
+- **THEN** the dead token SHALL be cleared and the agent respawned into its `/login` flow, so its
+  fresh device-auth URL surfaces in the cockpit's existing sign-in UI (open-link + paste-code)
+
+### Requirement: Podbay yields agent remote-control to an external harness without logging the agents out
+
+When an external agent harness (e.g. T3 Code) is put in control of a pod, Podbay SHALL stop driving
+its own remote-control for BOTH agents so the two never compete for the same tmux session, and SHALL
+do so WITHOUT touching the credential files — the agents stay signed in and the external harness uses
+the same on-disk logins. The yield SHALL be durable (survive restart/resume) and SHALL be fully
+reversible: on hand-back, Podbay restarts its own remote-control for both agents.
+
+#### Scenario: Podbay stops driving Claude and Codex while yielded
+
+- **WHEN** the pod is put in external-harness control
+- **THEN** Podbay stops running its Claude greeter/remote-control and its Codex remote-control daemon
+  (including on boot and on every resume), and does not type `/remote-control` into either agent
+
+#### Scenario: The agents stay signed in across the hand-off
+
+- **WHEN** control is yielded to the external harness
+- **THEN** the Claude and Codex credential files are left untouched, so both agents remain
+  authenticated and the harness drives them with no re-login
+
+#### Scenario: The yield survives restart and resume
+
+- **WHEN** a pod under external-harness control is restarted or resumed
+- **THEN** Podbay does not re-enable its own remote-control on boot or on the resume watcher — the
+  yield persists until control is explicitly handed back
+
+#### Scenario: Handing control back restores Podbay's remote-control
+
+- **WHEN** external-harness control is turned off
+- **THEN** Podbay clears the yield and restarts its own remote-control for both Claude and Codex, with
+  the agents still signed in
+
+#### Scenario: A yield with no harness behind it heals itself
+
+The yield is a pod-local marker, while the decision to yield lives in the control plane — so a T3
+enable that fails mid-flight can leave the marker set with nothing in control (its rollback issues the
+un-yield best-effort, and one missed call strands the pod). Because every remote-control path returns
+early on the marker, a stranded pod has NO remote control and NO resume nudge on every subsequent
+restart, indefinitely, with nothing surfaced to the owner.
+
+- **WHEN** the pod boots with remote-control yielded but no external harness is registered to run on
+  this pod (a real hand-over always declares its startup command BEFORE the yield is recorded, and
+  that declaration is durable, so a yield without one cannot be legitimate)
+- **THEN** the pod SHALL treat the yield as stale, clear it before the greeter runs, and resume its own
+  remote-control — so the pod greets and reconnects normally on that same boot rather than staying
+  silently disabled
+- **AND** `podbay doctor` SHALL report the stale yield as a finding rather than reading it as
+  intentional, with `--fix` clearing it and restoring remote control
+- **AND** a yield whose harness IS registered SHALL be left untouched, including early in boot before
+  the harness process has started
+
+### Requirement: A supervised startup command reports only while it is declared, and says what actually blocks it
+
+The pod SHALL report a startup command as failing only while that command is still DECLARED. Removing
+a command SHALL stop it being reported — the declaration is the source of truth, and give-up state
+that outlives it makes the cockpit warn about a command that no longer exists, with fix advice that
+cannot work.
+
+When a startup command cannot run because the directory it changes into no longer exists, the pod
+SHALL say so and name that directory, and SHALL NOT offer restart-based advice — retrying cannot
+recreate a directory, and a fix that cannot work is worse than no fix. The pod SHALL only make this
+claim when it can determine the directory unambiguously; an unexpanded or relative path SHALL be
+treated as unknown rather than guessed.
+
+#### Scenario: A removed startup command stops being reported
+
+- **WHEN** a startup command the watchdog had given up on is removed from the pod's declarations
+- **THEN** the pod SHALL stop reporting it, without requiring a restart of the pod
+
+#### Scenario: A missing working directory is named, with advice that can work
+
+- **WHEN** a declared startup command changes into a directory that no longer exists
+- **THEN** the reported problem SHALL name that directory and offer recreating it or removing the
+  command, and SHALL NOT present the failure as auto-recoverable
+
+#### Scenario: An ambiguous path is not diagnosed
+
+- **WHEN** a startup command's directory cannot be determined unambiguously (an unexpanded variable,
+  a glob, or a relative path)
+- **THEN** the pod SHALL NOT claim the directory is missing
+
+### Requirement: The agent is never left silently stuck at a known menu
+
+The pod SHALL continuously ensure the Claude agent is not wedged at one of its known interactive
+menus with nothing driving it. A menu that the platform knows how to answer (the login-method select,
+the API-key prompt, the bypass-permissions gate, the folder-trust prompt, and the remote-control
+modal) SHALL be driven automatically whenever it is showing, has been static (unchanged) for a short
+bounded interval, and no one-shot driver is currently acting on it — regardless of which flow put the
+agent there (boot, reconnect, resume, an image update, a window respawn, or a future flow). Driving is
+bounded per gate: after a capped number of attempts a gate that will not clear SHALL be surfaced to
+the owner as a "needs you" state, never retried indefinitely and never left as a silent hang.
+
+#### Scenario: A menu shown by any flow gets driven
+
+- **WHEN** the Claude agent is sitting at a known menu (e.g. the login-method select after a reconnect
+  respawn) and no driver is currently acting on it
+- **THEN** the pod drives the correct answer for that menu so the flow advances (e.g. the sign-in URL
+  prints and the cockpit captures it), without the owner touching the terminal
+
+#### Scenario: The watchdog does not fight an in-progress driver or the owner
+
+- **WHEN** a menu is present but the pane is still changing (a one-shot driver is clearing it, or the
+  owner is interacting)
+- **THEN** the watchdog does not act on that window until the pane has been static for the bounded
+  interval, so it never collides with legitimate in-progress input
+
+#### Scenario: An unclearable gate becomes an explicit "needs you", not a hang
+
+- **WHEN** a gate keeps reappearing past the per-gate attempt cap, or a menu is present that cannot be
+  safely auto-answered
+- **THEN** the pod surfaces it to the owner as a clear "needs you" state rather than waiting silently
+  or looping forever
+
+### Requirement: Every previously-orphaned blocking gate is handled
+
+A blocking gate the platform can detect SHALL either be driven or surfaced — it SHALL NOT be merely
+detected-and-ignored. In particular the folder-trust prompt (on the owner's own `~/work`) is answered
+automatically, the post-login "Login successful — press Enter to continue" confirmation is dismissed
+automatically, and any ambiguous confirmation the platform should not decide on the owner's behalf is
+surfaced as "needs you".
+
+#### Scenario: The folder-trust prompt no longer stalls startup
+
+- **WHEN** the agent shows the "do you trust the files in this folder" prompt for its own workspace
+- **THEN** the pod answers it so startup proceeds, rather than only refusing to type and waiting
+
+#### Scenario: The post-login "press Enter to continue" is dismissed automatically
+
+- **WHEN** sign-in succeeds and the agent sits on "Login successful. Press Enter to continue…"
+- **THEN** the pod presses Enter so the agent reaches its prompt, rather than leaving it at a dialog that
+  the dashboard reads as "Needs you" even though the login fully succeeded
+
+#### Scenario: An owner-decision gate is surfaced, not guessed
+
+- **WHEN** the agent shows a confirmation the platform cannot safely answer on the owner's behalf
+- **THEN** the pod surfaces it as a "needs you" state so the owner decides, rather than hanging
+
+#### Scenario: A rejected OAuth code is recognized and never retried automatically
+
+- **WHEN** the agent shows a rejected-code OAuth error ("invalid code … press Enter to retry")
+- **THEN** the pod SHALL NOT send any input into that dialog — Enter would resubmit the same dead code,
+  not advance it — and SHALL surface it as a "needs you" state immediately, without spending the
+  bounded-drive attempts a recoverable menu gets
+
+### Requirement: A re-spawned primary agent can be driven again
+
+The one-shot menu drivers SHALL be re-armable, so that when the PRIMARY agent's process is respawned
+after the initial greet (e.g. a credentials-present restart, or a watchdog window respawn), a fresh
+menu it lands on is still driven — the guards that make a driver fire once per process SHALL NOT
+permanently disable driving for a later respawn.
+
+#### Scenario: A primary-agent restart lands on a driven menu
+
+- **WHEN** the primary agent's window is respawned after the process's first greet and it surfaces a
+  known menu
+- **THEN** the menu is driven (by the re-armed one-shot driver or the watchdog), not left stuck
+  because a once-per-process guard already fired
+
+### Requirement: Auth failure is detected from live signals, not only the credential file
+
+The pod SHALL detect that an agent needs re-authentication from LIVE signals — the CLI's own
+auth-failure output in the terminal ("login expired", "please run /login", "worker auth expired", the
+remote-control "sign in again" message, or a rejected OAuth code during a fresh sign-in attempt) — in
+addition to the credential file's hard-expiry field. A mid-session refresh failure that leaves the
+credential file's expiry still in the future SHALL still be reported as needing attention, so the pod
+never reports healthy while the owner is locked out. The live signal SHALL be debounced (present
+across a short interval) so a transient, self-healing state is not flagged, and SHALL clear as soon as
+the agent is authenticated again.
+
+#### Scenario: A mid-session logout is detected despite a valid-looking credential file
+
+- **WHEN** the agent's terminal shows an auth-failure message but the credential file's hard-expiry is
+  still in the future
+- **THEN** the pod reports that agent as needing re-authentication, and the cockpit/doctor reflect it
+  — rather than reporting the pod healthy
+
+#### Scenario: A rejected OAuth code is detected even though the old credential file still looks valid
+
+- **WHEN** the agent's terminal shows a rejected-code OAuth error from a fresh sign-in attempt, while
+  the credential file left over from a PRIOR login still parses as unexpired
+- **THEN** the pod reports that agent as needing re-authentication (not "signed in, remote control
+  down"), so the cockpit offers Reconnect instead of a bridge-repair action that cannot succeed
+
+#### Scenario: A transient auth blip is not flagged
+
+- **WHEN** an auth-failure message appears for less than the debounce interval and then clears on its
+  own
+- **THEN** the pod does not raise a needs-reauth state for it
+
+### Requirement: Remote-control liveness is reported from the current bridge, not a stale capture
+
+The pod SHALL classify each Claude interactive session's Remote Control lifecycle as `active`,
+`recovering`, `down`, `login-required`, or `unknown` from CURRENT evidence — not from the mere fact
+that a session URL was captured at some earlier point. A remote-control worker that has died
+mid-session SHALL read as inactive.
+
+The health payload SHALL expose the classification additively as `rcState`. For backward
+compatibility, the existing `rcActive` boolean SHALL remain `true` if and only if `rcState` is
+`active`; `recovering` and `unknown` SHALL NOT be promoted to `rcActive: true`. Health reporting,
+automatic recovery, and doctor SHALL consume the same classifier so they cannot disagree. A recognized
+blocking login or OAuth retry dialog SHALL outrank a still-present-looking credential file: it SHALL
+classify as `login-required`, never as a valid login with RC merely `down`. An older pod-agent image
+that does not send `rcState` at all SHALL be treated by consumers the same as `unknown`, never as
+active.
+
+#### Scenario: A dead remote-control worker reads as inactive
+
+- **WHEN** the remote-control bridge has died (e.g. its worker auth expired) after a session URL was
+  once captured
+- **THEN** the pod reports remote control as inactive (`rcActive: false`), with `rcState` reflecting
+  the reason (`down` or `login-required`), and the cockpit/doctor no longer show it active
+
+#### Scenario: A stale URL is not reported as active
+
+- **GIVEN** a Claude session URL was captured earlier but the current TUI reports that RC is down
+- **WHEN** the pod-agent emits health
+- **THEN** it reports `rcState: "down"` and does not report `rcActive: true`
+
+#### Scenario: Missing liveness evidence remains unknown
+
+- **GIVEN** the current pinned CLI exposes neither a live nor failed RC signal
+- **WHEN** the pod-agent emits health
+- **THEN** it reports `rcState: "unknown"` rather than guessing from a process, URL, or prior
+  successful connection
+
+#### Scenario: Login failure is distinct from bridge failure
+
+- **GIVEN** the agent login is expired, or the Claude TUI is in its login flow, or the live pane shows
+  a recognized auth-failure/OAuth-retry message
+- **WHEN** the pod-agent classifies RC
+- **THEN** it reports `rcState: "login-required"`, not `"down"`, and does not start RC recovery
+
+#### Scenario: A stale credential does not hide a blocking OAuth error
+
+- **GIVEN** the Claude credential file still appears valid but the live pane shows a recognized OAuth
+  failure dialog such as invalid-code plus "Press Enter to retry"
+- **WHEN** the pod-agent emits health
+- **THEN** it reports `login-required`, not merely signed-in with RC down
+
+#### Scenario: An in-progress bounded restore is reported distinctly from down or active
+
+- **GIVEN** a bounded RC auto-restore attempt is currently owed and has not yet exhausted its cap
+- **WHEN** the pod-agent emits health
+- **THEN** it reports `rcState: "recovering"`, and `rcActive` remains `false` until the restore is
+  actually observed to succeed
+
+#### Scenario: An older pod image's absent rcState is treated as unknown
+
+- **GIVEN** an older pod-agent image that never sends `rcState` in its health payload
+- **WHEN** a newer consumer reads that health payload
+- **THEN** it treats the missing field the same as `"unknown"` rather than erroring or assuming active
+
+### Requirement: The pod auto-restores remote control when it dies while the login is valid
+
+When an agent is authenticated (its login is valid) but remote control is not live — including
+immediately after the owner re-runs `/login` mid-session — the pod SHALL re-establish remote control
+itself, without the owner having to run `/remote-control` manually. This SHALL be bounded (a capped
+number of attempts with backoff) and SHALL NOT fire while the agent is logged out or sitting at a
+login/menu prompt. If it cannot restore remote control within the cap, the pod SHALL surface that
+rather than retry indefinitely.
+
+This SHALL hold for a DELIBERATE reconnect too, not only a pane-detected auth failure: when the owner
+reconnects an agent (its credential is wiped and it is relaunched into `/login`), the pod SHALL clear
+the now-dead remote-control session (so the pod stops reporting it "on") and owe an RC restore that
+fires once the re-login completes — a manual reconnect previously left RC lost and the stale session
+URL still reported as active. And `podbay doctor --fix` SHALL detect a signed-in agent whose remote
+control is down (not deliberately yielded to an external harness) and re-establish it, so the owner has
+a recovery path when the automatic restore didn't fire.
+
+Both the automatic restore path and the manual `/agent/rc-restore` endpoint SHALL consult the SAME
+current `rcState` classification (not merely the credential file's expiry) before proceeding: a restore
+attempt SHALL NOT run the greeter or spend a slot from the bounded attempt budget while the classified
+state is `login-required` — including a LIVE blocking gate (a login menu or an OAuth retry dialog) that
+the credential file alone does not see. `/agent/rc-restore` SHALL report which of these happened rather
+than always answering as if an attempt were accepted.
+
+#### Scenario: A live blocking login dialog is not spent from the restore budget
+
+- **GIVEN** the primary agent's pane currently shows a recognized blocking login/OAuth-retry dialog
+  while the credential file itself still parses as unexpired
+- **WHEN** an automatic restore tick or a manual `/agent/rc-restore` call would otherwise run
+- **THEN** the pod SHALL NOT run the greeter and SHALL NOT consume a bounded auto-restore attempt for
+  it, and SHALL log that the restore was skipped because a login problem is blocking it
+
+#### Scenario: The restore endpoint reports honestly when it cannot help
+
+- **GIVEN** the primary agent's classified `rcState` is `login-required`
+- **WHEN** `POST /agent/rc-restore` is called
+- **THEN** the pod SHALL respond indicating the call was skipped for a login problem rather than
+  reporting success, so the caller (doctor, or the cockpit) can tell "you must reconnect" apart from
+  "an attempt was made"
+
+#### Scenario: Remote control is restored after a mid-session re-login
+
+- **WHEN** the owner runs `/login` to recover a mid-session logout and the agent becomes authenticated
+  again while remote control is dead
+- **THEN** the pod re-establishes remote control on its own and a fresh session becomes available,
+  without the owner running `/remote-control`
+
+#### Scenario: Auto-restore does not fire into a logged-out or mid-login agent
+
+- **WHEN** the agent is not authenticated, or is sitting at a login/method menu
+- **THEN** the pod does not attempt to re-establish remote control (the login/menu path is handled
+  first), so it never drives remote control into a session that cannot accept it
+
+#### Scenario: A bridge that will not come back is surfaced, not looped
+
+- **WHEN** remote control cannot be re-established within the attempt cap
+- **THEN** the pod surfaces that remote control could not be restored, rather than retrying forever or
+  reporting it active
+
+#### Scenario: A manual reconnect restores remote control after re-login
+
+- **WHEN** the owner reconnects the primary agent (credential wiped, relaunched into `/login`) and then
+  completes the re-login
+- **THEN** the pod SHALL have cleared the dead session URL (so it does not report RC "on" off a stale
+  session) and SHALL re-establish remote control once authed, without a manual `/remote-control`
+
+#### Scenario: Doctor detects and fixes remote control that is down
+
+- **WHEN** `podbay doctor` runs on a pod whose Claude is signed in but has no live remote-control
+  session, and RC was not deliberately turned off (yielded to T3)
+- **THEN** doctor SHALL report it, and `--fix` SHALL ask the pod to re-establish remote control, then
+  re-read the pod's health and report `fixed` from the OBSERVED resulting state, never from the
+  restore request having merely been accepted
+
+#### Scenario: Doctor does not attempt to fix a login-required state
+
+- **GIVEN** the pod's classified `rcState` for Claude is `login-required`
+- **WHEN** `podbay doctor --fix` runs
+- **THEN** doctor SHALL report a distinct finding directing the owner to reconnect/sign in, and SHALL
+  NOT call the restore endpoint — only the owner's own sign-in can clear this state
+
+#### Scenario: Doctor treats an unverifiable RC state as not a problem, not a false negative
+
+- **GIVEN** the pod's classified `rcState` for Claude is `unknown` (including an older pod-agent image
+  that sends no `rcState` field at all)
+- **WHEN** `podbay doctor` runs
+- **THEN** doctor SHALL NOT report it as a confirmed failure and SHALL NOT translate a historical
+  session URL or the pre-`rcState` heuristic into a false `down`/`active` claim
+
+### Requirement: The greeter does not attempt remote-control against a logged-out agent
+
+Enabling remote control types `/remote-control` into the agent and waits for a success signal. When
+the agent's login is known-expired, that command is refused and can never succeed, so every
+remote-control enable path SHALL consult the credential expiry signal (not merely the credential
+file's presence) and short-circuit — logging the skip — rather than spending its retry budget on a
+doomed attempt. This applies to the boot greeter, the resume re-enable, the added-agent greeter, and
+the codex daemon start.
+
+#### Scenario: Boot/resume RC enable skips a logged-out agent
+
+- **WHEN** a remote-control enable path runs for an agent whose credential is known-expired
+- **THEN** it does not type `/remote-control`, records that it skipped because the login is expired,
+  and leaves the pod free to surface the "sign-in expired" state instead of appearing to retry
+
+#### Scenario: A logged-out agent does not re-arm the RC attempt on every resume
+
+- **WHEN** a pod whose agent login is expired is suspended and resumed repeatedly
+- **THEN** the resume watcher does not re-run the full remote-control attempt each cycle for that
+  agent, so it never loops typing a refused command
+
+#### Scenario: A signed-in agent still enables remote control normally
+
+- **WHEN** a remote-control enable path runs for an agent whose credential is present and not expired
+- **THEN** it proceeds exactly as before, attempting `/remote-control` and confirming the session
+
+### Requirement: An expired login does not stall an owner-initiated interrupt
+
+A wedged remote-control attempt against a logged-out agent SHALL NOT delay a maintenance interrupt
+(update/resize) — the platform proceeds to its bounded handoff and graceful-shutdown path regardless
+of a stuck RC attempt.
+
+#### Scenario: Update proceeds despite a logged-out agent
+
+- **WHEN** an update is requested for a pod whose agent login is expired
+- **THEN** the update's handoff and shutdown proceed within their bounded timeouts and are not held
+  open by a remote-control attempt that cannot succeed
 

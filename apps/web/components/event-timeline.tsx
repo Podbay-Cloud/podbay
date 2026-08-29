@@ -99,7 +99,7 @@ export default function EventTimeline({ events }: { events: TimelineEvent[] }) {
                   type="button"
                   onClick={() => setOpen(e)}
                   title="View raw JSON"
-                  className="inline-flex items-center gap-1 rounded border border-border/60 px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-white/[0.04]"
+                  className="inline-flex items-center gap-1 rounded border border-border/60 px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-white/[0.06]"
                 >
                   <Braces className="h-3 w-3" /> JSON
                 </button>

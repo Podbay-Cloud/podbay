@@ -1,17 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Loader2, RefreshCw, Smartphone, Monitor, Radio, Check, X } from "lucide-react";
+import { Loader2, RefreshCw, Smartphone, Monitor, Check, X } from "lucide-react";
 import QRCode from "qrcode";
 import { Button } from "@/components/ui/button";
 import { CopyCodeButton } from "@/components/copy-code-button";
-import {
-  getCodexPairingCode,
-  getCodexRcActive,
-  getCodexDevices,
-  confirmCodexDevice,
-  forgetCodexDevice,
-} from "@/lib/actions";
+import { getCodexPairingCode, confirmCodexDevice } from "@/lib/actions";
 
 type Pairing = { manualPairingCode: string; pairingCode: string; expiresAt: number; deviceName: string };
 type Platform = "phone" | "desktop";
@@ -30,7 +24,7 @@ function Chip({ children }: { children: ReactNode }) {
 const STEPS: Record<Platform, ReactNode[]> = {
   phone: [
     <>
-      Open the Codex app, tap the <Chip>☰</Chip> menu
+      Open the ChatGPT app, tap the <Chip>☰</Chip> menu
     </>,
     <>
       Choose <Chip>Remote</Chip>, then <Chip>⋯</Chip> (top-right)
@@ -53,42 +47,6 @@ const STEPS: Record<Platform, ReactNode[]> = {
     <>Enter the 8-digit code below</>,
   ],
 };
-
-/**
- * DESKTOP ONLY. The two apps diverge after pairing, and conflating them makes onboarding
- * worse in both directions:
- *  - phone: pairing is enough — the pod appears under Projects on its own (verified 2026-08-09),
- *    so listing these steps there would send the user on an errand the app already did;
- *  - desktop: pairing opens nothing until the pod is added as a remote project by hand, so a
- *    user who paired "successfully" sees no session and reasonably concludes the pod is broken.
- *
- * There is no shortcut: `codex remote-control start` takes no project/dir argument and
- * `-C/--cd` only sets a CLI session's root, so this navigation lives entirely inside their
- * app and we can only state it exactly. What we CAN pre-empt, we do: the pod ships
- * `[projects."/home/dev/work"] trust_level = "trusted"` in ~/.codex/config.toml, so no trust
- * prompt stacks on top of it.
- */
-const OPEN_STEPS: ReactNode[] = [
-  <>
-    In the sidebar, click <Chip>+</Chip> next to <Chip>Projects</Chip>
-  </>,
-  <>
-    Choose <Chip>Remote</Chip> (&ldquo;a folder on a connected machine&rdquo;) → <Chip>Next</Chip>
-  </>,
-  <>
-    Type any <Chip>Project name</Chip>
-  </>,
-  <>
-    Pick this pod under <Chip>Remote host</Chip>
-  </>,
-  <>
-    Set <Chip>Source folder</Chip> to <Chip>work</Chip> — it defaults to <Chip>/home/dev</Chip>,
-    the home folder, which is not your project
-  </>,
-  <>
-    Click <Chip>Add project</Chip>
-  </>,
-];
 
 /**
  * The Codex remote-control hand-off — the codex analog of Claude's "Continue in
@@ -127,36 +85,9 @@ export function CodexPairPanel({
   const [loading, setLoading] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
-  const [rcActive, setRcActive] = useState(false);
-  const [devices, setDevices] = useState<{ name: string; at: string }[]>([]);
   const [deviceName, setDeviceName] = useState("");
   const [saving, setSaving] = useState(false);
   const [isWide, setIsWide] = useState(false);
-
-  const loadDevices = useCallback(async () => {
-    setDevices(await getCodexDevices(slug).catch(() => []));
-  }, [slug]);
-  useEffect(() => {
-    void loadDevices();
-  }, [loadDevices]);
-
-  // Is remote control live on the pod? This says "registered and available in your
-  // Codex app" — the honest signal. It is NOT "a device is paired": that lives
-  // server-side, and a badge keyed off local state told users they were connected
-  // before they had done anything (reverted 2026-07-27).
-  useEffect(() => {
-    let stop = false;
-    const poll = async () => {
-      const a = await getCodexRcActive(slug).catch(() => false);
-      if (!stop) setRcActive(a);
-    };
-    void poll();
-    const t = setInterval(() => void poll(), 15000);
-    return () => {
-      stop = true;
-      clearInterval(t);
-    };
-  }, [slug]);
 
   // The QR is scanned by a phone camera pointed at a SEPARATE screen, so it only
   // helps on a desktop-sized cockpit + the Phone flow. On a phone-sized viewport (you'd
@@ -219,19 +150,28 @@ export function CodexPairPanel({
 
   const confirm = useCallback(async () => {
     setSaving(true);
-    await confirmCodexDevice(slug, deviceName || (platform === "phone" ? "My phone" : "My desktop"));
-    setDeviceName("");
-    await loadDevices();
+    setError(null);
+    const label = deviceName || (platform === "phone" ? "My phone" : "My desktop");
+    const r = await confirmCodexDevice(slug, label).catch((e: unknown) => ({
+      error: e instanceof Error ? e.message : "Couldn’t record this pairing",
+    }));
     setSaving(false);
+    if (r && "error" in r) {
+      // Keep the wizard open with the entered label intact — design decision 6: a failed
+      // confirmation must not mimic success (rc-reconnect-hardening).
+      setError(r.error);
+      return;
+    }
+    setDeviceName("");
     onPaired?.();
-  }, [slug, deviceName, platform, loadDevices, onPaired]);
+  }, [slug, deviceName, platform, onPaired]);
 
   const tab = (p: Platform, icon: ReactNode, label: string) => (
     <button
       type="button"
       onClick={() => setPlatform(p)}
       className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 transition-colors ${
-        platform === p ? "bg-white/[0.08] text-foreground" : "text-muted-foreground hover:text-foreground"
+        platform === p ? "bg-white/[0.06] text-foreground" : "text-muted-foreground hover:text-foreground"
       }`}
     >
       {icon}
@@ -251,7 +191,7 @@ export function CodexPairPanel({
       <div className="flex flex-col gap-1">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm font-semibold">
-            {embedded ? "Pair a device" : "Connect the Codex app to this pod"}
+            {embedded ? "Pair a device" : "Connect the ChatGPT app to this pod"}
           </span>
           {onClose && (
             <button
@@ -263,37 +203,12 @@ export function CodexPairPanel({
               <X className="size-4" />
             </button>
           )}
-          {!embedded && rcActive && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[12px] text-success">
-              <Radio className="size-3" /> Remote control active
-            </span>
-          )}
         </div>
         <span className="text-[13px] leading-relaxed text-muted-foreground">
-          Sign into the Codex app with your account — your pod appears as{" "}
+          Sign into the ChatGPT app with your account — your pod appears as{" "}
           <code className="rounded bg-muted px-1 py-0.5 font-mono text-foreground">{device}</code>.
         </span>
       </div>
-
-      {!embedded && devices.length > 0 && (
-        <ul className="flex flex-col gap-1">
-          {devices.map((d) => (
-            <li key={d.name} className="flex items-center gap-2 text-[13px]">
-              <Check className="size-3.5 shrink-0 text-success" />
-              <span className="font-medium">{d.name}</span>
-              <span className="text-muted-foreground">paired {new Date(d.at).toLocaleDateString()}</span>
-              <button
-                type="button"
-                aria-label={`Forget ${d.name}`}
-                className="text-muted-foreground hover:text-foreground"
-                onClick={() => void forgetCodexDevice(slug, d.name).then(loadDevices)}
-              >
-                <X className="size-3.5" />
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
 
       {/* Which app are you connecting? The two reach the pair screen differently. */}
       <div className="inline-flex self-start rounded-lg border border-border/60 p-0.5 text-[13px]">
@@ -301,10 +216,7 @@ export function CodexPairPanel({
         {tab("desktop", <Monitor className="size-3.5" />, "Desktop")}
       </div>
 
-      <p className="text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">
-        1 · Pair the app
-      </p>
-      <ol className="flex flex-col gap-1.5">
+      <ol className="mt-1 flex flex-col gap-1.5">
         {STEPS[platform].map((step, i) => (
           <li key={i} className="flex items-start gap-2 text-[13px] text-muted-foreground">
             <span className="mt-px flex size-[18px] shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-semibold text-foreground">
@@ -367,57 +279,27 @@ export function CodexPairPanel({
       )}
 
       {pairing && (
-        <div className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-3">
-          <input
-            value={deviceName}
-            onChange={(e) => setDeviceName(e.target.value)}
-            placeholder={platform === "phone" ? "My phone" : "My desktop"}
-            maxLength={40}
-            className="h-8 rounded-md border border-border/60 bg-background px-2.5 text-[13px] outline-none focus:border-border-strong"
-          />
-          <Button size="sm" variant="outline" onClick={() => void confirm()} disabled={saving}>
-            {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}
-            I&rsquo;ve paired this
-          </Button>
-          <span className="text-[12.5px] text-muted-foreground">
-            We can&rsquo;t see pairings — tell us and we&rsquo;ll remember it here.
-          </span>
+        <div className="flex flex-col gap-2 border-t border-border/60 pt-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              value={deviceName}
+              onChange={(e) => setDeviceName(e.target.value)}
+              placeholder={platform === "phone" ? "My phone" : "My desktop"}
+              maxLength={40}
+              className="h-8 rounded-md border border-border/60 bg-background px-2.5 text-[13px] outline-none focus:border-border-strong"
+            />
+            <Button size="sm" variant="outline" onClick={() => void confirm()} disabled={saving}>
+              {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}
+              I&rsquo;ve paired this
+            </Button>
+            <span className="text-[12.5px] text-muted-foreground">
+              We can&rsquo;t see pairings — tell us and we&rsquo;ll remember it here.
+            </span>
+          </div>
+          {error && <span className="text-[13px] text-[var(--accent-light)]">{error}</span>}
         </div>
       )}
 
-      {/* The apps diverge here: the phone app adds the pod itself, the desktop app does not. */}
-      <div className="flex flex-col gap-1.5 border-t border-border/60 pt-3">
-        <p className="text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">
-          2 · Open your session
-        </p>
-        {platform === "phone" ? (
-          <span className="text-[12.5px] leading-relaxed text-muted-foreground">
-            Nothing else to do — once paired, this pod appears under <b>Projects</b> in the app and
-            the session is right there.
-          </span>
-        ) : (
-          <>
-            <span className="text-[12.5px] leading-relaxed text-muted-foreground">
-              On desktop, pairing doesn&rsquo;t open anything by itself — add the pod as a project
-              once:
-            </span>
-            <ol className="mt-0.5 flex flex-col gap-1.5">
-              {OPEN_STEPS.map((step, i) => (
-                <li key={i} className="flex items-start gap-2 text-[13px] text-muted-foreground">
-                  <span className="mt-px flex size-[18px] shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-semibold text-foreground">
-                    {i + 1}
-                  </span>
-                  <span className="leading-relaxed">{step}</span>
-                </li>
-              ))}
-            </ol>
-          </>
-        )}
-      </div>
-
-      <span className="text-[12.5px] text-muted-foreground">
-        Remote control needs the pod awake — it stays connected while the pod is running.
-      </span>
     </div>
   );
 }

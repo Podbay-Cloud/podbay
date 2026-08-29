@@ -28,7 +28,7 @@ const STEPS: Step[] = [
   {
     tour: "pair-codex",
     agent: "codex",
-    title: "Connect your Codex app",
+    title: "Connect the ChatGPT app",
     body: "Codex has no one-click hand-off: pair your phone or desktop app with the code here. On phone that's it — the pod shows up in your Projects. On desktop there's one extra step, spelled out below the code.",
   },
   {

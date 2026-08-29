@@ -428,4 +428,44 @@ describe("refreshSpecPermissions", () => {
   it("returns an unparseable spec unchanged", () => {
     expect(refreshSpecPermissions("{not json", fresh)).toBe("{not json");
   });
+
+  // buildInitFiles wrote `<origin>/pods/<slug>` — the bare web TERMINAL — as cockpitUrl for every
+  // pod on every provider until 2026-08-27. Fixing the builder only helps NEW pods, because
+  // updateImage preserves the spec verbatim (the very reason this function exists). Heal it here so
+  // an existing pod picks up the right link on its next update.
+  const withBadUrl = (extra: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      slug: "partial-canidae-a766",
+      cockpitUrl: "https://podbay.cloud/pods/partial-canidae-a766",
+      other: { kickoff: "do stuff" },
+      ...extra,
+    });
+
+  it("heals a cockpitUrl that points at the terminal, preserving everything else", () => {
+    const out = JSON.parse(refreshSpecPermissions(withBadUrl(), fresh));
+    expect(out.cockpitUrl).toBe("https://podbay.cloud/dashboard/pods/partial-canidae-a766");
+    expect(out.other).toEqual({ kickoff: "do stuff" });
+    expect(out.slug).toBe("partial-canidae-a766");
+  });
+
+  it("heals the url even when permissions are nullish — the update is the only chance to fix it", () => {
+    const out = JSON.parse(refreshSpecPermissions(withBadUrl(), undefined));
+    expect(out.cockpitUrl).toBe("https://podbay.cloud/dashboard/pods/partial-canidae-a766");
+  });
+
+  it("leaves an ALREADY-correct cockpitUrl exactly as it is (no double-prefixing)", () => {
+    const good = JSON.stringify({ cockpitUrl: "https://podbay.cloud/dashboard/pods/x" });
+    expect(refreshSpecPermissions(good, undefined)).toBe(good);
+    expect(JSON.parse(refreshSpecPermissions(good, fresh)).cockpitUrl).toBe(
+      "https://podbay.cloud/dashboard/pods/x",
+    );
+  });
+
+  it("does not touch an absent url, or a shape it does not recognise", () => {
+    const noUrl = JSON.stringify({ slug: "x" });
+    expect(refreshSpecPermissions(noUrl, undefined)).toBe(noUrl);
+    // A deeper path is not the bug being fixed — never rewrite something we didn't produce.
+    const deeper = JSON.stringify({ cockpitUrl: "https://podbay.cloud/pods/a/b/c" });
+    expect(refreshSpecPermissions(deeper, undefined)).toBe(deeper);
+  });
 });

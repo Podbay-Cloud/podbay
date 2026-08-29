@@ -1,16 +1,18 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import { Eye, EyeOff, Copy, Check, Download } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { qk } from "@/lib/query-keys";
 import {
-  listPodSecrets,
   setPodSecret,
   clearPodSecret,
-  getPodSecretRequests,
   revealPodSecret,
   revealAllPodSecrets,
 } from "@/lib/actions";
+import { apiGet } from "@/lib/api-fetch";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { copyText } from "@/lib/clipboard";
 import { toEnvFile } from "@/lib/env-file";
 import { useConfirm } from "@/components/ui/use-confirm";
@@ -40,8 +42,19 @@ type Request = { key: string; description: string; at: string };
 const KEY_RE = /^[A-Z][A-Z0-9_]*$/;
 
 export default function SecretsPanel({ slug }: { slug: string }) {
-  const [secrets, setSecrets] = useState<Secret[] | null>(null);
-  const [requests, setRequests] = useState<Request[]>([]);
+  const queryClient = useQueryClient();
+  // Secrets + requests via react-query: cached (re-opening Secrets is instant), bounded retry (a
+  // rejected fetch shows an error, never sticks on "Loading…"), and one query for both.
+  const { data, isLoading } = useQuery({
+    queryKey: qk.secrets(slug),
+    // A Route Handler (GET), not a server action — so the tab load runs on the parallel HTTP lane and
+    // isn't starved by the live poll. The endpoint returns both secrets and still-open requests
+    // (already filtered to keys the env doesn't declare), so the client just consumes them.
+    queryFn: () => apiGet<{ secrets: Secret[]; requests: Request[] }>(`/api/pods/${slug}/secrets`),
+  });
+  const secrets = data?.secrets ?? null;
+  const requests = data?.requests ?? [];
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: qk.secrets(slug) });
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -100,24 +113,6 @@ export default function SecretsPanel({ slug }: { slug: string }) {
     });
   };
 
-  const load = () =>
-    Promise.all([listPodSecrets(slug), getPodSecretRequests(slug)]).then(([s, r]) => {
-      if (Array.isArray(s)) setSecrets(s);
-      else if (s && typeof s === "object" && "error" in s) setError(s.error);
-      // Only surface requests for keys the env doesn't already declare — a declared
-      // one is already shown below, and showing it twice would be noise. Guard with
-      // Array.isArray: an action that failed (e.g. a transient DB error) returns an
-      // error shape, not an array, and `r.filter` would otherwise crash the panel.
-      if (Array.isArray(r)) {
-        const declared = new Set((Array.isArray(s) ? s : []).map((x) => x.key));
-        setRequests(r.filter((req) => !declared.has(req.key)));
-      }
-    });
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slug]);
 
   const addArbitrary = () => {
     const key = newKey.trim();
@@ -128,7 +123,7 @@ export default function SecretsPanel({ slug }: { slug: string }) {
       else {
         setNewKey("");
         setNewVal("");
-        await load();
+        await invalidate();
       }
     });
   };
@@ -143,7 +138,7 @@ export default function SecretsPanel({ slug }: { slug: string }) {
         setDrafts((d) => ({ ...d, [key]: "" }));
         hide(key); // a revealed value is now stale
         stopEdit(key);
-        await load();
+        await invalidate();
       }
     });
   };
@@ -164,7 +159,7 @@ export default function SecretsPanel({ slug }: { slug: string }) {
       if (r?.error) setError(r.error);
       else {
         hide(key);
-        await load();
+        await invalidate();
       }
     });
   };
@@ -248,7 +243,7 @@ export default function SecretsPanel({ slug }: { slug: string }) {
       if (r?.error) setError(r.error);
       else {
         removeStaged(key);
-        await load();
+        await invalidate();
       }
     });
   };
@@ -268,7 +263,7 @@ export default function SecretsPanel({ slug }: { slug: string }) {
         saved += 1;
       }
       setStaged([]);
-      await load();
+      await invalidate();
       setNotice(`Saved ${saved} variable${saved === 1 ? "" : "s"}.`);
     });
   };
@@ -306,7 +301,14 @@ export default function SecretsPanel({ slug }: { slug: string }) {
           {notice}
         </p>
       )}
-      {secrets === null && !error && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {isLoading && secrets === null && !error && (
+        <div className="flex flex-col gap-3">
+          <Skeleton className="h-4 w-40" />
+          <Skeleton className="h-11 w-full rounded-lg" />
+          <Skeleton className="h-11 w-full rounded-lg" />
+          <Skeleton className="h-11 w-full rounded-lg" />
+        </div>
+      )}
 
       {requests.length > 0 && (
         <div className="rounded-xl border border-warning/40 bg-warning/5 p-4">

@@ -25,6 +25,19 @@ import { cn } from "@/lib/utils";
 // page). Re-exported here so existing importers (pod-card-list) keep working.
 export type { PodCardLive };
 
+/** "just now" / "3m ago" / "5h ago" / "2d ago" from a millisecond age — used for the card's
+ * "active …" line off the AGENT's real idle (session mtime), which reflects remote-control and
+ * autonomous work; the server-rendered `agoLabel` (from lastActiveAt) only sees terminal traffic. */
+function agoFromMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "just now";
+  const m = Math.floor(ms / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
 export interface PodCardProps {
   slug: string;
   name: string | null;
@@ -38,8 +51,15 @@ export interface PodCardProps {
   lifecycleLocked?: boolean;
   authedAt?: string | null;
   sessionUrl?: string | null;
+  /** T3 Code control state (durable, from the pod row). When T3 owns the pod its Claude agent reads
+   * as not-signed-in (RC yielded to T3) and it has no Claude sessionUrl — WITHOUT these the card
+   * mislabels a fully-working T3 pod as onboarding / "Needs you". */
+  t3Control?: boolean;
+  t3Since?: string | null;
   updateReady?: boolean;
   updating?: boolean;
+  /** The pod's CURRENT image digest (what it's leaving) — shown in the bulk-update list. */
+  imageDigest?: string | null;
   /** Fleet-updates (C): "off" excludes this pod from the bulk "update idle pods" button. */
   autoUpdate?: "inherit" | "off";
   /** Raw ISO of last real activity — the client uses it for the idle-DWELL check that gates
@@ -70,6 +90,8 @@ export default function PodCard({
   previewPublic,
   authedAt = null,
   sessionUrl = null,
+  t3Control = false,
+  t3Since = null,
   updateReady = false,
   updating: serverUpdating = false,
   canRetry = true,
@@ -88,7 +110,12 @@ export default function PodCard({
   // prop. ALWAYS a server value, never local UI state.
   const status = live?.status ?? serverStatus;
   const updating = live?.updating ?? serverUpdating;
-  const onboarding = !authedAt && !sessionUrl;
+  // T3 state outranks the Claude-session signals: while T3 owns the pod (or an enable is in flight)
+  // its Claude agent reads as not-signed-in and it has no sessionUrl, so the plain onboarding/agent
+  // checks would mislabel a working T3 pod as "Finish setup" / "Needs you — Claude needs sign-in".
+  const t3Enabling = !!t3Since && !t3Control;
+  const t3Active = t3Control || t3Enabling;
+  const onboarding = !t3Active && !authedAt && !sessionUrl;
   const reachable = status === "running" && !updating;
   const href = `/dashboard/pods/${slug}`;
 
@@ -97,7 +124,7 @@ export default function PodCard({
   // made the card drop Claude until a refresh. live.agents is used only for per-agent auth.
   const agents = podAgents.length ? podAgents : (live?.agents?.map((a) => a.id) ?? []);
   const hasClaude = agents.includes("claude-code") || agents.length === 0;
-  const state = deriveState(status, updating, live, hasClaude);
+  const state = deriveState(status, updating, live, hasClaude, { control: t3Control, enabling: t3Enabling });
 
   // Codex activity, derived on the pod from its rollout-log mtime (busy/idle). Codex now
   // gets the SAME vocabulary as Claude — Working / Idle — instead of a bare "Running" or
@@ -273,7 +300,10 @@ export default function PodCard({
           <div className="flex items-start justify-between gap-3">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <span className="break-words text-[15.5px] font-semibold">{display}</span>
-              {!updating && updateReady && (
+              {/* Only on a RUNNING pod — the badge is a call to update, which you can't act on for a
+                  suspended/waking pod (a suspended pod picks up the image on its next resume anyway,
+                  so surfacing it there is just noise). */}
+              {!updating && updateReady && status === "running" && (
                 <span className="shrink-0 rounded-md bg-warning/15 px-1.5 py-0.5 text-[11px] font-semibold text-warning">
                   Update available
                 </span>
@@ -301,6 +331,15 @@ export default function PodCard({
               >
                 {codexChip.label}
               </span>
+            ) : status === "running" && !updating && !live ? (
+              // First paint, before the live agent signal lands: a neutral skeleton, NOT the
+              // lifecycle word "Running" — which would otherwise flash to Idle/Working a beat
+              // later once the poll returns. Keeps the pod-status testid so nothing regresses.
+              <span
+                data-testid="pod-status"
+                aria-hidden
+                className="inline-flex h-[22px] w-16 shrink-0 animate-pulse items-center rounded-full border border-border bg-white/[0.04]"
+              />
             ) : (
               <StatusBadge status={updating ? "updating" : status} />
             )}
@@ -308,7 +347,7 @@ export default function PodCard({
 
           <div className="mt-1 flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
             <span>{environmentTitle}</span>
-            <span>· active {agoLabel}</span>
+            <span>· active {live?.agentIdleMs != null ? agoFromMs(live.agentIdleMs) : agoLabel}</span>
           </div>
 
           {/* Agent line(s): who's doing what, in words. */}

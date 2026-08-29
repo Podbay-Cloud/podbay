@@ -130,8 +130,12 @@ machine.
 In the OSS edition, updating a pod SHALL pull the newest pod-base tag the host runs and recreate the
 container on it, REUSING the pod's persistent `/home/dev` volume so its work, agent login, secrets,
 and GitHub token survive. Because self-host has no cloud image manifest, the update SHALL be offered
-whenever the pod's recorded image digest differs from the host's currently-pulled pod-base digest,
-and the UI SHALL present the concrete from→to build digests in place of cloud release notes. A pod
+whenever the pod's recorded image digest differs from the host's currently-pulled pod-base digest.
+The UI SHALL describe what the update contains from a STATIC release manifest published to the public
+install repo (release-versioning §4): when a published release names the target digest, it SHALL show
+that release's version and summary; otherwise, or when the manifest cannot be fetched, it SHALL fall
+back to the concrete from→to build digests. The manifest SHALL be fetched from the public artifact,
+never from the Podbay cloud service, and update availability SHALL NOT depend on reaching it. A pod
 created BEFORE persistent volumes (no named home volume) has its work only in the container layer, so
 the provider SHALL REFUSE to update it — a recreate would erase `~/work` — and direct the owner to
 launch a fresh pod instead.
@@ -141,6 +145,13 @@ launch a fresh pod instead.
 - **WHEN** the owner updates an OSS pod that has a persistent `/home/dev` volume
 - **THEN** the provider SHALL pull the newest pod-base, recreate the container on it reusing that
   volume, and re-push the preserved pod-spec and secrets, so `~/work` and the agent's sign-in survive
+
+#### Scenario: An update names its version when a release describes it, else shows digests
+
+- **WHEN** an OSS pod is offered an update and the published release manifest names the target digest
+- **THEN** the UI SHALL show that release's version and summary; and WHEN the manifest is unreachable
+  or names no matching release, the UI SHALL show the from→to build digests instead, with the update
+  still available
 
 #### Scenario: A pre-volume pod refuses the update rather than wiping work
 
@@ -244,4 +255,31 @@ exact ports to open. It SHALL finish by printing the real working URL(s) and any
 - **THEN** the final output SHALL print the dashboard URL for the active mode (e.g. the sslip.io or
   domain URL in public modes, `localhost:8080` in local mode) rather than only a private
   `hostname -I` address
+
+### Requirement: The T3 Code backend URL is edition-correct
+
+The pairing token and backend URL that connect the T3 Code app to a pod SHALL be derived from the same
+public address the pod's preview actually uses for the running edition — cloud's preview host for a
+cloud pod, and the self-host published address (`LocalProvider.publishedAddress`) for an OSS/`local`
+pod — never assuming the cloud `PODBAY_PREVIEW_BASE` on self-host. When the running edition cannot
+expose a URL a remote device can reach (e.g. a plain loopback `local` pod with no public deployment
+mode), the platform SHALL refuse to enable T3 Code with an honest message rather than mint a pairing
+token against an unreachable URL.
+
+#### Scenario: Self-host uses its published address
+
+- **WHEN** an OSS/`local` pod in a public-reachable deployment mode enables T3 Code control
+- **THEN** the backend URL and pairing token are built from the self-host published address, and the
+  T3 app can reach the pod at that URL
+
+#### Scenario: Honest refusal when no reachable URL exists
+
+- **WHEN** a pod's edition/deployment cannot produce a URL reachable from a remote device
+- **THEN** enabling T3 Code is refused with a clear explanation, and no pairing token is minted
+  against an unreachable address
+
+#### Scenario: Cloud is unaffected
+
+- **WHEN** a cloud pod enables T3 Code control
+- **THEN** the backend URL is built from the cloud preview host as before
 

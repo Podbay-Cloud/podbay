@@ -40,6 +40,9 @@ export default async function globalSetup(): Promise<void> {
   const fakeStateFile = path.join(os.tmpdir(), `podbay-e2e-fake-${process.pid}.json`);
   writeFileSync(fakeStateFile, "{}");
   process.env.PODBAY_FAKE_STATE_FILE = fakeStateFile; // the in-process stack reads it too
+  // Keep fake Codex RC live so pairing/navigation regressions exercise the same ready state as a real
+  // signed-in Codex pod. Individual health outcomes become per-pod scripted in the RC lifecycle suite.
+  process.env.PODBAY_FAKE_CODEX_RC = "1";
   // The suite launches many pods as one non-admin user across a run; a real 4-slot cap
   // would block them. Lift it (the cap logic is unit-covered in control-plane).
   process.env.PODBAY_ACCOUNT_SLOT_CAP = process.env.PODBAY_ACCOUNT_SLOT_CAP ?? "1000";
@@ -103,6 +106,7 @@ export default async function globalSetup(): Promise<void> {
       // Shared fake-provider state: the Next server and this stack are separate
       // processes and BOTH sweep for pending pods (see FakeProvider.stateFile).
       PODBAY_FAKE_STATE_FILE: fakeStateFile,
+      PODBAY_FAKE_CODEX_RC: process.env.PODBAY_FAKE_CODEX_RC,
       PODBAY_FAKE_RESIZE_MS: process.env.PODBAY_FAKE_RESIZE_MS!,
       PODBAY_ACCOUNT_SLOT_CAP: process.env.PODBAY_ACCOUNT_SLOT_CAP!,
       // Hand fake pods an RC link so the wizard reaches READY at once instead of
@@ -129,6 +133,11 @@ export default async function globalSetup(): Promise<void> {
     JSON.stringify({
       containerId: container?.getId(),
       serverPid: server.pid,
+      // The REAL database URL this run is using. Tests that need their own connection (e.g.
+      // resetWalkthroughSeen) must read it from here: with an ephemeral container the host port is
+      // assigned at random by testcontainers, so no constant can name it. A hardcoded guess was
+      // exactly the bug — see the note on users.ts's DB.
+      dbUrl: url,
       // Tests script per-pod health through this (see FakeProvider.scripted).
       fakeStateFile,
       // Teardown runs in its OWN process, so it can't reuse dropDb — it re-derives

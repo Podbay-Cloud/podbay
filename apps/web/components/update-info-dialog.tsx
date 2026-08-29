@@ -11,12 +11,14 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { imageVersionLabel } from "@/lib/pod-image";
 
 export interface ImageMeta {
   digest?: string | null;
   alias: string | null;
   notes: string | null;
   summary: string | null;
+  version: string | null;
   sizeBytes: number | null;
   builtAt: string | null;
 }
@@ -36,10 +38,46 @@ export interface UpdateInfo {
  * cockpit can summarise an update in a few words instead of "an update is ready".
  * Conventional-commit prefixes carry the area (feat(cockpit): …), which is exactly
  * the "what part of my pod changes?" the owner wants. */
+/**
+ * How a change reads to an OWNER. Conventional-commit types answer "what kind of work was this",
+ * which is a developer question; an owner asks "is this a fix, something new, or a tune-up" — so the
+ * types are mapped onto those three, and the ones that mean "internal churn" map to null and are
+ * DROPPED. Every good changelog (Keep a Changelog, and every OS release-notes page) groups this way,
+ * and it is the first thing a reader looks for when deciding whether to take an update.
+ */
+export type NoteKind = "fixed" | "new" | "improved";
+
+const KIND_BY_TYPE: Record<string, NoteKind | null> = {
+  fix: "fixed",
+  revert: "fixed",
+  feat: "new",
+  perf: "improved",
+  // Internal churn — real work, but nothing an owner can observe or act on. Shown, it crowds out the
+  // entries that matter and leaks how the sausage is made ("the e2e 'flake' root cause" reached a
+  // real release note on 2026-08-28).
+  chore: null,
+  test: null,
+  ci: null,
+  build: null,
+  refactor: null,
+  style: null,
+  docs: null,
+};
+
+export const NOTE_KIND_LABEL: Record<NoteKind, string> = {
+  fixed: "Fixed",
+  new: "New",
+  improved: "Improved",
+};
+
 export function parseNotes(notes: string | null | undefined): {
-  entries: { area: string | null; text: string }[];
+  entries: { area: string | null; text: string; kind: NoteKind | null }[];
   areas: string[];
   empty: boolean;
+  /** Raw lines existed, but every one was internal churn — so there is nothing to TELL the owner even
+   * though the build is genuinely different. Distinct from `empty` (a byte-identical rebuild), because
+   * conflating them would report "same software, rebuilt" about a build that is not that. */
+  internalOnly: boolean;
 } {
   const raw = (notes ?? "")
     .split("\n")
@@ -75,19 +113,81 @@ export function parseNotes(notes: string | null | undefined): {
       .replace(/\s*\[(no-spec|skip ci)\]\s*/gi, "") // internal markers
       .replace(/\s+/g, " ")
       .trim();
+    // Issue/PR refs are developer wayfinding and, worse, point at a PRIVATE repo — an owner who
+    // follows "(#49)" lands on a 404. Drop them rather than publish a dead reference.
+    text = text.replace(/\s*\((?:#|GH-)\d+\)\s*/g, " ").replace(/\s+/g, " ").trim();
     if (text) text = text[0].toUpperCase() + text.slice(1);
-    return { area, text };
+    // A subject with no conventional-commit type is either hand-written release copy or an old
+    // commit; it stays, ungrouped, rather than being guessed into the wrong bucket.
+    const kind = m?.[1] ? (KIND_BY_TYPE[m[1]] ?? null) : null;
+    const internal = Boolean(m?.[1]) && KIND_BY_TYPE[m![1]] === null;
+    return { area, text, kind, internal };
   });
+  const shown = entries.filter((e) => !e.internal && e.text).map(({ area, text, kind }) => ({ area, text, kind }));
+  const internalOnly = !empty && raw.length > 0 && shown.length === 0;
   const areas: string[] = [];
-  for (const e of entries) if (e.area && !areas.includes(e.area)) areas.push(e.area);
-  return { entries, areas, empty };
+  for (const e of shown) if (e.area && !areas.includes(e.area)) areas.push(e.area);
+  return { entries: shown, areas, empty, internalOnly };
+}
+
+/**
+ * Render parsed entries GROUPED by what they mean to an owner (New → Fixed → Improved), the ordering
+ * every mainstream release-notes page uses. A flat list forced the reader to infer the kind of each
+ * change from its wording; grouping answers "is this worth taking" before they read a single entry.
+ * Entries with no recognisable type keep their place at the end, ungrouped rather than mislabelled.
+ */
+export function NoteList({
+  entries,
+  size = "sm",
+}: {
+  entries: { area: string | null; text: string; kind: NoteKind | null }[];
+  size?: "sm" | "md";
+}) {
+  const order: NoteKind[] = ["new", "fixed", "improved"];
+  const groups = order
+    .map((k) => ({ kind: k, items: entries.filter((e) => e.kind === k) }))
+    .filter((g) => g.items.length > 0);
+  const ungrouped = entries.filter((e) => !e.kind);
+  const textCls = size === "md" ? "text-[13px] leading-snug" : "text-[12.5px] leading-snug text-muted-foreground";
+  const item = (e: { area: string | null; text: string }, i: number) => (
+    <li key={i} className="flex flex-col gap-0.5">
+      {e.area && (
+        <span className="text-[11px] uppercase tracking-wide text-muted-foreground">{e.area}</span>
+      )}
+      <span className={textCls}>{e.text}</span>
+    </li>
+  );
+  return (
+    <div className="flex flex-col gap-3">
+      {groups.map((g) => (
+        <div key={g.kind} className="flex flex-col gap-1.5">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            {NOTE_KIND_LABEL[g.kind]}
+          </span>
+          <ul className="flex flex-col gap-2">{g.items.map(item)}</ul>
+        </div>
+      ))}
+      {ungrouped.length > 0 && <ul className="flex flex-col gap-2">{ungrouped.map(item)}</ul>}
+    </div>
+  );
 }
 
 /** One-liner for the Settings row: "3 changes · the agent runtime, pod startup". */
 export function updateSummaryLine(notes: string | null | undefined): string | null {
-  const { entries, areas, empty } = parseNotes(notes);
+  const { entries, areas, empty, internalOnly } = parseNotes(notes);
   if (empty) return "Same software, rebuilt — nothing new for your pod";
-  const count = `${entries.length} change${entries.length === 1 ? "" : "s"}`;
+  if (internalOnly) return "Internal improvements — nothing you need to do";
+  // Lead with WHAT KIND of change this is ("2 fixes"), not a bare count: "1 change · agent runtime"
+  // told an owner nothing about whether the update was worth taking (audit, 2026-08-29).
+  const byKind = new Map<NoteKind, number>();
+  for (const e of entries) if (e.kind) byKind.set(e.kind, (byKind.get(e.kind) ?? 0) + 1);
+  const parts: string[] = [];
+  if (byKind.get("fixed")) parts.push(`${byKind.get("fixed")} fix${byKind.get("fixed")! === 1 ? "" : "es"}`);
+  if (byKind.get("new")) parts.push(`${byKind.get("new")} new`);
+  if (byKind.get("improved")) parts.push(`${byKind.get("improved")} improvement${byKind.get("improved")! === 1 ? "" : "s"}`);
+  const count = parts.length
+    ? parts.join(", ")
+    : `${entries.length} change${entries.length === 1 ? "" : "s"}`;
   return areas.length ? `${count} · ${areas.slice(0, 3).join(", ")}` : count;
 }
 
@@ -107,18 +207,18 @@ export function updateHeadline(
   return updateSummaryLine(notes) ?? "An update is ready";
 }
 
-function shortDigest(d: string | null): string {
+export function shortDigest(d: string | null): string {
   if (!d) return "unknown";
   return d.startsWith("sha256:") ? d.slice(7, 19) : d.slice(0, 12);
 }
 
-function fmtDate(iso: string | null): string | null {
+export function fmtDate(iso: string | null): string | null {
   if (!iso) return null;
   const d = new Date(iso);
   return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
-function fmtSize(bytes: number | null): string | null {
+export function fmtSize(bytes: number | null): string | null {
   if (!bytes) return null;
   const gb = bytes / 1_000_000_000;
   return gb >= 1 ? `${gb.toFixed(2)} GB` : `${Math.round(bytes / 1_000_000)} MB`;
@@ -201,7 +301,7 @@ export function UpdateInfoDialog({
             <dd className="flex flex-wrap items-baseline gap-x-2">
               <span>{fmtDate(current?.builtAt ?? null) ?? "an older build"}</span>
               <span className="font-mono text-[12px] text-muted-foreground">
-                {shortDigest(info.currentDigest)}
+                {imageVersionLabel(current?.version, info.currentDigest)}
               </span>
             </dd>
           </div>
@@ -210,7 +310,7 @@ export function UpdateInfoDialog({
             <dd className="flex flex-wrap items-baseline gap-x-2">
               <span className="font-medium text-warning">{builtAt ?? "the latest build"}</span>
               <span className="font-mono text-[12px] text-muted-foreground">
-                {shortDigest(info.targetDigest)}
+                {imageVersionLabel(target?.version, info.targetDigest)}
               </span>
               {size && <span className="text-[12px] text-muted-foreground">· {size}</span>}
             </dd>
@@ -258,18 +358,9 @@ export function UpdateInfoDialog({
                               <span className="group-open:hidden">Technical changes ▾</span>
                               <span className="hidden group-open:inline">Technical changes ▴</span>
                             </summary>
-                            <ul className="mt-1.5 flex flex-col gap-2">
-                              {b.parsed.entries.map((e, i) => (
-                                <li key={i} className="flex flex-col gap-0.5">
-                                  {e.area && (
-                                    <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                                      {e.area}
-                                    </span>
-                                  )}
-                                  <span className="text-[12.5px] leading-snug text-muted-foreground">{e.text}</span>
-                                </li>
-                              ))}
-                            </ul>
+                            <div className="mt-1.5">
+                              <NoteList entries={b.parsed.entries} />
+                            </div>
                           </details>
                         )}
                       </div>
@@ -278,18 +369,7 @@ export function UpdateInfoDialog({
                     ) : (
                       // No hand-written summary (older images recorded before summaries
                       // were required) — fall back to the parsed commit changelog inline.
-                      <ul className="flex flex-col gap-2">
-                        {b.parsed.entries.map((e, i) => (
-                          <li key={i} className="flex flex-col gap-0.5">
-                            {e.area && (
-                              <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                                {e.area}
-                              </span>
-                            )}
-                            <span className="text-[13px] leading-snug">{e.text}</span>
-                          </li>
-                        ))}
-                      </ul>
+                      <NoteList entries={b.parsed.entries} size="md" />
                     )}
                   </li>
                 ))}
@@ -312,8 +392,9 @@ export function UpdateInfoDialog({
                 Cancel
               </Button>
               <Button
+                variant="outline"
                 size="sm"
-                className="border-warning/40 bg-warning/90 text-background hover:bg-warning"
+                className="border-warning/40 text-warning hover:bg-warning/10 hover:text-warning"
                 disabled={busy}
                 onClick={() => {
                   setOpen(false);

@@ -1,6 +1,6 @@
 {
   "name": "@podbay/relay",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Podbay relay — runs a fetch relay on your machine so a pod can read pages from your network, using sessions you sign into. Install: npm i -g @podbay/relay, then `relay start`.",
   "type": "module",
   "bin": {
@@ -9,6 +9,7 @@
   "files": [
     "dist",
     "README.md",
+    "FAQ.md",
     "LICENSE"
   ],
   "engines": {

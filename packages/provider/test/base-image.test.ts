@@ -8,6 +8,21 @@ import { fileURLToPath } from "node:url";
 const podBase = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "pod-base");
 const initSh = path.join(podBase, "init.sh");
 const refreshLib = path.join(podBase, "refresh-common.sh");
+const cliDriftCanary = path.resolve(podBase, "../../../scripts/incus/cli-drift-canary.sh");
+
+describe("CLI drift canary", () => {
+  it("installs the exact requested candidates as root and fails closed", async () => {
+    const src = await fs.readFile(cliDriftCanary, "utf8");
+    expect(src).toContain('CLAUDE_CANDIDATE="${CLAUDE_CANDIDATE:-latest}"');
+    expect(src).toContain('CODEX_CANDIDATE="${CODEX_CANDIDATE:-latest}"');
+    expect(src).toContain(
+      'incus exec "$NAME" -- npm i -g "@anthropic-ai/claude-code@$CLAUDE_CANDIDATE" "@openai/codex@$CODEX_CANDIDATE"',
+    );
+    expect(src).not.toMatch(/su - dev -c ['"]npm i -g/);
+    expect(src).not.toMatch(/npm i -g[^\n]+\|\| true/);
+    expect(src).toContain("candidate version mismatch");
+  });
+});
 
 /** Task 5.3: wake must not re-run setup — the init contract uses run-once markers. */
 describe("pod-base first-boot init", () => {

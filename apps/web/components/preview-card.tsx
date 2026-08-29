@@ -41,10 +41,12 @@ export default function PreviewCard({
   // Shown without the scheme: it's the part that identifies the pod, and dropping
   // "https://" buys ~8 characters of a phone's width. Copy still yields the host.
   const host = url.replace(/^https?:\/\//, "");
-  // Nothing to open when the pod is off or nothing is listening on the port; opening
-  // then only lands on the "preview upstream unreachable" page. (null = still checking
-  // → stay optimistic and offer Open + the frame.)
-  const showPreview = running && appUp !== false;
+  // Only offer Open + the live frame once we've CONFIRMED something is listening. We used to be
+  // optimistic while liveness was still unknown (`appUp !== false`), which flashed the heavy iframe on
+  // every cockpit open and then collapsed it a second later when the probe came back false — bad UX and
+  // a wasted full-site render (owner report, 2026-08-26). Now `null` = still checking shows a light
+  // placeholder, and the frame renders only when `appUp === true`.
+  const showPreview = running && appUp === true;
 
   useEffect(() => {
     if (!running) return;
@@ -97,17 +99,22 @@ export default function PreviewCard({
         <p className="px-3.5 py-6 text-center text-[13px] text-muted-foreground">
           The preview is live while the pod is running.
         </p>
+      ) : appUp === null ? (
+        // Still checking whether anything is listening. Show a light placeholder — NOT the heavy iframe
+        // — so we never flash a full-site render we're about to hide (owner report, 2026-08-26).
+        <p className="px-3.5 py-6 text-center text-[13px] text-muted-foreground">Checking the preview…</p>
       ) : appUp === false ? (
         // We KNOW nothing is listening on the app port — don't frame a broken/error page; say so.
-        // (appUp === null means "still checking": stay optimistic and show the frame.)
         <p className="px-3.5 py-6 text-center text-[13px] text-warning">
           Nothing is serving the preview yet — start your app in the pod (e.g. a dev server on port
           3000) and it appears here.
         </p>
       ) : (
+        // appUp === true: the LIVE preview, scaled down (owner preference — a live view is more useful
+        // than a static thumbnail for now; the pod-side self-screenshot capability stays in place,
+        // dormant, for a possible thumbnail return later). pointer-events-none so scrolling the cockpit
+        // isn't captured by the frame; the overlay anchor carries the click.
         <div className="relative bg-background">
-          {/* Scaled-down live view. pointer-events-none so scrolling the cockpit
-              never gets captured by the frame; the overlay carries the click. */}
           <div className="h-[220px] overflow-hidden sm:h-[280px]">
             <iframe
               src={url}

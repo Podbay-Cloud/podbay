@@ -11,7 +11,18 @@ type UserKey = keyof typeof USERS;
  */
 export async function resetWalkthroughSeen(email: string): Promise<void> {
   const { Client } = await import("pg");
-  const c = new Client({ connectionString: DB.url });
+  // Read the RUN'S ACTUAL database url, never a hardcoded one. With an ephemeral Postgres
+  // container the host port is random, so the old `DB.url` constant (localhost:54329) pointed at
+  // nothing: this threw `ECONNREFUSED 127.0.0.1:54329` on every CI run and failed
+  // cockpit.spec.ts's walkthrough test — the "e2e flake" that blocked PR #49. Same pattern the
+  // other state-reading helpers below already use.
+  const { readFileSync } = await import("node:fs");
+  const path = await import("node:path");
+  const state = JSON.parse(
+    readFileSync(path.join(process.cwd(), ".e2e-state.json"), "utf8"),
+  ) as { dbUrl?: string };
+  if (!state.dbUrl) throw new Error("e2e state has no dbUrl — is global-setup current?");
+  const c = new Client({ connectionString: state.dbUrl });
   await c.connect();
   try {
     await c.query(`UPDATE "user" SET walkthrough_seen_at = NULL WHERE email = $1`, [email]);
@@ -70,12 +81,25 @@ export async function login(page: Page, key: UserKey): Promise<void> {
  * "Launch" on a tile links to /dashboard/pods/new?env=…; the wizard's "Launch
  * pod" creates it and then renders a /pods/<slug> web-terminal link.
  */
+/** The EXACT labels the Agents toggles render (launch-configure.tsx's AGENT_LABELS). Anchored so
+ * they can't match a longer heading on the same step — and kept as named constants because getting
+ * "Claude" vs "Claude Code" wrong is precisely what made this helper fail silently before. */
+const CLAUDE_LABEL = /^claude code$/i;
+const CODEX_LABEL = /^codex$/i;
+
+/** The Agents multi-select toggle for one agent (launch-configure.tsx renders each as a
+ * `<button aria-pressed>` carrying the agent's logo + label). */
+function agentToggle(page: Page, label: RegExp) {
+  return page.getByRole("button", { name: label }).first();
+}
+
 export async function launchPod(
   page: import("@playwright/test").Page,
   env = "nextjs-starter",
   opts: { name?: string; agent?: string } = {},
 ): Promise<string> {
   const podName = opts.name ?? "e2e-pod";
+  let agentPicked = false;
   // Launch a NAMED environment. This used to click the first "Launch" link in the
   // catalog, which silently became `byo-project` once that env existed — and a BYO
   // env REQUIRES a repository, so "Create pod" stays disabled and every test that
@@ -97,12 +121,33 @@ export async function launchPod(
     for (let i = 0; i < (await secretInputs.count()); i++) {
       await secretInputs.nth(i).fill("e2e-placeholder");
     }
-    // Pick a non-default primary agent when asked (the agent step is a radio-group; the
-    // default is the env's first agent). Selecting it makes it the pod's sole/primary agent.
-    if (opts.agent) {
-      const radio = page.getByRole("radio", { name: new RegExp(opts.agent, "i") });
-      if ((await radio.count()) > 0 && (await radio.getAttribute("aria-checked")) !== "true") {
-        await radio.click();
+    // Pick a non-default agent when asked. The Agents control is a MULTI-SELECT of
+    // `<button aria-pressed>` toggles ("pick one or more", launch-configure.tsx) and lives on the
+    // SETTINGS step — it used to be a radio-group, so `getByRole("radio")` matched nothing and the
+    // old `if (count > 0)` guard silently skipped, launching every `agent: "codex"` pod as CLAUDE.
+    // onboarding.spec.ts's Codex test then failed against a page behaving perfectly correctly.
+    // Tolerant per step (we pass through Basics first, where no toggle exists) but asserted AFTER
+    // the loop — a selector that silently no-ops is exactly how this rotted unnoticed.
+    if (opts.agent && !agentPicked) {
+      const wantCodex = /codex/i.test(opts.agent);
+      const toggle = agentToggle(page, wantCodex ? CODEX_LABEL : CLAUDE_LABEL);
+      if ((await toggle.count()) > 0) {
+        if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
+        // Drop the other agent so the requested one is the pod's PRIMARY — `agents:` is sent as an
+        // ordered list, so leaving BOTH on makes claude-code primary and the pod renders the Claude
+        // sign-in regardless of what the test asked for. Assert the de-select actually happened:
+        // my first version matched /^claude$/ against a button labelled "Claude Code", so it
+        // silently didn't fire — the very failure mode this block exists to fix.
+        const other = agentToggle(page, wantCodex ? CLAUDE_LABEL : CODEX_LABEL);
+        if ((await other.count()) > 0 && (await other.getAttribute("aria-pressed")) === "true") {
+          await other.click();
+          if ((await other.getAttribute("aria-pressed")) === "true") {
+            throw new Error(
+              `launchPod: could not de-select the other agent, so "${opts.agent}" would not be primary`,
+            );
+          }
+        }
+        agentPicked = true;
       }
     }
     const create = page.getByRole("button", { name: /^create pod$/i });
@@ -111,6 +156,13 @@ export async function launchPod(
       break;
     }
     await page.getByRole("button", { name: /^next$/i }).click();
+  }
+  if (opts.agent && !agentPicked) {
+    throw new Error(
+      `launchPod: asked for agent "${opts.agent}" but never found its toggle in the wizard — the ` +
+        `Agents control changed shape again. Failing loudly on purpose: the previous version skipped ` +
+        `silently and launched Claude pods for every codex test.`,
+    );
   }
   // Once the pod exists we navigate to its durable setup page — the slug is in
   // the URL, so state survives refresh/close/reopen. Wait for a REAL slug (not
@@ -156,6 +208,17 @@ export async function scriptPodHealth(
       checked: number;
       issues: { id: string; severity: string; title: string; detail: string; fixed: boolean; invasive?: boolean }[];
     };
+    /** Claude login hard-expiry (ms) — set within ~7d to drive the "expiring soon · Reconnect" row. */
+    expiresAt?: number | null;
+    /** rc-reconnect-hardening 5.1: script the claude-code agent's RC lifecycle classification
+     * directly (fake-provider.ts's podHealth() reads this straight through — the fake stack
+     * doesn't run the real classifier), so a test can drive the cockpit through
+     * active/recovering/down/login-required/unknown without a real pod-agent. */
+    rcState?: "active" | "recovering" | "down" | "login-required" | "unknown";
+    /** What `rcState` becomes after a scripted `/agent/rc-restore` call succeeds (see
+     * fake-provider.ts's exec()) — lets a test prove the Restore-remote-control button's
+     * click-through without a real broker to restore against. */
+    rcRestoreTo?: "active" | "recovering" | "down" | "login-required" | "unknown";
   } | null,
 ): Promise<void> {
   const { readFileSync, writeFileSync } = await import("node:fs");

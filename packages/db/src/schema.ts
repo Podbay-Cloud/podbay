@@ -131,6 +131,11 @@ export const pods = pgTable(
     autoUpdate: text("auto_update").notNull().default("inherit"),
     // Preview URL access: false = owner-authed only, true = anyone with the URL.
     previewPublic: boolean("preview_public").notNull().default(false),
+    // Delegated-auth preview (agent-harness backends like T3 Code): the gateway forwards :3000
+    // as public transport, but access is gated by the UPSTREAM app's OWN auth (e.g. T3's pairing
+    // token), not a podbay cookie. Distinct from previewPublic so the UX can label it honestly
+    // ("guarded by the app's own login") and a backend flavor can set it, not a manual toggle.
+    previewAppAuth: boolean("preview_app_auth").notNull().default(false),
     // BYO-repo: a "owner/name" GitHub repo cloned into ~/work at first boot
     // (docs/plans/byo-repo-plan.md). Non-sensitive; the clone token rides as a reserved
     // encrypted pod-secret, never on this row.
@@ -143,7 +148,7 @@ export const pods = pgTable(
     // How this pod authenticates its agent: "subscription" (the user's /login) or
     // "api-key" (a BYO key, stored as the reserved PODBAY_AGENT_* secret). NULL = fall
     // back to the environment's default (api-key-pod-mode.md).
-    agentAuth: text("agent_auth").$type<"subscription" | "api-key">(),
+    agentAuth: text("agent_auth").$type<"subscription" | "api-key" | "setup-token">(),
     // Onboarding milestones — the DURABLE source of truth for the launch wizard's
     // login/remote-control sub-steps, so the page survives refresh/close/reopen
     // and even a sleep. Written by the gateway when it observes the agent's
@@ -198,6 +203,19 @@ export const pods = pgTable(
      * worked but made a string a contract between the control plane and the cockpit.
      */
     maintenanceKind: text("maintenance_kind").$type<"update" | "resize">(),
+    // T3 Code control (t3-code-first-class). `t3Control` is the steady-state flag —
+    // true while an external harness (T3 Code) owns the pod's agents; it drives the
+    // "in control" banner + hides the conflicting Podbay controls, and is the render
+    // source of truth (durable, refresh-safe). `t3Since`/`t3Stage` are the transient
+    // enable/disable wizard progress (mirrors updatingSince/updateStage): t3Since set
+    // while provisioning, t3Stage the coarse phase (preparing → downloading → …).
+    t3Control: boolean("t3_control").notNull().default(false),
+    t3Since: timestamp("t3_since"),
+    t3Stage: text("t3_stage"),
+    // t3Connected (t3-connect-account-wizard): the pod's t3 is signed into the OWNER's T3 cloud account
+    // and this environment is linked, so it syncs to their devices + is remotely reachable. Distinct
+    // from t3Control (agents handed to T3): a pod is "in control" before the owner connects their account.
+    t3Connected: boolean("t3_connected").notNull().default(false),
     // Which SandboxProvider hosts this pod ('fly' | 'incus'). Written at launch
     // from the configured default; every provider call routes through it — the
     // seam for the self-hosted migration (docs/strategy/infra-strategy.md M1).
@@ -284,6 +302,11 @@ export const podBaseImages = pgTable("pod_base_images", {
   toSha: text("to_sha"), // git HEAD the image was built from
   notes: text("notes"), // auto-derived release notes (commit range)
   summary: text("summary"), // optional one-line human summary
+  // Optional semantic-version LABEL for a release (release-versioning change). NULLABLE and additive:
+  // the 64-char digest stays the image's identity for every boot/compare decision — version affects
+  // presentation only, and every pre-versioning row is NULL and renders with the digest as before.
+  // Stored per-row (not derived) so rollback shows the re-promoted image's OWN version going backwards.
+  version: text("version"),
   sizeBytes: bigint("size_bytes", { mode: "number" }), // image bytes exceed int4 (2GB+)
   // current | superseded | rolled-back
   status: text("status").notNull().default("superseded"),

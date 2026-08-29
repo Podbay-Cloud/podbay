@@ -106,4 +106,23 @@ describe("PtySession (real PTY + tmux)", () => {
     // the truncated first-row fragment must NOT be offered alongside it
     expect(links).not.toContain(head);
   });
+
+  it("rejoins a URL whose TUI slices are JUST SHORT of the pane width (velsa 2026-08-25)", async () => {
+    // The real /login bug: claude slices the OAuth URL at ~2 chars short of the pane, so the OLD
+    // width-gated rejoin (`line.length >= paneWidth - 1`) never fired and the trailing `&state=…` was
+    // dropped — the URL never completed and the wizard hung on "Getting the sign-in link…". These
+    // sub-full-width slices (40 chars in a 44-col pane) MUST still rejoin.
+    const name = uniq();
+    const s = track(new PtySession({ sessionName: name, cols: 44, rows: 12, bootCommand: "bash --norc" }));
+    await new Promise((r) => setTimeout(r, 400));
+    const s1 = "https://claude.com/cai/oauth/authorize?c"; // 40 chars, pane is 44
+    const s2 = "ode=true&client_id=9d1c250a&response_typ"; // 40 chars
+    const s3 = "e=code&code_challenge_method=S256&state=abcXYZ"; // short tail carrying &state=
+    const full = s1 + s2 + s3;
+    s.write(`printf '%s\\n' "${s1}" "${s2}" "${s3}"\n`);
+    await new Promise((r) => setTimeout(r, 500));
+    const links = await extractLinks(name);
+    expect(links).toContain(full);
+    expect(links).not.toContain(s1);
+  });
 });

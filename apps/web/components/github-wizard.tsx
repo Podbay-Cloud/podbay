@@ -1,10 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { Check, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { qk } from "@/lib/query-keys";
 import { GithubDevicePanel } from "@/components/github-device-panel";
 import { RepoPicker } from "@/components/repo-picker";
 import { DisconnectGithubButton } from "@/components/disconnect-github-button";
@@ -38,32 +40,42 @@ export default function GithubWizard({
    * web-app device flow. Same device-code UX; the token is installed in the pod, not server-side. */
   oss?: boolean;
 }) {
-  const [connected, setConnected] = useState<boolean | null>(null);
-  const [login, setLogin] = useState<string | null>(null);
+  // Connection status: cached via react-query (qk.github, shared with the Settings GitHub row), but
+  // the device flow and disconnect flip it locally too — `flow` (when set) overrides the fetched
+  // value so a just-connected/-disconnected UI doesn't wait on a refetch.
+  const queryClient = useQueryClient();
+  const { data: status } = useQuery({
+    queryKey: qk.github(slug),
+    queryFn: () => githubConnStatus(slug),
+  });
+  const [flow, setFlow] = useState<{ connected: boolean; login: string | null } | null>(null);
+  const connected: boolean | null = flow ? flow.connected : (status?.connected ?? null);
+  const login: string | null = flow ? flow.login : (status?.login ?? null);
+
   const [device, setDevice] = useState<{ userCode: string; verificationUri: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const poll = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const [repos, setRepos] = useState<Repo[] | null>(null);
   const [chosenRepo, setChosenRepo] = useState("");
   const [cloning, setCloning] = useState(false);
   const [confirmOverwrite, setConfirmOverwrite] = useState(false);
   const [result, setResult] = useState<{ tone: "ok" | "warn" | "err"; text: string } | null>(null);
 
-  useEffect(() => {
-    githubConnStatus(slug).then((s) => {
-      setConnected(s.connected);
-      setLogin(s.login);
-    });
-  }, [slug]);
+  // Repos, once connected: react-query gives a skeleton→data load, bounded retry (a reject surfaces
+  // an error instead of the old permanent "Loading your repositories…"), and cache.
+  const { data: repos = null, error: reposErr } = useQuery({
+    queryKey: [...qk.github(slug), "repos"] as const,
+    enabled: connected === true,
+    queryFn: async () => {
+      const r = await githubConnRepos(slug);
+      if ("error" in r) throw new Error(r.error);
+      return r.repos as Repo[];
+    },
+  });
 
-  // Drive the current step: not connected → device flow; connected → load repos.
+  // Drive step 1 only: not connected → device flow. (Connected → repos is the query above.)
   useEffect(() => {
-    if (connected === null) return;
-    if (connected) {
-      githubConnRepos(slug).then((r) => ("error" in r ? setError(r.error) : setRepos(r.repos)));
-      return;
-    }
+    if (connected === null || connected) return;
     let stop = false;
     // Self-host: the POD runs the device flow (startPodGhLogin/pollPodGhLogin). Cloud: the web app
     // does (startGithubConnect/completeGithubConnect). Same device-code UX either way.
@@ -88,9 +100,9 @@ export default function GithubWizard({
         }
         const r = await pollOnce(res.deviceCode);
         if (r.status === "connected") {
-          setLogin(r.login);
+          setFlow({ connected: true, login: r.login });
           setDevice(null);
-          setConnected(true);
+          void queryClient.invalidateQueries({ queryKey: qk.github(slug) });
           return;
         }
         if (r.status === "error") {
@@ -136,12 +148,12 @@ export default function GithubWizard({
       setError(r.error);
       return;
     }
-    setLogin(null);
-    setRepos(null);
+    setFlow({ connected: false, login: null }); // back to step 1
     setChosenRepo("");
     setResult(null);
-    setConnected(false); // back to step 1
-  }, [slug]);
+    // Drop the cached status + repos so a reconnect (possibly a different account) refetches clean.
+    void queryClient.invalidateQueries({ queryKey: qk.github(slug) });
+  }, [slug, queryClient]);
 
   const step = connected ? 2 : 1;
   const stepLabel = connected ? "Choose a repository" : "Authorize on GitHub";
@@ -162,9 +174,9 @@ export default function GithubWizard({
 
       <Card>
         <CardContent className="flex flex-col gap-4">
-          {error && (
+          {(error || reposErr) && (
             <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {error}
+              {error ?? (reposErr as Error).message}
             </p>
           )}
 

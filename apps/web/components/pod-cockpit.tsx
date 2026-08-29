@@ -1,12 +1,17 @@
 "use client";
 
 import { useEffect, useRef, useState, useTransition } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import type { PodLiveSignals } from "@podbay/control-plane";
+import { apiGet } from "@/lib/api-fetch";
+import { qk } from "@/lib/query-keys";
+import { scrollViewToTop } from "@/lib/scroll-to-top";
+import { nextT3EnableAction } from "@/lib/t3-progress";
 import { track } from "@/lib/track";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { ArrowUpRight, Pencil, Loader2, ClipboardPaste, TriangleAlert } from "lucide-react";
+import { ArrowUpRight, Pencil, Loader2, TriangleAlert } from "lucide-react";
 import {
   wakePod,
-  getOwnerLiveSignals,
   sleepPod,
   destroyPod,
   renamePod,
@@ -14,6 +19,8 @@ import {
   setPodAutoUpdate,
   updatePodImage,
   podUpdateProgress,
+  t3Progress,
+  enableT3Code,
   resizePod,
   resizePodLive,
   getPodSessionUrl,
@@ -26,6 +33,12 @@ import SizePicker from "@/components/size-picker";
 import HostResourceChooser, { type HostCapacity } from "@/components/host-resource-chooser";
 import PodStats from "@/components/pod-stats";
 import PodUpdating from "@/components/pod-updating";
+import T3Enabling from "@/components/t3-enabling";
+import CodexPairingWizard from "@/components/codex-pairing-wizard";
+import ProviderAuthWizard from "@/components/provider-auth-wizard";
+import T3ConnectWizard from "@/components/t3-connect-wizard";
+import { PasteCodeInput } from "@/components/paste-code-input";
+import type { AuthStepKind, ProviderId } from "@/lib/provider-auth-steps";
 import PodSuspended from "@/components/pod-suspended";
 import { POD_TIERS, labelForPod, type PodSize } from "@podbay/shared/tiers";
 import { TerminalClient } from "@/lib/terminal-client";
@@ -33,7 +46,6 @@ import ProvisionStages from "@/components/provision-stages";
 import WizardProgress from "@/components/wizard-progress";
 import SecretsPanel from "@/components/secrets-panel";
 import GithubConnect from "@/components/github-connect";
-import Link from "next/link";
 import { RelayInfoDialog } from "@/components/relay-info-dialog";
 import { RelayStatus } from "@/components/relay-status";
 import type { MyRelayLive } from "@/lib/relay-actions";
@@ -42,13 +54,15 @@ import ClaudeSettingsDialog from "@/components/claude-settings-dialog";
 import { CopyCodeButton } from "@/components/copy-code-button";
 import AgentCards from "@/components/agent-cards";
 import PreviewCard from "@/components/preview-card";
+import T3ConnectPanel from "@/components/t3-connect-panel";
+import { SettingRow } from "@/components/setting-row";
 import HealthStrip from "@/components/health-strip";
 import HealthPanel from "@/components/health-panel";
 import ActivityTab from "@/components/activity-tab";
 import type { ActivityEvent } from "@/lib/pod-activity";
 import LifecycleTimeline from "@/components/lifecycle-timeline";
 import type { LifecycleInterval } from "@podbay/control-plane";
-import { shortDigest } from "@/lib/pod-image";
+import { shortDigest, imageVersionLabel } from "@/lib/pod-image";
 import { SESSION_INTERRUPT_WARNING } from "@/lib/pod-copy";
 import {
   UpdateInfoDialog,
@@ -127,6 +141,13 @@ export interface PodCockpitProps {
    * survived) — thin orange marks on the timeline. */
   maintenance: { at: number; title: string }[];
   imageDigest: string | null;
+  /** Release version of the image this pod is CURRENTLY running (release-versioning). Null for a
+   * pre-versioning build or a build not cut as a release, in which case the digest shows alone. */
+  currentVersion?: string | null;
+  /** Self-host only: the version + summary of the pending update, from the public release manifest
+   * (release-versioning §4). Null → no published release names the target, so show the digest line. */
+  ossReleaseVersion?: string | null;
+  ossReleaseSummary?: string | null;
   updateAvailable: boolean;
   /** Self-host only: the pod-base digest currently pulled on the host (what an update moves TO).
    * Cloud shows release notes via updateInfo; self-host has no manifest, so we show from→to digests. */
@@ -150,6 +171,17 @@ export interface PodCockpitProps {
   /** Which maintenance the row says is in flight, if any. Seeded durably so the
    * right word survives a refresh mid-operation. */
   maintenanceKindInitial: "update" | "resize" | null;
+  /** T3 Code control (durable): `t3Control` = T3 owns the agents right now (banner + hidden
+   * controls); `t3Since` set while the enable/disable wizard runs (full-page flow), `t3StageInitial`
+   * the phase — all refresh-safe, mirroring updatingSince/updateStage. */
+  t3Control: boolean;
+  /** t3Connected: the pod's t3 is signed into the owner's T3 account + this env linked (syncs to their
+   * devices). Drives the post-enable "Connect to T3" wizard step + the Control-tab connected state. */
+  t3Connected: boolean;
+  t3Since: string | null;
+  /** The pod's Claude auth mode — drives whether enabling T3 needs to mint the 1-year token first. */
+  agentAuth: "subscription" | "api-key" | "setup-token" | null;
+  t3StageInitial: string | null;
   status: string;
   size: PodSize;
   diskGb: number;
@@ -189,29 +221,8 @@ export interface PodCockpitProps {
 }
 
 /** A settings row: label + description left, one control right. */
-function SettingRow({
-  label,
-  desc,
-  children,
-}: {
-  /** ReactNode so a row can carry an inline ⓘ beside its name, not just text. */
-  label: React.ReactNode;
-  desc?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="flex min-h-[54px] items-center justify-between gap-4 border-t border-border/60 py-3.5 first:border-t-0">
-      <div className="min-w-0">
-        <div className="text-sm font-medium">{label}</div>
-        {desc && <div className="text-[12.5px] text-muted-foreground">{desc}</div>}
-      </div>
-      {children}
-    </div>
-  );
-}
-
 /** Cockpit tab ids, also the accepted values of ?tab= (anything else → settings). */
-const COCKPIT_TABS = ["settings", "secrets", "stats", "activity", "details", "admin"] as const;
+const COCKPIT_TABS = ["control", "settings", "secrets", "stats", "activity", "details", "admin"] as const;
 
 export default function PodCockpit(props: PodCockpitProps) {
   const {
@@ -223,6 +234,9 @@ export default function PodCockpit(props: PodCockpitProps) {
     crashes,
     maintenance,
     imageDigest,
+    currentVersion,
+    ossReleaseVersion,
+    ossReleaseSummary,
     updateAvailable,
     newImageDigest = null,
     agent,
@@ -232,6 +246,11 @@ export default function PodCockpit(props: PodCockpitProps) {
     updatingSince,
     updateStageInitial,
     maintenanceKindInitial,
+    t3Control,
+    t3Connected,
+    t3Since,
+    agentAuth,
+    t3StageInitial,
     status,
     size,
     diskGb,
@@ -253,6 +272,7 @@ export default function PodCockpit(props: PodCockpitProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const queryClient = useQueryClient();
   const [pending, start] = useTransition();
 
   // Tab state in the URL, so refreshing on Stats doesn't drop you on Settings.
@@ -263,7 +283,7 @@ export default function PodCockpit(props: PodCockpitProps) {
   // instantly; the URL catches up whenever the router is free.
   const initialTab = (COCKPIT_TABS as readonly string[]).includes(searchParams.get("tab") ?? "")
     ? (searchParams.get("tab") as string)
-    : "settings";
+    : "control";
   const [activeTab, setActiveTab] = useState(initialTab);
   /** The tab strip, so switching can keep it in view (see selectTab). */
   const tabsRef = useRef<HTMLDivElement>(null);
@@ -297,6 +317,11 @@ export default function PodCockpit(props: PodCockpitProps) {
   }
 
   const [phase, setPhase] = useState<SetupStep>(initialStep);
+  // Latch the launch-into-T3 intent at mount. A pod created under T3 control arrives with ?enableT3=1,
+  // but that one-shot flag is stripped the moment the enable fires (review #1) — so read it ONCE here.
+  // It drives skipping the subscription-login onboarding step (see effPhase below): a T3 pod needs ONLY
+  // the 1-year setup-token, minted as the SINGLE login by the auto-enable flow. (fix/t3-launch-single-login)
+  const [t3Launch] = useState(() => searchParams.get("enableT3") === "1");
   // Seeded from the durable row (props.authUrl) so a refresh mid-login still shows
   // the sign-in link; the live WS `links` frame refines it if a newer one arrives.
   const [authUrl, setAuthUrl] = useState<string | null>(props.authUrl);
@@ -332,52 +357,97 @@ export default function PodCockpit(props: PodCockpitProps) {
   // mid-update shows "Updating…" straight from the backend. The poll below keeps
   // it live and calls router.refresh() when the backend says it's done.
   const [updating, setUpdating] = useState(Boolean(updatingSince));
-  // Live agent signals for THIS pod — the same feed the dashboard cards use, so the page shows the
-  // SAME activity state (Working / Idle / Waiting) and matching colours instead of a bare "Running".
-  const [live, setLive] = useState<PodCardLive | null>(null);
-  // Whether the first live poll has returned — until it has, we show a neutral "loading" indicator
-  // for a running pod rather than the lifecycle "Running" badge, so the header settles straight to
-  // the real activity (Idle/Working) instead of flashing green→grey on every refresh.
-  const [liveLoaded, setLiveLoaded] = useState(false);
-  useEffect(() => {
-    if (status !== "running") {
-      setLive(null);
-      setLiveLoaded(false);
-      return;
-    }
-    let stop = false;
-    const poll = () =>
-      void getOwnerLiveSignals()
-        .then((rows) => {
-          if (stop) return;
-          const r = rows.find((x) => x.id === slug);
-          setLive(
-            r
-              ? {
-                  status: r.status,
-                  updating: r.updating,
-                  agentStatus: r.agentStatus,
-                  codexStatus: r.codexStatus,
-                  agentWaitingFor: r.agentWaitingFor,
-                  agents: r.agents,
-                  appListening: r.appListening,
-                  criticalIssue: r.criticalIssue,
-                  unreachable: r.unreachable,
-                }
-              : null,
-          );
-          setLiveLoaded(true);
-        })
-        .catch(() => undefined);
-    poll();
-    const t = setInterval(() => {
-      if (!document.hidden) poll();
-    }, 10_000);
-    return () => {
-      stop = true;
-      clearInterval(t);
-    };
-  }, [slug, status]);
+  // T3 Code enable/disable wizard state — seeded durably from the row (t3Since), kept live by the
+  // poll below (mirrors the update flow). `inControl` drives the banner + hiding conflicting controls.
+  const [t3Enabling, setT3Enabling] = useState(Boolean(t3Since));
+  // `connecting` bridges the enabling → connect handoff in ONE batched render so the cockpit never flashes
+  // between them (a URL change alone doesn't batch with the enabling flag). It gates T3Enabling off and the
+  // connect wizard on; the URL `?wiz=t3connect` set alongside keeps it refresh-safe.
+  const [connecting, setConnecting] = useState(false);
+  // Agent Control-tab full-page wizards (agent-control-wizards): user-initiated takeovers, gated like
+  // update/T3 below. `pairingOpen` = Codex pairing; `signinWizard` = Claude sign-in/reconnect.
+  // Agent wizards are backed by a `?wiz=` URL param, NOT ephemeral state — so a page refresh mid-sign-in
+  // or mid-pairing lands you back in the wizard instead of vanishing (like update/T3, which survive via
+  // durable state). `wiz` = "pair" | "signin:<agent>" | "reconnect:<agent>".
+  const wiz = searchParams.get("wiz");
+  const setWiz = (v: string | null) => {
+    const params = new URLSearchParams(Array.from(searchParams.entries()));
+    if (v) params.set("wiz", v);
+    else params.delete("wiz");
+    // `enableT3` is a ONE-SHOT launch flag (3.2). Drop it on any wiz change so a later reload can't
+    // re-trigger the enable — a session-interrupting action — with no user intent (review #1).
+    params.delete("enableT3");
+    const qs = params.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  };
+  const pairingOpen = wiz === "pair";
+  const signinWizard = wiz?.startsWith("signin:")
+    ? { agentId: wiz.slice("signin:".length), mode: "signin" as const }
+    : wiz?.startsWith("reconnect:")
+      ? { agentId: wiz.slice("reconnect:".length), mode: "reconnect" as const }
+      : null;
+  const openPairing = () => {
+    setWiz("pair");
+  };
+  const closePairing = () => {
+    setWiz(null);
+  };
+  const [t3Stage, setT3Stage] = useState<string | null>(t3StageInitial);
+  const [t3InControl, setT3InControl] = useState(t3Control);
+  const [t3StartedAt, setT3StartedAt] = useState<number | null>(t3Since ? Date.parse(t3Since) : null);
+  // Start the T3 enable + show its progress screen. Flip `t3Enabling` (which starts the t3Progress poll)
+  // only AFTER enableT3Code resolves — startT3Enable writes t3Since before returning, so this stops the
+  // poll from reading the row too early, seeing active:false, and bouncing out of the screen (review #2).
+  // A synchronous failure is surfaced instead of swallowed (review #3).
+  const runT3EnableAndShow = () => {
+    setT3Stage("preparing");
+    setT3StartedAt(Date.now());
+    // Show the progress screen IMMEDIATELY (no cockpit flash while enableT3Code is in flight). The poll's
+    // grace window (below) keeps it from bouncing before t3Since is written. On a sync failure, clear it.
+    setT3Enabling(true);
+    void enableT3Code(slug).then((r) => {
+      if (r && "error" in r) {
+        setT3Enabling(false);
+        setActionError(`Couldn't enable T3 Code: ${r.error}`);
+      }
+    });
+  };
+  // The enable decision (2.2), shared by the cockpit button (onEnable) and the launch-into-T3 auto-start
+  // (3.2): already on the 1-year token → enable directly; otherwise mint it first via the OAuth wizard.
+  const beginT3Enable = () => {
+    if (agentAuth === "setup-token") runT3EnableAndShow();
+    else setWiz("renew-then-t3");
+  };
+  const autoEnabledT3 = useRef(false);
+  // Live agent signals for THIS pod — the SAME feed (and cache: qk.liveSignals) the dashboard cards
+  // use, so the page shows the SAME activity state (Working / Idle / Waiting) and matching colours
+  // instead of a bare "Running". react-query: cached (navigating pod→cockpit paints instantly),
+  // polled 10s, paused while the tab is hidden.
+  const { data: live = null, isSuccess: liveLoaded } = useQuery({
+    queryKey: qk.liveSignals(),
+    enabled: status === "running",
+    refetchInterval: 10_000,
+    // The owner feed returns every pod; narrow to THIS one in a select so the header re-renders only
+    // when its own signals change.
+    select: (rows): PodCardLive | null => {
+      const r = rows.find((x) => x.id === slug);
+      return r
+        ? {
+            status: r.status,
+            updating: r.updating,
+            agentStatus: r.agentStatus,
+            codexStatus: r.codexStatus,
+            agentWaitingFor: r.agentWaitingFor,
+            agentIdleMs: r.agentIdleMs,
+            agents: r.agents,
+            appListening: r.appListening,
+            criticalIssue: r.criticalIssue,
+            unreachable: r.unreachable,
+          }
+        : null;
+    },
+    queryFn: () => apiGet<PodLiveSignals[]>("/api/pods/live-signals"),
+  });
   // Optimistic suspend/resume label. These actions take several seconds (handoff +
   // provider stop/start); running them through `act()`/useTransition made the pending
   // server action block the router, freezing nav (reported live). Like runUpdate/resize,
@@ -423,7 +493,54 @@ export default function PodCockpit(props: PodCockpitProps) {
   const agentName = isCodex ? "Codex" : "Claude";
   const subscription = isCodex ? "OpenAI" : "Claude";
 
-  const onboarding = phase !== "ready";
+  // A T3 pod must NOT sit on the subscription /login onboarding step — that is the wrong login (a T3 pod
+  // is driven on the 1-year setup-token). Treat "login" as "ready" so the setup-token wizard / enabling
+  // screen takes over instead. Key this on the DURABLE T3 signals — the URL-backed wizard (?wiz), the
+  // enabling state (t3Since), in-control (t3_control) — plus the legacy launch latch, so it SURVIVES A
+  // REFRESH (the old transient-flag version fell back to "Sign in to Claude" on reload). Codex keeps its
+  // own device login (setup-token is Claude-only). (fix/t3-launch-single-login, hardened in fix/t3-wizard-polish)
+  const inT3Flow =
+    t3Launch ||
+    wiz === "renew-then-t3" ||
+    wiz === "renew-token" ||
+    t3Enabling ||
+    t3InControl ||
+    // Once the 1-year token is minted, this IS a T3 pod until it's in control — so even if the enable
+    // step is between states or failed (t3Since cleared), never fall back to the subscription /login.
+    (agentAuth === "setup-token" && !t3InControl);
+  const effPhase: SetupStep = inT3Flow && !isCodex && phase === "login" ? "ready" : phase;
+  const onboarding = effPhase !== "ready";
+  // Launch-into-T3 (3.2): a pod created under T3 control arrives here with ?enableT3=1; once it reaches
+  // READY, auto-start the same OAuth-then-enable flow the cockpit button uses. Ref-guarded to fire once.
+  useEffect(() => {
+    if (autoEnabledT3.current || searchParams.get("enableT3") !== "1") return;
+    if (onboarding || t3InControl || t3Enabling) return;
+    autoEnabledT3.current = true;
+    // Strip the one-shot flag now (review #1) — the setup-token direct-enable branch never hits setWiz,
+    // so it wouldn't be cleared otherwise; the subscription branch's setWiz clears it too (idempotent).
+    const params = new URLSearchParams(Array.from(searchParams.entries()));
+    params.delete("enableT3");
+    const qs = params.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    beginT3Enable();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onboarding, t3InControl, t3Enabling]);
+  // Robust auto-enable after the 1-year token is minted. The sign-in wizard's onDone hand-off can
+  // silently drop (observed on t3test: agentAuth got patched to setup-token, but enableT3Code never
+  // reached the server — the wizard's onComplete→onDone→runT3EnableAndShow chain didn't fire). Once
+  // agentAuth === "setup-token" this pod IS bound for T3 (that token is inference-only, useless under
+  // Podbay control), so start the enable HERE — the one reliable trigger for launch, the cockpit
+  // button, AND a pod left stranded. THAT double-enabled: completeSetupToken (server) already fires the
+  // enable, so the client must only SHOW it, not re-trigger. When the durable t3Since says an enable is in
+  // progress and we're not in control yet, show the progress screen — which also makes the wizard →
+  // enabling transition flash-free.
+  useEffect(() => {
+    if (t3Since && !t3InControl && !t3Enabling && !onboarding) {
+      setT3StartedAt((s) => s ?? Date.parse(t3Since));
+      setT3Enabling(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [t3Since, t3InControl, t3Enabling, onboarding]);
   // The once-per-USER connect tour: shown at ready, before it's been seen/dismissed —
   // or on explicit replay. Once seen on any pod it never re-pops on a new one.
   const showWalkthrough =
@@ -443,7 +560,10 @@ export default function PodCockpit(props: PodCockpitProps) {
   // Shared visual state (same module the dashboard card uses) so page and card agree.
   const cockpitAgents = podAgents.length ? podAgents : [agent];
   const hasClaudeAgent = cockpitAgents.includes("claude-code") || cockpitAgents.length === 0;
-  const podState = deriveState(status, updating, live, hasClaudeAgent);
+  // Pass T3 state so the cockpit header matches the dashboard card — while T3 owns the pod its Claude
+  // agent reads as not-signed-in (RC yielded), which would otherwise show "Needs you" in the header
+  // even though T3 is driving it fine (t3ttt, 2026-08-25).
+  const podState = deriveState(status, updating, live, hasClaudeAgent, { control: t3InControl, enabling: t3Enabling });
   const cockpitCodexChip = codexChipFor({
     reachable: status === "running" && !onboarding,
     onboarding,
@@ -552,29 +672,75 @@ export default function PodCockpit(props: PodCockpitProps) {
   // the real stage + elapsed come from polling the event-derived progress. This
   // is what makes the update legible instead of a button stuck on "Updating…".
   const updateElapsed = updateStartedAt ? Math.round((Date.now() - updateStartedAt) / 1000) : 0;
+  // Poll the event-derived progress while updating (react-query: gated by `enabled`, bounded retry so
+  // a failed poll doesn't strand the "Updating…" UI). The side effects (advance stage, finish) run in
+  // an effect that reacts to the freshest poll result.
+  const { data: updateProg } = useQuery({
+    queryKey: qk.updateProgress(slug),
+    enabled: updating,
+    refetchInterval: 3000,
+    queryFn: () => podUpdateProgress(slug),
+  });
+  useEffect(() => {
+    if (!updating || !updateProg) return;
+    setUpdateStage(updateProg.stage);
+    if (updateProg.startedAt) setUpdateStartedAt(Date.parse(updateProg.startedAt));
+    if (!updateProg.active) {
+      setUpdating(false);
+      if (updateProg.error) setActionError(`Couldn't update: ${updateProg.error}`);
+      else router.refresh();
+    }
+  }, [updateProg, updating, router]);
   useEffect(() => {
     if (!updating) return;
-    let stop = false;
-    const tick = async () => {
-      const p = await podUpdateProgress(slug).catch(() => null);
-      if (stop || !p) return;
-      setUpdateStage(p.stage);
-      if (p.startedAt) setUpdateStartedAt(Date.parse(p.startedAt));
-      if (!p.active) {
-        setUpdating(false);
-        if (p.error) setActionError(`Couldn't update: ${p.error}`);
-        else router.refresh();
-      }
-    };
-    void tick();
-    const poll = setInterval(tick, 3000);
     const secs = setInterval(() => forceTick((n) => n + 1), 1000); // elapsed counter
-    return () => {
-      stop = true;
-      clearInterval(poll);
-      clearInterval(secs);
-    };
-  }, [updating, slug, router]);
+    return () => clearInterval(secs);
+  }, [updating]);
+
+  // T3 Code enable/disable progress — same shape as the update poll. The enable/disable actions
+  // return immediately; the durable t3Since/t3Stage drive the full-page wizard, and when it clears
+  // we flip back to the cockpit (router.refresh picks up the new t3Control).
+  const t3Elapsed = t3StartedAt ? Math.round((Date.now() - t3StartedAt) / 1000) : 0;
+  const { data: t3Prog } = useQuery({
+    queryKey: qk.t3Progress(slug),
+    enabled: t3Enabling,
+    refetchInterval: 3000,
+    queryFn: () => t3Progress(slug),
+  });
+  useEffect(() => {
+    if (!t3Enabling || !t3Prog) return;
+    setT3Stage(t3Prog.stage);
+    setT3InControl(t3Prog.inControl);
+    if (t3Prog.startedAt) setT3StartedAt(Date.parse(t3Prog.startedAt));
+    // The completion decision lives in a pure, exhaustively-tested function (lib/t3-progress) — the
+    // inline version here conflated "finished" with "not started yet" (both have startedAt=null) and
+    // froze the wizard on "Preparing" when an enable actually completed (t3ttt, 2026-08-25).
+    switch (nextT3EnableAction(t3Prog, { t3Connected, connecting })) {
+      case "wait":
+        return;
+      case "error":
+        setT3Enabling(false);
+        setActionError("T3 Code setup failed — please try again.");
+        return;
+      case "connect":
+        // Enable done → guide the owner straight into connecting their T3 account (the wizard, not the
+        // control page). Keep t3Enabling set; `connecting` gates T3Enabling off + the connect wizard on
+        // in ONE render (no cockpit flash), and ?wiz keeps it refresh-safe.
+        setConnecting(true);
+        setWiz("t3connect");
+        return;
+      case "done":
+        setT3Enabling(false);
+        router.refresh();
+        return;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [t3Prog, t3Enabling, router, t3Connected, connecting, t3StartedAt]);
+  useEffect(() => {
+    if (!t3Enabling) return;
+    const secs = setInterval(() => forceTick((n) => n + 1), 1000);
+    return () => clearInterval(secs);
+  }, [t3Enabling]);
 
   // The RC hand-off link: this CLI version never streams a "links" frame to the
   // client, so the WS handler above never fires. The server DOES capture the URL
@@ -673,6 +839,37 @@ export default function PodCockpit(props: PodCockpitProps) {
 
   /** Start the image update. Extracted so the merged dialog and the no-manifest
    * fallback confirm run the SAME thing. */
+  /** Enable a supported agent that isn't on the pod yet — the Control tab's "Enable {agent}" row.
+   * Same confirm + add flow the old "Add an agent" block used. */
+  const enableAgent = (a: string) =>
+    setConfirm({
+      title: `Add ${agentLabel(a)} to this pod?`,
+      message: (
+        <>
+          It starts in its own terminal tab, alongside {agentLabel(agent)} — which keeps running,
+          uninterrupted.
+        </>
+      ),
+      warning: (
+        <>
+          Both agents share this pod&rsquo;s <strong>workspace</strong> and preview port. Switch between
+          them rather than running both at once on the same files.
+        </>
+      ),
+      confirmLabel: `Add ${agentLabel(a)}`,
+      run: () => {
+        setAddingAgent(a);
+        setActionError(null);
+        track("pod_agent_added", { pod_id: slug, environment: environmentName, agent: a });
+        void addPodAgent(slug, a)
+          .then((r) => {
+            if (r?.error) setActionError(`Couldn't add ${agentLabel(a)}: ${r.error}`);
+            else router.refresh();
+          })
+          .finally(() => setAddingAgent(null));
+      },
+    });
+
   const runUpdate = () => {
     setUpdating(true);
     setUpdateStage(null);
@@ -709,6 +906,37 @@ export default function PodCockpit(props: PodCockpitProps) {
 
   const agentsLabel = (podAgents ?? [agent]).join(", ");
 
+  /**
+   * Which full-page takeover is replacing the cockpit right now (null = none). Mirrors the
+   * early-return chain below IN ORDER, so the value names the view that actually renders.
+   *
+   * A takeover swaps the whole view, but the browser keeps the SCROLL OFFSET of the page you were
+   * on. Pressing Update — or opening any wizard — from a control far down a long mobile cockpit
+   * therefore dropped you into the middle or bottom of the new flow instead of its first line
+   * (owner report, 2026-08-27). Deriving one key here (rather than adding a scroll to each of the
+   * six takeover components) means a future takeover added to the chain is covered by default.
+   */
+  const takeover = onboarding
+    ? null
+    : updating
+      ? "updating"
+      : t3Enabling && !connecting
+        ? "t3-enabling"
+        : pairingOpen
+          ? "pairing"
+          : signinWizard
+            ? `signin:${signinWizard.agentId}:${signinWizard.mode}`
+            : wiz === "t3connect" || connecting
+              ? "t3-connect"
+              : wiz === "renew-token" || wiz === "renew-then-t3"
+                ? "renew"
+                : null;
+  useEffect(() => {
+    // scrollViewToTop, NOT window.scrollTo: the dashboard shell scrolls its <main>, so the window's
+    // own scrollY is always 0 here and scrolling the window would be a silent no-op.
+    if (takeover) scrollViewToTop(tabsRef.current);
+  }, [takeover]);
+
   // During a transition the cockpit IS the transition — replace it wholesale rather than
   // disabling controls in place. Gated AFTER all hooks (React rules), so the update-poll and
   // WS effects keep running; when the state clears, this falls through to the cockpit below.
@@ -723,7 +951,98 @@ export default function PodCockpit(props: PodCockpitProps) {
         kind={transientKind === "resizing" ? "resize" : "update"}
         stage={updateStage}
         elapsedSec={updateElapsed}
-        updateInfo={updateInfo}
+      />
+    );
+  }
+  // Enabling/turning off T3 Code replaces the cockpit with its own full-page flow, same as an update.
+  // `!connecting` hands straight to the connect wizard below without a cockpit frame in between.
+  if (t3Enabling && !connecting && !onboarding) {
+    return (
+      <T3Enabling
+        name={name}
+        slug={slug}
+        environmentName={environmentName}
+        agentsLabel={agentsLabel}
+        stage={t3Stage}
+        elapsedSec={t3Elapsed}
+      />
+    );
+  }
+  // Codex pairing / Claude sign-in take over the cockpit the same way (user-initiated from the Control
+  // tab). They return to the cockpit on close, or — for sign-in — automatically once the agent auths.
+  if (pairingOpen && !onboarding) {
+    return (
+      <CodexPairingWizard
+        slug={slug}
+        name={name}
+        onClose={closePairing}
+        onPaired={() => {
+          void queryClient.invalidateQueries({ queryKey: qk.codexDevices(slug) });
+          closePairing();
+        }}
+      />
+    );
+  }
+  if (signinWizard && !onboarding) {
+    const kind: AuthStepKind = signinWizard.agentId === "codex" ? "codex-device" : "claude-subscription";
+    return (
+      <ProviderAuthWizard
+        slug={slug}
+        name={name}
+        environmentName={environmentName}
+        steps={[{ provider: signinWizard.agentId as ProviderId, kind }]}
+        stepIndex={0}
+        onStepIndex={() => {}}
+        onDone={() => setWiz(null)}
+        onCancel={() => setWiz(null)}
+        reconnect={signinWizard.mode === "reconnect"}
+      />
+    );
+  }
+  if ((wiz === "t3connect" || connecting) && !onboarding) {
+    // Post-enable (via `connecting`, no flash) or a re-entry from the Control tab (via ?wiz): sign into the
+    // T3 account + link the env so it syncs to the owner's devices. Full-page — not the control page.
+    const leaveConnect = () => {
+      setConnecting(false);
+      setT3Enabling(false);
+      setWiz(null);
+    };
+    return (
+      <T3ConnectWizard
+        slug={slug}
+        name={name}
+        environmentName={environmentName}
+        onClose={leaveConnect}
+        onComplete={() => {
+          leaveConnect();
+          router.refresh();
+        }}
+      />
+    );
+  }
+  if ((wiz === "renew-token" || wiz === "renew-then-t3") && !onboarding) {
+    // "renew-then-t3" (2.2): the owner asked to enable T3 on a pod that isn't yet on the 1-year token —
+    // mint it here, THEN kick off the T3 enable (which now launches t3 serve on the token, task 2.1).
+    return (
+      <ProviderAuthWizard
+        slug={slug}
+        name={name}
+        environmentName={environmentName}
+        steps={[{ provider: "claude-code", kind: "claude-setup-token" }]}
+        stepIndex={0}
+        onStepIndex={() => {}}
+        onDone={() => {
+          // renew-then-t3 = launch/enable: completeSetupToken (server) already auto-started the enable, so
+          // show its progress screen NOW (no cockpit flash between the wizard and enabling). renew-token =
+          // a plain expired-token renewal on an in-control pod — just close.
+          if (wiz === "renew-then-t3") {
+            setT3Stage("preparing");
+            setT3StartedAt(Date.now());
+            setT3Enabling(true);
+          }
+          setWiz(null);
+        }}
+        onCancel={() => setWiz(null)}
       />
     );
   }
@@ -794,7 +1113,11 @@ export default function PodCockpit(props: PodCockpitProps) {
   }
 
   return (
-    <div className="flex flex-col gap-5">
+    // min-w-0 + overflow-x-clip: the PAGE must never scroll horizontally on mobile (owner req
+    // 2026-08-24). Any child wider than the viewport (a long URL/token, a wide row) is contained here
+    // rather than widening the page; internal scrollers (the tab strip) keep their own overflow-x-auto.
+    // overflow-x-clip (not hidden) clips without creating a scroll container or promoting overflow-y.
+    <div className="flex min-w-0 max-w-full flex-col gap-5 overflow-x-clip">
       {/* Header */}
       <header className="flex flex-col gap-2">
         <div className="flex min-w-0 items-center gap-2.5">
@@ -860,14 +1183,25 @@ export default function PodCockpit(props: PodCockpitProps) {
               {activityChip.label}
             </span>
           ) : activityLoading ? (
-            <span className="inline-flex items-center rounded-md border border-border px-1.5 py-0.5 text-[11px] font-semibold text-muted-foreground/60">
-              …
-            </span>
+            // First live poll hasn't returned — a neutral pulsing skeleton (matches the dashboard
+            // card), never the lifecycle word "Running" which would then flip to Idle/Working.
+            <span
+              data-testid="pod-status"
+              aria-hidden
+              className="inline-flex h-[19px] w-14 animate-pulse items-center rounded-md border border-border bg-white/[0.04]"
+            />
           ) : (
             <StatusBadge status={updating ? transientKind : status} />
           )}
           <span className="ml-1">{environmentName}</span>
-          <span>· active {ago(lastActiveAt)}</span>
+          {/* The AGENT's real activity (session mtime) — counts remote-control + autonomous work;
+              lastActiveAt only sees terminal traffic and goes stale. Falls back until the first poll. */}
+          <span>
+            · active{" "}
+            {live?.agentIdleMs != null
+              ? ago(new Date(Date.now() - live.agentIdleMs).toISOString())
+              : ago(lastActiveAt)}
+          </span>
         </div>
       </header>
 
@@ -875,6 +1209,45 @@ export default function PodCockpit(props: PodCockpitProps) {
       {onboarding && (
         <div className="flex flex-col gap-1.5">
           <WizardProgress current={phase} />
+
+          {/* Wizard-level cancel. The pod is already a real machine (past the green "Create" step), so
+              there's no clean "back to Configure" — the honest version is to DELETE it and return to
+              configure a new one (owner ask 2026-08-24). To just step away and let it keep setting up,
+              the page's own "← Dashboard" nav does that non-destructively. */}
+          <button
+            type="button"
+            data-testid="onboarding-cancel"
+            disabled={removing}
+            onClick={() =>
+              setConfirm({
+                title: "Cancel setup?",
+                message: (
+                  <>
+                    This deletes this pod and its machine, and returns you to your pods. It can&rsquo;t be
+                    undone. To step away and let it keep setting up instead, use <strong>← Dashboard</strong>.
+                  </>
+                ),
+                confirmLabel: "Cancel setup",
+                danger: true,
+                run: () => {
+                  setRemoving(true);
+                  setActionError(null);
+                  start(async () => {
+                    const r = await destroyPod(slug);
+                    if (r?.error) {
+                      setRemoving(false);
+                      setActionError(`Couldn't cancel setup: ${r.error}`);
+                    } else {
+                      router.push("/dashboard");
+                    }
+                  });
+                },
+              })
+            }
+            className="mb-1 inline-flex w-fit items-center text-[12.5px] text-muted-foreground/70 hover:text-destructive disabled:opacity-60"
+          >
+            {removing ? "Cancelling…" : "Cancel setup"}
+          </button>
 
           {phase === "creating" && (
             <Card>
@@ -975,54 +1348,15 @@ export default function PodCockpit(props: PodCockpitProps) {
                     </span>
                   </div>
                 )}
-                <div className="flex flex-col gap-2">
-                  <label className="text-sm text-muted-foreground" htmlFor="authcode">
-                    Paste the code Claude gives you
-                  </label>
-                  <div className="flex gap-2">
-                    <Input
-                      id="authcode"
-                      className="flex-1 font-mono"
-                      value={authCode}
-                      onChange={(e) => setAuthCode(e.target.value)}
-                      placeholder="Authorization code"
-                      autoComplete="off"
-                      spellCheck={false}
-                      onKeyDown={(e) => e.key === "Enter" && submitCode()}
-                    />
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      aria-label="Paste"
-                      title="Paste from clipboard"
-                      onClick={async () => {
-                        try {
-                          const t = await navigator.clipboard.readText();
-                          if (t) setAuthCode(t.trim());
-                        } catch {
-                          /* clipboard unavailable / denied — user can paste manually */
-                        }
-                      }}
-                    >
-                      <ClipboardPaste />
-                    </Button>
-                  </div>
-                  <Button
-                    variant="outline"
-                    className="self-start"
-                    onClick={submitCode}
-                    disabled={!authCode.trim() || authSubmitting}
-                  >
-                    {codeSent ? (
-                      "Sent ✓"
-                    ) : authSubmitting ? (
-                      <>
-                        <Loader2 className="mr-1.5 size-4 animate-spin" /> Authenticating…
-                      </>
-                    ) : (
-                      "Submit code"
-                    )}
-                  </Button>
+                <div className="flex flex-col gap-1.5">
+                  <p className="text-sm text-muted-foreground">Paste the code Claude gives you</p>
+                  <PasteCodeInput
+                    value={authCode}
+                    onChange={setAuthCode}
+                    onSubmit={submitCode}
+                    submitting={authSubmitting}
+                    submitted={codeSent}
+                  />
                 </div>
               </CardContent>
             </Card>
@@ -1075,68 +1409,6 @@ export default function PodCockpit(props: PodCockpitProps) {
               running={status === "running"}
             />
           )}
-          <AgentCards
-            slug={slug}
-            podName={props.name}
-            status={status}
-            primaryAgent={agent}
-            agentsOnPod={agentsOnPod}
-            sessionUrl={sessionUrl}
-            authedAt={props.authedAt}
-            updateAvailable={updateAvailable}
-            onConfirm={setConfirm}
-          />
-          {addableAgents.length > 0 && status === "running" && (
-            <div className="flex flex-wrap items-center gap-3 rounded-xl border border-dashed border-border/60 px-4 py-3">
-              <span className="text-[13px] text-muted-foreground">Room for a second agent</span>
-              {addableAgents.map((a) => (
-                <Button
-                  key={a}
-                  variant="outline"
-                  size="sm"
-                  disabled={addingAgent !== null}
-                  onClick={() =>
-                    setConfirm({
-                      title: `Add ${agentLabel(a)} to this pod?`,
-                      message: (
-                        <>
-                          It starts in its own terminal tab, alongside{" "}
-                          {agentLabel(agent)} — which keeps running, uninterrupted.
-                        </>
-                      ),
-                      warning: (
-                        <>
-                          Both agents share this pod&rsquo;s <strong>workspace</strong> and preview
-                          port. Switch between them rather than running both at once on the same
-                          files.
-                        </>
-                      ),
-                      confirmLabel: `Add ${agentLabel(a)}`,
-                      run: () => {
-                        setAddingAgent(a);
-                        setActionError(null);
-                        track("pod_agent_added", { pod_id: slug, environment: environmentName, agent: a });
-                        void addPodAgent(slug, a)
-                          .then((r) => {
-                            if (r?.error) setActionError(`Couldn't add ${agentLabel(a)}: ${r.error}`);
-                            else router.refresh();
-                          })
-                          .finally(() => setAddingAgent(null));
-                      },
-                    })
-                  }
-                >
-                  {addingAgent === a ? (
-                    <>
-                      <Loader2 className="animate-spin" /> Adding…
-                    </>
-                  ) : (
-                    `+ Add ${agentLabel(a)}`
-                  )}
-                </Button>
-              ))}
-            </div>
-          )}
         </div>
       )}
 
@@ -1150,7 +1422,8 @@ export default function PodCockpit(props: PodCockpitProps) {
       {!onboarding && (
       <div ref={tabsRef} className="scroll-mt-4">
       <Tabs value={activeTab} onValueChange={selectTab}>
-        <TabsList variant="line" className="mb-4 gap-5">
+        <TabsList variant="line" className="mb-4 max-w-full justify-start gap-5 overflow-x-auto overflow-y-clip overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none] [touch-action:pan-x] [&::-webkit-scrollbar]:hidden">
+          <TabsTrigger value="control" className="flex-none px-0" data-tour="tab-control">Control</TabsTrigger>
           <TabsTrigger value="settings" className="flex-none px-0" data-tour="tab-settings">Settings</TabsTrigger>
           <TabsTrigger value="secrets" className="flex-none px-0" data-tour="tab-secrets">Secrets</TabsTrigger>
           <TabsTrigger value="stats" className="flex-none px-0" data-tour="tab-stats">Stats</TabsTrigger>
@@ -1159,7 +1432,53 @@ export default function PodCockpit(props: PodCockpitProps) {
           <TabsTrigger value="admin" className="flex-none px-0" data-tour="tab-admin">Admin</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="settings" className="min-h-[20rem]">
+        {/* Control — the agents (Claude/Codex) + T3 Code control, the primary thing you
+            do with a pod, so it's the first tab and the default. */}
+        <TabsContent value="control" className="min-h-[20rem]">
+          {/* ONE card of rows (like Settings): Claude + Codex always shown (an Enable row when not on
+              the pod), then T3 Code control. Divider rows come from each row's `border-t first:border-t-0`. */}
+          <Card className="gap-1 py-4">
+            <CardContent className="py-0">
+              <AgentCards
+                slug={slug}
+                podName={props.name}
+                status={status}
+                primaryAgent={agent}
+                agentsOnPod={agentsOnPod}
+                addableAgents={status === "running" ? addableAgents : []}
+                onEnable={enableAgent}
+                enabling={addingAgent}
+                sessionUrl={sessionUrl}
+                authedAt={props.authedAt}
+                updateAvailable={updateAvailable}
+                onConfirm={setConfirm}
+                externalControl={t3InControl}
+                onPairCodex={openPairing}
+                onSignin={(agentId, mode) => setWiz(`${mode}:${agentId}`)}
+              />
+              <T3ConnectPanel
+                slug={slug}
+                podName={name}
+                inControl={t3InControl}
+                connected={t3Connected}
+                onConnect={() => setWiz("t3connect")}
+                onEnable={beginT3Enable}
+                onEnableStarted={() => {
+                  setT3Stage("preparing");
+                  setT3StartedAt(Date.now());
+                  setT3Enabling(true);
+                }}
+                onDisableStarted={() => {
+                  setT3Stage("stopping");
+                  setT3StartedAt(Date.now());
+                  setT3Enabling(true);
+                }}
+              />
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="settings" className="min-h-[20rem] space-y-4">
           <Card className="gap-1 py-4">
             <CardContent className="py-0">
           <SettingRow
@@ -1170,17 +1489,21 @@ export default function PodCockpit(props: PodCockpitProps) {
             desc={
               updateAvailable
                 ? oss && !updateInfo
-                  ? // Self-host: no release-notes manifest, so show the concrete from→to build
-                    // digests (that IS the version info here) plus what's preserved.
-                    `New pod-base available · ${imageDigest ? shortDigest(imageDigest) : "?"} → ${
-                      newImageDigest ? shortDigest(newImageDigest) : "latest"
-                    } — your files, plan and sign-in are kept`
+                  ? ossReleaseVersion
+                    ? // Self-host WITH a published release for the target: name the version + what's new.
+                      `Update available · v${ossReleaseVersion.replace(/^v/i, "")}${
+                        newImageDigest ? ` (${shortDigest(newImageDigest)})` : ""
+                      } — ${ossReleaseSummary?.trim() || "your files, plan and sign-in are kept"}`
+                    : // No published release names the target — the honest fallback is the from→to digests.
+                      `New pod-base available · ${imageDigest ? shortDigest(imageDigest) : "?"} → ${
+                        newImageDigest ? shortDigest(newImageDigest) : "latest"
+                      } — your files, plan and sign-in are kept`
                   : [
                       updateHeadline(updateInfo?.target?.summary, updateInfo?.target?.notes),
                       "your files, plan and sign-in are kept",
                     ].join(" — ")
                 : imageDigest
-                  ? `Up to date · ${shortDigest(imageDigest)}`
+                  ? `Up to date · ${imageVersionLabel(currentVersion, imageDigest)}`
                   : "Version unknown"
             }
           >

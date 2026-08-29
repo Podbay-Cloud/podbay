@@ -6,12 +6,13 @@ import { getPostHogClient } from "./posthog-server";
 import type { MetricsSnapshot, PodIssue } from "@podbay/shared";
 import type { PodLiveSignals, ClaudeSettings } from "@podbay/control-plane";
 import { requireUser, editionOss } from "./session";
+import QRCode from "qrcode";
 import { requireApprovedUser } from "./access";
 import { isAdmin } from "./access-rules";
 import { ACCOUNT_SLOT_CAP } from "@podbay/shared/tiers";
 import { getConnectionToken } from "./github-connect";
 import { getEnvironmentDetail } from "./environments";
-import { getPodService, isProvisioningEnabled } from "./pod-service";
+import { getPodService, isProvisioningEnabled, localPreviewUrl } from "./pod-service";
 import { markWalkthroughSeenForUser, resetWalkthroughForUser } from "./walkthrough";
 import { recordAttributedUserEvent } from "./landing-experiment-store";
 import {
@@ -92,6 +93,10 @@ export async function getAgentStates(
     id: string;
     window: number | null;
     authed: boolean;
+    loginExpired?: boolean;
+    needsReauth?: boolean;
+    /** The login's HARD expiry (ms) — drives the cockpit's "expiring soon · Reconnect" affordance. */
+    expiresAt?: number | null;
     rcActive: boolean;
     authUrl?: string | null;
     sessionUrl?: string | null;
@@ -266,8 +271,12 @@ export async function launchPod(
     cpus?: number;
     memoryMb?: number;
     githubRepo?: string;
-    /** Agent(s) chosen at launch (multi-agent-plan.md slice 3). */
+    /** Agent(s) chosen at launch — the pod's providers, ≥1 (multi-agent-plan slice 3 / t3-unattended 3.1). */
     agents?: string[];
+    /** Control mode (t3-unattended-integration 3.1): "podbay" (default) or "t3" (unattended). NOTE: the
+     * T3 provisioning (enable T3 + the 1-year token once the pod is ready) is task 3.2/C — this param is
+     * accepted + recorded now; a "t3" launch currently provisions a normal Podbay pod until 3.2 lands. */
+    control?: "podbay" | "t3";
     /** Auth mode + BYO key (api-key-pod-mode.md). */
     agentAuth?: "subscription" | "api-key";
     agentApiKey?: string;
@@ -352,6 +361,199 @@ export async function setPodPreviewPublic(slug: string, isPublic: boolean): Prom
   }
   revalidatePath("/dashboard");
   revalidatePath(`/dashboard/pods/${slug}`);
+}
+
+/** Connect a pod to the T3 Code app (iOS/Android/desktop): provision `t3 serve`, flip the preview to
+ * delegated-auth, and mint a pairing token + QR. The delegated-auth preview lets the T3 app reach
+ * the pod without a podbay cookie, gated by its own pairing token. */
+export type T3ConnectResult =
+  | { error: string }
+  | { backendUrl: string; pairUrl: string; token: string; qrDataUrl: string; appPairUrl: string };
+
+/** The pod's backend URL for T3 Code — edition-correct (self-host parity). Cloud derives it from
+ * PODBAY_PREVIEW_BASE; self-host uses the same published address the browser preview uses
+ * (`localPreviewUrl`). A plain loopback (127.0.0.1/localhost) is NOT reachable from a remote device,
+ * so we return null there and the caller refuses honestly rather than mint a token against a dead URL. */
+async function t3BackendUrl(slug: string): Promise<string | null> {
+  if (editionOss()) {
+    const url = await localPreviewUrl(slug);
+    if (!url || /^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(url)) return null;
+    return url;
+  }
+  const base = process.env.PODBAY_PREVIEW_BASE?.replace(/^\.+|\.+$/g, "");
+  return base ? `https://${slug}.${base}` : null;
+}
+
+function t3UnreachableMessage(): string {
+  return editionOss()
+    ? "This pod isn't reachable from a remote device yet — T3 Code needs a public deployment mode (a loopback preview can't be paired). See the self-host public-preview modes."
+    : "Preview base URL isn't configured on this deployment";
+}
+
+/** Kick off T3 Code control (async). Returns as soon as provisioning is marked in-flight; the cockpit
+ * polls `t3Progress` and, once ready, calls `regenerateT3Pairing` to show the QR. */
+export async function enableT3Code(slug: string): Promise<ActionResult> {
+  const user = await requireUser();
+  const backendUrl = await t3BackendUrl(slug);
+  if (!backendUrl) return { error: t3UnreachableMessage() };
+  try {
+    await getPodService().startT3Enable(user.id, slug, backendUrl);
+  } catch (e) {
+    log.error("enable_t3_failed", { userId: user.id, podId: slug, err: e });
+    return { error: message(e) };
+  }
+  revalidatePath(`/dashboard/pods/${slug}`);
+}
+
+/** T3 enable/disable wizard progress (durable, refresh-safe) + whether T3 is currently in control. */
+export async function t3Progress(
+  slug: string,
+): Promise<{ active: boolean; stage: string | null; startedAt: string | null; inControl: boolean }> {
+  const user = await requireUser();
+  return getPodService().t3Progress(user.id, slug);
+}
+
+/** Turn OFF T3 Code control — hands the agents back to Podbay (restores its RC, dev server, and the
+ * hidden Open-in-Claude / Codex-pairing controls). Agents stay signed in. */
+export async function disableT3Code(slug: string): Promise<ActionResult> {
+  const user = await requireUser();
+  try {
+    await getPodService().disableT3Backend(user.id, slug);
+  } catch (e) {
+    log.error("disable_t3_failed", { userId: user.id, podId: slug, err: e });
+    return { error: message(e) };
+  }
+  revalidatePath(`/dashboard/pods/${slug}`);
+}
+
+/** Reconnect an agent whose sign-in expired — wipes the dead token + respawns it into /login so the
+ * cockpit's existing sign-in UI can surface a fresh device-auth URL. */
+export async function reconnectAgent(slug: string, agent: string): Promise<ActionResult> {
+  const user = await requireUser();
+  try {
+    await getPodService().reconnectAgent(user.id, slug, agent);
+  } catch (e) {
+    log.error("reconnect_agent_failed", { userId: user.id, podId: slug, agent, err: e });
+    return { error: message(e) };
+  }
+  revalidatePath(`/dashboard/pods/${slug}`);
+}
+
+/** Result of a Restore-remote-control attempt: either the action itself failed (network/pod
+ * unreachable — `error`), or it ran and reports what it OBSERVED (`ok`/`reason`/`rcState`) — the
+ * cockpit must render the observed outcome, never assume success just because the call completed. */
+export type RestoreRcResult = { error: string } | { ok: boolean; reason?: string; rcState?: string };
+
+/** Explicit cockpit action for `rcState: "down"` (rc-reconnect-hardening §4.2): calls the same bounded
+ * RC-restore primitive doctor uses and returns its observed result. `agent` is accepted for call-site
+ * symmetry with reconnectAgent/sendAgentSigninCode, but the underlying pod endpoint has no per-agent
+ * selector — it always acts on the primary Claude session. */
+export async function restoreRemoteControl(slug: string, agent: string): Promise<RestoreRcResult> {
+  const user = await requireUser();
+  let result: { ok: boolean; reason?: string; rcState?: string };
+  try {
+    result = await getPodService().restoreRemoteControl(user.id, slug);
+  } catch (e) {
+    log.error("restore_remote_control_failed", { userId: user.id, podId: slug, agent, err: e });
+    return { error: message(e) };
+  }
+  revalidatePath(`/dashboard/pods/${slug}`);
+  return result;
+}
+
+/** Start `claude setup-token` on the pod and return the browser-approval URL (setup-token renew wizard,
+ * agent-auth-lifecycle). The owner approves it, then calls completeSetupToken with the code. */
+export async function startSetupToken(slug: string): Promise<{ authUrl: string } | { error: string }> {
+  const user = await requireUser();
+  try {
+    return await getPodService().startSetupToken(user.id, slug);
+  } catch (e) {
+    log.error("setup_token_start_failed", { userId: user.id, podId: slug, err: e });
+    return { error: message(e) };
+  }
+}
+
+/** Finish the setup-token renewal: feed the approval code, store the 1-year token, switch to setup-token
+ * auth, restart the agent. Never logs the token. */
+export async function completeSetupToken(slug: string, code: string): Promise<ActionResult> {
+  const user = await requireUser();
+  try {
+    await getPodService().completeSetupToken(user.id, slug, code);
+  } catch (e) {
+    log.error("setup_token_complete_failed", { userId: user.id, podId: slug, err: e });
+    return { error: message(e) };
+  }
+  // The 1-year token is inference-only (useless under Podbay control), so a pod that just minted one is
+  // bound for T3 — start the enable HERE, server-side, so it never depends on a client hand-off (which
+  // silently dropped, stranding pods on "token minted, T3 off"). Best-effort: the token is already
+  // stored, and the cockpit's setup-token auto-enable effect is the backstop if this misses.
+  try {
+    const pod = await getPodService().getPod(user.id, slug);
+    if (!pod.t3Control) {
+      const backendUrl = await t3BackendUrl(slug);
+      if (backendUrl) await getPodService().startT3Enable(user.id, slug, backendUrl);
+    }
+  } catch (e) {
+    log.error("auto_enable_t3_after_token_failed", { userId: user.id, podId: slug, err: e });
+  }
+  revalidatePath(`/dashboard/pods/${slug}`);
+}
+
+/** Start T3 Connect (t3-connect-account-wizard): `t3 connect login --headless` on the pod prints an
+ * app.t3.codes/connect OAuth URL — sign into the owner's T3 account so the env syncs to their devices. */
+export async function startT3Connect(slug: string): Promise<{ authUrl: string } | { error: string }> {
+  const user = await requireUser();
+  try {
+    return await getPodService().startT3Connect(user.id, slug);
+  } catch (e) {
+    log.error("t3_connect_start_failed", { userId: user.id, podId: slug, err: e });
+    return { error: message(e) };
+  }
+}
+
+/** Finish T3 Connect: feed the code, then link this environment so it syncs to the owner's T3 devices. */
+export async function submitT3ConnectCode(slug: string, code: string): Promise<ActionResult> {
+  const user = await requireUser();
+  try {
+    await getPodService().completeT3Connect(user.id, slug, code);
+  } catch (e) {
+    log.error("t3_connect_complete_failed", { userId: user.id, podId: slug, err: e });
+    return { error: message(e) };
+  }
+  revalidatePath(`/dashboard/pods/${slug}`);
+}
+
+/** Return a setup-token pod to its subscription login (t3-unattended-integration 1.2): restore the
+ * backed-up credential, flip agentAuth back, and respawn Claude. For turning off unattended mode, or
+ * un-sticking a setup-token pod left under Podbay control (the inference token can't drive native RC). */
+export async function revertToSubscription(slug: string): Promise<ActionResult> {
+  const user = await requireUser();
+  try {
+    await getPodService().revertToSubscription(user.id, slug);
+  } catch (e) {
+    return { error: message(e) };
+  }
+  revalidatePath(`/dashboard/pods/${slug}`);
+}
+
+/** Fresh pairing code for an already-enabled T3 backend (the "regenerate" action). */
+export async function regenerateT3Pairing(slug: string): Promise<T3ConnectResult> {
+  const user = await requireUser();
+  const backendUrl = await t3BackendUrl(slug);
+  if (!backendUrl) return { error: t3UnreachableMessage() };
+  try {
+    const r = await getPodService().mintT3Pairing(user.id, slug, backendUrl);
+    const qrDataUrl = await QRCode.toDataURL(r.pairUrl, { margin: 2, width: 240 });
+    // One-tap "Open in T3" deep link (t3-unattended-integration 4.1). Documented T3 format:
+    // app.t3.codes/pair?host=<backendUrl>#token=<code> — the token rides the URL HASH so it's never sent
+    // to the hosted app's server (T3 docs). Host un-encoded per the doc's example. VERIFY live against
+    // the app before treating as done.
+    const appPairUrl = `https://app.t3.codes/pair?host=${r.backendUrl}#token=${r.token}`;
+    return { backendUrl: r.backendUrl, pairUrl: r.pairUrl, token: r.token, qrDataUrl, appPairUrl };
+  } catch (e) {
+    log.error("regen_t3_pairing_failed", { userId: user.id, podId: slug, err: e });
+    return { error: message(e) };
+  }
 }
 
 /** Record that the owner finished/skipped the post-create connect walkthrough, so it

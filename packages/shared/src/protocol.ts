@@ -14,6 +14,17 @@ export interface WindowInfo {
   agent?: string;
 }
 
+/** Remote Control lifecycle classification — models RC OUTCOMES, not provider process
+ * labels, because "a session URL was captured at some point" is not proof the bridge is
+ * currently live (see openspec/changes/rc-reconnect-hardening/design.md, decision 2):
+ *   - `active`: current evidence says the interactive bridge is live.
+ *   - `recovering`: a bounded native reconnect/recovery attempt is in progress.
+ *   - `down`: the login is valid but RC is confirmed unavailable.
+ *   - `login-required`: RC cannot start until the owner completes `/login` (covers both a
+ *     hard-expired credential file AND a live pane-detected auth failure/blocking OAuth dialog).
+ *   - `unknown`: insufficient current evidence — never inferred as active from history. */
+export type RcState = "active" | "recovering" | "down" | "login-required" | "unknown";
+
 /** Per-agent truth reported on the pod's /healthz — what the cockpit's agent
  * cards render from. One entry per CLI the pod hosts (primary + added).
  * `authed` = that CLI's credentials file exists on the pod; `rcActive` = its
@@ -24,7 +35,25 @@ export interface PodAgentState {
   /** tmux window index hosting this agent, when known. */
   window: number | null;
   authed: boolean;
+  /** The credentials file exists but the login token has hard-expired — the agent is effectively
+   * logged out and needs to reconnect (distinct from never-signed-in). Drives the cockpit's
+   * "sign-in expired · Reconnect" affordance. */
+  loginExpired?: boolean;
+  /** A LIVE auth failure detected from the terminal (the CLI printed "Login expired"/"run /login")
+   * that the credential-file expiry misses — a mid-session logout while the stored expiry is still in
+   * the future. Same "reconnect" affordance as loginExpired, from the live signal. */
+  needsReauth?: boolean;
+  /** The active login's HARD expiry (ms since epoch) — the moment past which no refresh is possible.
+   * Drives the "login expiring in N days" warning (cockpit + dashboard) since a subscription login has
+   * a fixed ~monthly hard expiry nothing on the pod extends. Null when unknown / api-key / setup-token
+   * not near expiry. See docs/strategy/agent-auth-lifecycle.md. */
+  expiresAt?: number | null;
   rcActive: boolean;
+  /** The RC lifecycle classification behind `rcActive` (see {@link RcState}). Optional so an
+   * OLDER pod image that never sends it doesn't break a newer consumer — a tri-state rollout
+   * concern, not an error; treat an absent value the same as `"unknown"`. `rcActive` remains the
+   * backward-compatible projection: true if and only if `rcState === "active"`. */
+  rcState?: RcState;
   /** This agent's captured sign-in value while unauthenticated — Claude: its OAuth
    * URL; Codex: its one-time device code. Null once signed in / not yet printed.
    * Per-agent so an ADDED agent gets the cockpit's link-and-paste sign-in instead

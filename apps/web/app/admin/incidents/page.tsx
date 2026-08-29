@@ -59,7 +59,7 @@ export default async function IncidentsPage() {
             </thead>
             <tbody>
               {incidents.map((i, n) => (
-                <tr key={`${i.podId}-${i.at}-${n}`} className="border-b border-border/40 last:border-b-0 hover:bg-white/[0.02]">
+                <tr key={`${i.podId}-${i.at}-${n}`} className="border-b border-border/40 last:border-b-0 hover:bg-white/[0.06]">
                   <td className="px-3 py-2">
                     <span className="flex items-center gap-2">
                       <span className={`h-2 w-2 rounded-full ${SEV_DOT[i.severity] ?? "bg-border"}`} />

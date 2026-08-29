@@ -49,6 +49,47 @@ handed off when it was suspended.
 - **WHEN** the pod restarts
 - **THEN** no new note is expected, and the most recent existing note SHALL remain readable
 
+### Requirement: A handoff is exchanged when control passes to or from an external harness
+
+Handing this pod's agents to an external harness (T3 Code) and reclaiming them are also continuity
+boundaries, so the system SHALL exchange a handoff across both — with the honest, asymmetric guarantee
+the two directions actually permit.
+
+**Enabling (Podbay → T3):** before the system yields remote control, it SHALL request a handoff from
+each live Podbay agent window (the same best-effort, timeout-bounded mechanism as an interrupt, phrased
+for a control hand-off rather than a restart) AND leave a one-time pointer note in the handoff directory
+telling the fresh session T3 starts to read those per-window notes and continue. A failed or missing
+handoff SHALL NEVER block, delay beyond the timeout, or fail the enable.
+
+**Disabling (T3 → Podbay):** the harness ran its OWN sessions, which are not in Podbay's tmux and cannot
+be asked for a note, so the system SHALL NOT request a per-window handoff on this path (it would capture
+Podbay's stale idle window, not T3's work). Instead, before it hands control back, the system SHALL leave
+a one-time pointer note directing the resumed Podbay agent to the real evidence of T3's work — the edited
+working tree (`git diff`) and T3's own session history — rather than promising a transcript it cannot move.
+Writing the note SHALL be best-effort and SHALL NEVER fail the disable.
+
+#### Scenario: Control is yielded to T3 Code
+
+- **GIVEN** a running pod with live Podbay agents
+- **WHEN** the owner enables T3 Code control
+- **THEN** the system SHALL request a handoff from each live agent window and write a one-time
+  `to-t3` pointer note, both before yielding remote control, and SHALL proceed with the enable
+  regardless of whether either succeeds
+
+#### Scenario: Control is reclaimed from T3 Code
+
+- **GIVEN** a pod under T3 Code control
+- **WHEN** the owner turns T3 Code control off
+- **THEN** the system SHALL write a one-time `to-podbay` pointer note pointing the resumed agent at the
+  working tree and T3's history — and SHALL NOT request a per-window handoff — before handing control back
+
+#### Scenario: The hand-off copy does not overpromise continuity
+
+- **WHEN** the cockpit confirms enabling or disabling T3 Code control
+- **THEN** the copy SHALL state that T3 starts its own fresh sessions and that continuity is carried by a
+  handoff note (not by moving a live session/transcript), and SHALL NOT claim an in-progress conversation
+  transfers verbatim in either direction
+
 ### Requirement: The handoff note is durable, human-readable, and per agent window
 
 The note SHALL be written to the pod's persistent home volume so it survives the recreate, as one
@@ -168,4 +209,31 @@ session in their desktop app.
 
 - **WHEN** the owner clicks Continue in Claude
 - **THEN** the session's web URL SHALL open in a new tab (the reliable, cross-platform behavior)
+
+### Requirement: A maintenance interrupt communicates its bounded wait as progress
+
+An owner-initiated interrupt (update/resize) waits — by design, for data safety — on a bounded
+handoff and a graceful guest shutdown before any force-stop. Those waits are legitimate and
+time-boxed, but today render as a motionless "Stopping the pod", indistinguishable from a hang. The
+platform SHALL communicate each bounded wait as determinate progress: name the handoff phase
+distinctly, and show the graceful-shutdown wait against its known maximum so the owner sees the pod
+is safely finishing, not stuck.
+
+#### Scenario: The handoff phase is shown distinctly, not as "Stopping"
+
+- **WHEN** an update is in its handoff phase
+- **THEN** the progress UI shows a distinct "handing off" step (not the "Stopping the pod" step) and
+  the progress indicator reflects that phase
+
+#### Scenario: The graceful-shutdown wait shows elapsed against its maximum
+
+- **WHEN** the pod is in the graceful-shutdown wait before any force-stop
+- **THEN** the progress UI communicates that it is waiting for a clean shutdown and shows the elapsed
+  time against the known bounded maximum, rather than a frozen spinner with a caption already exceeded
+
+#### Scenario: A slow-but-bounded shutdown never reads as stuck
+
+- **WHEN** a graceful shutdown legitimately takes close to its full bounded time (e.g. a wedged agent)
+- **THEN** the owner sees continuous, honest progress toward the bound and the force-stop that follows,
+  and is not led to believe the pod has hung
 

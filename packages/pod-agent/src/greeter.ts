@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync, writeFileSync, appendFileSync } from "node:fs";
 import { createLogger, type Logger } from "@podbay/shared/log";
 import { sessionStateFromDisk } from "./signals.js";
+import { resolveRcRename, DEFAULT_RC_SESSION_HASH_PATH } from "./rc-session-identity.js";
 import type { AgentAuth } from "./boot.js";
 
 /**
@@ -39,6 +40,11 @@ export interface GreeterOptions {
   gid?: number;
   /** Sent-at-most-once marker for the kickoff trigger (persistent volume). */
   greetedMarkerPath?: string;
+  /** Mode-0600 state file holding a hash of the last RC session id we observed (see
+   * rc-session-identity.ts). Defaults to a pod-wide path; an added agent on its own
+   * tmux window/RC session should pass a per-agent path so the two don't cross-clobber
+   * each other's identity comparison. Override in tests to avoid touching the real file. */
+  rcSessionHashPath?: string;
   /** If set, write a timestamped trace (each step + a terminal-pane snapshot) here
    * so remote-control flakiness is diagnosable post-mortem (see server.ts). */
   traceFile?: string;
@@ -108,6 +114,13 @@ const LOGIN_MENU_RE = /select login method/i;
  * the highlighted "No (recommended)" default. */
 const API_KEY_PROMPT_RE = /use this api key|custom api key in your environment/i;
 
+/** Claude Code v2.1.x's FIRST-RUN onboarding shows a theme picker ("Choose the text style…", Dark
+ * mode pre-highlighted) BEFORE the login menu. It blocks: `claude /login` never reaches "Select login
+ * method" until the theme is accepted, so the login-drive waited forever and no sign-in URL ever
+ * printed (velsa, 2026-08-25, on the image that bumped claude to v2.1.215). Accept the highlighted
+ * default with Enter, exactly like the API-key prompt. */
+const THEME_PROMPT_RE = /choose the text style|to change this later, run \/theme/i;
+
 // Pane-safety predicates now live in @podbay/shared: the control plane types into a
 // live pane too (pre-interrupt handoff), and two implementations of "is this pane
 // ready" would drift — which is exactly the class of bug that caused the 2026-07-24
@@ -169,11 +182,21 @@ export async function driveLoginMenu(opts: LoginMenuOptions): Promise<boolean> {
   const deadline = Date.now() + waitTimeoutMs;
   let onMenu = false;
   let dismissedKeyPrompt = false;
+  let dismissedTheme = false;
   while (Date.now() < deadline) {
     const p = await pane();
     if (LOGIN_MENU_RE.test(p)) {
       onMenu = true;
       break;
+    }
+    // v2.1.x shows a theme picker BEFORE the login menu — accept the highlighted default so claude
+    // proceeds to "Select login method". Without this, `claude /login` never prints the sign-in URL.
+    if (!dismissedTheme && THEME_PROMPT_RE.test(p)) {
+      log.info("login_dismiss_theme_prompt", {});
+      await tmux(["send-keys", "-t", opts.sessionName, "Enter"]);
+      dismissedTheme = true;
+      await sleep(pollMs);
+      continue;
     }
     if (!dismissedKeyPrompt && API_KEY_PROMPT_RE.test(p)) {
       log.info("login_dismiss_api_key_prompt", {});
@@ -520,18 +543,40 @@ export async function runGreeter(opts: GreeterOptions): Promise<GreeterResult> {
   // draft never submitting, …).
   if (!result.rcActive) await trace("rc_not_active", { submitted: rcSubmitted });
 
-  // 1b) Name the Claude-app session to match the pod, ONCE. Current Claude Code
-  // (2.1.215) doesn't surface the `/remote-control <title>` title in the app's
-  // session list — it shows `<hostname>-<auto-slug>` / the kickoff's auto-summary.
-  // `/rename` IS honoured and propagates to every app view. We do it only on the
-  // FIRST greet (same marker as the kickoff), and NEVER on a later wake — the name
-  // lives server-side (claude.ai), not on the pod, so if the user renamed the
-  // session themselves, re-running `/rename` on restart would clobber their name
-  // with our stale pod name. A dashboard rename pushes a fresh /rename separately.
-  if (result.rcActive && opts.rcTitle && !existsSync(marker)) {
+  // 1b) Name the Claude-app session to match the pod. Current Claude Code (2.1.215) doesn't surface
+  // the `/remote-control <title>` title in the app's session list — it shows `<hostname>-<auto-slug>` /
+  // the conversation's auto-summary (a cold restart shows up as "Resume session context", which the
+  // owner can't recognize). `/rename` IS honoured and propagates to every app view.
+  //
+  // Ownership is decided by RC SESSION IDENTITY, not by "did the pod-agent process restart"
+  // (the old `coldStart` boolean). The tmux-hosted Claude process — and therefore the RC
+  // session it owns — can survive a pod-agent-only restart, so a process-restart signal alone
+  // can't tell "same session" from "fresh session" and would clobber an owner rename. Instead we
+  // compare the CURRENTLY observed RC session id (Claude's own `bridgeSessionId`, surfaced as
+  // `sessionStateFromDisk().url` — the same load-bearing signal the cockpit/auth flows already
+  // depend on) against a hash of the last-observed one (rc-session-identity.ts):
+  //  - same id            → same RC session survived → do NOT rename (preserves any rename,
+  //                          Podbay's or the owner's own).
+  //  - different id, or no prior hash → fresh/replacement session → RENAME, exactly like the
+  //                          old coldStart:true path.
+  //  - no observable id at all → no evidence either way → do NOT rename (the `/remote-control
+  //                          <title>` call above is the documented best-effort) and leave the
+  //                          persisted hash untouched.
+  if (result.rcActive && opts.rcTitle) {
     await waitAcceptingInput(inputReadyMs, pollMs, sleep);
-    const renamed = await submitLine(`/rename ${opts.rcTitle}`);
-    log.info("greeter_rename", { renamed, title: opts.rcTitle });
+    const currentSessionId = sessionStateFromDisk().url;
+    const renameDecision = resolveRcRename(
+      currentSessionId,
+      opts.rcSessionHashPath ?? DEFAULT_RC_SESSION_HASH_PATH,
+    );
+    if (renameDecision.shouldRename) {
+      const renamed = await submitLine(`/rename ${opts.rcTitle}`);
+      log.info("greeter_rename", { renamed, title: opts.rcTitle });
+    } else {
+      log.info("greeter_rename_skipped", {
+        reason: currentSessionId === undefined ? "unobservable_session_id" : "same_session",
+      });
+    }
   }
 
   // 2) Kickoff trigger — at most once per pod (marker on the persistent volume),
@@ -541,30 +586,43 @@ export async function runGreeter(opts: GreeterOptions): Promise<GreeterResult> {
   // gets a turn — which is why a restarted pod looked "empty and the agent didn't
   // lead". The nudge makes the kickoff's resume block fire (read PLAN.md, orient,
   // continue). Suspend/resume never lands here — it thaws the same process.
-  if (opts.kickoffTrigger) {
-    if (existsSync(marker)) {
-      if (opts.resumeTrigger) {
-        // Claude is still restoring the --continue'd transcript right after RC;
-        // typing into that window gets swallowed. Wait for it to say it's ready.
-        await waitAcceptingInput(inputReadyMs, pollMs, sleep);
-        const sent = await submitLine(opts.resumeTrigger);
-        log.info("greeter_resume", { sent });
-      } else {
-        log.info("greeter_already_greeted", {});
-      }
-    } else {
-      // Wait until Claude reports it will accept input (was a 1.5s guess).
+  if (existsSync(marker)) {
+    // COLD RESTART of an ALREADY-greeted pod — kickoff or not. Claude relaunched with --continue (so
+    // the history is back) but won't speak until it gets a turn, so nudge it to orient. This used to be
+    // gated on `kickoffTrigger`, so a pod with NO kickoff resumed SILENTLY on every update — it got the
+    // handoff note but never the "Resuming — where are we?" turn (owner: first10, 2026-08-26).
+    if (opts.resumeTrigger) {
+      // Claude is still restoring the --continue'd transcript right after RC; typing into that window
+      // gets swallowed. Wait for it to say it's ready.
       await waitAcceptingInput(inputReadyMs, pollMs, sleep);
-      result.greeted = await submitLine(opts.kickoffTrigger);
-      if (result.greeted) {
-        try {
-          writeFileSync(marker, new Date().toISOString());
-        } catch {
-          /* marker is best-effort */
-        }
-      }
-      log.info("greeter_kickoff", { sent: result.greeted });
+      const sent = await submitLine(opts.resumeTrigger);
+      log.info("greeter_resume", { sent });
+    } else {
+      log.info("greeter_already_greeted", {});
     }
+  } else if (opts.kickoffTrigger) {
+    // FIRST greet with a kickoff configured — send it, and mark greeted only on success so a failed
+    // send retries next time.
+    await waitAcceptingInput(inputReadyMs, pollMs, sleep);
+    result.greeted = await submitLine(opts.kickoffTrigger);
+    if (result.greeted) {
+      try {
+        writeFileSync(marker, new Date().toISOString());
+      } catch {
+        /* marker is best-effort */
+      }
+    }
+    log.info("greeter_kickoff", { sent: result.greeted });
+  } else {
+    // FIRST greet with NO kickoff: nothing to send, but MARK the pod greeted so its next restart takes
+    // the resume-nudge branch above (the marker used to be written only when a kickoff was sent, so a
+    // no-kickoff pod never counted as greeted and never got the resume nudge).
+    try {
+      writeFileSync(marker, new Date().toISOString());
+    } catch {
+      /* marker is best-effort */
+    }
+    log.info("greeter_marked_greeted_no_kickoff", {});
   }
 
   return result;

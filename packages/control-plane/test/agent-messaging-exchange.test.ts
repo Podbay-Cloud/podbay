@@ -59,6 +59,29 @@ describe("agent-messaging drain + routing", () => {
     expect(await msgs.pendingFor("u", beta.id)).toHaveLength(1);
   });
 
+  it("bounces an over-long message (doesn't wedge the batch) and still routes the rest", async () => {
+    // The bug this pins (2026-08-25): a >4000-char body throws `InvalidMessage` at route time, which
+    // the drain treated as TRANSIENT → never confirmed → re-failed every poll → the poisoned batch
+    // blocked ALL of the pod's subsequent sends (makore→first10 never landed). It must BOUNCE instead.
+    const alpha = await svc.launchPod("u", "nextjs-starter");
+    const beta = await svc.launchPod("u", "nextjs-starter");
+    await svc.provisionPending();
+    primeOutbox([
+      { id: "big", to: beta.id, body: "x".repeat(4001) }, // over MSG_MAX_BODY
+      { id: "ok", to: beta.id, body: "this one is fine" },
+    ]);
+
+    await svc.reconcile(alpha.id);
+
+    // The good message routed; the over-long one did NOT reach the recipient.
+    const toBeta = (await msgs.pendingFor("u", beta.id)).map((m) => m.id);
+    expect(toBeta).toContain("ok");
+    expect(toBeta).not.toContain("big");
+    // The SENDER got a bounce explaining the length limit — not a silent loss, not a wedged queue.
+    const toAlpha = await msgs.pendingFor("u", alpha.id);
+    expect(toAlpha.some((m) => m.fromPod === "podbay" && /limit|characters|too long/i.test(m.body))).toBe(true);
+  });
+
   it("attributes the sender from the drained pod, ignoring any forged `from` in the line", async () => {
     const alpha = await svc.launchPod("u", "nextjs-starter");
     const beta = await svc.launchPod("u", "nextjs-starter");

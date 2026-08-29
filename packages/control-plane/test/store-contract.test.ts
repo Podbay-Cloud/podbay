@@ -23,6 +23,7 @@ function sample(id: string, ownerId: string, over: Partial<PodRecord> = {}): Pod
     lifecycle: "auto",
     autoUpdate: "inherit",
     previewPublic: false,
+    previewAppAuth: false,
     githubRepo: null,
     // Per-pod agent selection (migration 0023) — a real value, since these two are
     // jsonb and a null would not exercise the round-trip this test exists to prove.
@@ -42,6 +43,11 @@ function sample(id: string, ownerId: string, over: Partial<PodRecord> = {}): Pod
     updatingSince: "2026-01-02T03:04:05.000Z",
     maintenanceKind: "resize" as const,
     updateStage: "recreating",
+    // T3 Code control (migration 0047) + account-connect (migration 0048).
+    t3Control: true,
+    t3Since: "2026-01-02T03:04:05.000Z",
+    t3Stage: "downloading",
+    t3Connected: true,
     // Which SandboxProvider hosts the pod (migration 0015).
     provider: "incus",
     // Compute tier (migration 0016).

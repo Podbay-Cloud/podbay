@@ -81,7 +81,7 @@ function BoxFit({ box }: { box: BoxStats }) {
             style={{ width: `${pct(otherMb, box.ramTotalMb)}%` }}
           />
         )}
-        <div title={`free · ${gb(freeMb)}`} className="h-full flex-1 bg-white/[0.03]" />
+        <div title={`free · ${gb(freeMb)}`} className="h-full flex-1 bg-white/[0.02]" />
       </div>
       <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
         <span className="flex items-center gap-1.5">

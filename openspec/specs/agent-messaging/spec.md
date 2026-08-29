@@ -91,6 +91,15 @@ and list without an outbound call, and the control plane SHALL re-resolve as the
 - **WHEN** the control plane cannot uniquely resolve a routed reference (ambiguous or unknown)
 - **THEN** a system notice naming the problem SHALL be routed back to the sending pod's inbox
 
+#### Scenario: A permanently-invalid message bounces, never wedging the outbox
+
+- **WHEN** a drained outbox line can NEVER be recorded (a PERMANENT validation failure — e.g. a body
+  over the max length, or a malformed id) as opposed to a transient recording failure
+- **THEN** the control plane SHALL bounce a system notice back to the sender explaining why (e.g. the
+  length limit) and treat that line as HANDLED so the drained batch is confirmed — it SHALL NOT hold
+  the batch back for retry (which would re-fail forever and block ALL of that pod's subsequent
+  outbound messages). Only TRANSIENT failures withhold the ack and retry the whole batch.
+
 ### Requirement: Delivery wakes the recipient with a clearly-framed injected turn
 
 When the control plane finds a pending message for a running recipient pod on its reconcile poll, it

@@ -59,6 +59,12 @@ laptop. Trust the `podbay` CLI over any assumption about this environment.
     there is **no `secrets set`** — the owner adds them in the dashboard (the link `podbay info` prints
     as `cockpit:`). NEVER tell the user to run a raw CLI command to store a secret — a normal user has
     no terminal; point them to the dashboard link, or use `secrets request`.
+    **Hand over a link that OPENS where they need to be — never a bare link plus directions.** The
+    cockpit deep-links with `?tab=<control|settings|secrets|stats|activity|details>`, so send
+    `…/dashboard/pods/<slug>?tab=secrets`, not "open the dashboard → Settings → Secrets" (which also
+    gets the path wrong: secrets is its OWN tab, not a child of Settings). And never hand over
+    `…/pods/<slug>` — that is the bare web TERMINAL, a different page from the cockpit; the cockpit is
+    always `…/dashboard/pods/<slug>`. Both mistakes were made to a real owner (2026-08-27).
   - **`podbay schedule …` / `podbay startup …`** — durable recurring turns / boot processes (your
     `CronCreate` is NOT durable — see below).
   - **`podbay info` / `podbay preview` / `podbay doctor`** — where am I, the preview URL, health+repair.

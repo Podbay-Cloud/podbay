@@ -101,12 +101,12 @@ export class GatewayServer {
       | "wakeTimeoutMs"
       | "maintenanceDormantMs"
       | "maintenanceMaxPerSweep"
+      | "maintenanceRefreshIdleMs"
     >
   >;
   private idleTimer?: NodeJS.Timeout;
   private provisionTimer?: NodeJS.Timeout;
   private readonly appOrigin?: string;
-  private readonly lastMark = new Map<string, number>();
   private readonly log: Logger;
 
   constructor(private readonly config: GatewayConfig) {
@@ -129,6 +129,9 @@ export class GatewayServer {
       // (PODBAY_MAINTENANCE_DORMANT_DAYS). See docs/strategy/compute-strategy.md.
       maintenanceDormantMs: config.maintenanceDormantMs ?? 0,
       maintenanceMaxPerSweep: config.maintenanceMaxPerSweep ?? 5,
+      // Running-idle token refresh ON by default (7d) — this is the afisha-class fix, not opt-in.
+      // The fleet never idle-sleeps, so a running-but-idle agent's login is renewed by nothing else.
+      maintenanceRefreshIdleMs: config.maintenanceRefreshIdleMs ?? 7 * 24 * 60 * 60 * 1000,
     };
     this.appOrigin = config.appOrigin?.replace(/\/$/, "");
     this.wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
@@ -650,10 +653,8 @@ export class GatewayServer {
   }
 
   private pipe(client: WebSocket, upstream: WebSocket, userId: string, podId: string): void {
-    // User input is always activity.
     client.on("message", (d, isBinary) => {
       if (upstream.readyState === WebSocket.OPEN) upstream.send(d, { binary: isBinary });
-      this.touch(userId, podId);
     });
     // Persist onboarding milestones AT MOST ONCE per connection (the service is
     // idempotent anyway). These make the launch wizard's login/ready steps a
@@ -668,10 +669,7 @@ export class GatewayServer {
       if (isBinary) return;
       const msg = parseAgentFrame(d);
       if (!msg) return;
-      // Only real agent OUTPUT counts as activity — sidecar heartbeats
-      // (status/links/pong) must not keep a pod awake or reset lastActiveAt.
       if (msg.type === "output") {
-        this.touch(userId, podId);
         // Codex device-login: unlike Claude's auth URL (a structured links frame),
         // Codex prints its one-time sign-in CODE as raw terminal output. Capture it
         // so the cockpit's Codex sign-in step can show it (refresh-safe, like the
@@ -767,7 +765,11 @@ export class GatewayServer {
     const notHere: PreviewError = { code: 404, title: "No pod here", message: "There's no pod at this address." };
     const pod = await this.config.control.lookupForPreview(slug);
     if (!pod) return { error: notHere };
-    if (!pod.previewPublic) {
+    // `previewAppAuth` is delegated auth: the pod runs an agent-harness backend (e.g. T3 Code) that
+    // guards its OWN endpoint with a pairing token, so the gateway forwards :3000 as public transport
+    // — a podbay cookie would just block the third-party app that only carries its own token. The
+    // UPSTREAM app is the gate. (Owner-only stays the default; `public` is the generic anyone-can-view.)
+    if (!pod.previewPublic && !pod.previewAppAuth) {
       const userId = await this.config.authenticate(req).catch(() => null);
       if (!userId) {
         return {
@@ -934,25 +936,25 @@ export class GatewayServer {
     }
   }
 
-  /** Throttle lastActiveAt writes to at most once per 10s per pod. */
-  private touch(userId: string, podId: string): void {
-    const now = Date.now();
-    if (now - (this.lastMark.get(podId) ?? 0) < 10_000) return;
-    this.lastMark.set(podId, now);
-    void this.config.control.markActive(userId, podId).catch(() => undefined);
-  }
-
   /** Run the control-plane idle policy once (also called on the timer). */
   async sweepIdle(): Promise<string[]> {
     return this.config.control.sleepIdlePods(this.opts.idleThresholdMs);
   }
 
-  /** Maintenance-wake dormant pods (keepalive) — no-op unless configured. */
+  /** Maintenance sweep: (1) wake dormant pods (keepalive, opt-in) and (2) refresh the login of
+   * RUNNING-but-idle pods before it hard-expires (on by default — the afisha-class fix). */
   async sweepMaintenance(): Promise<string[]> {
-    return this.config.control.maintenanceWakePods(
+    const woken = await this.config.control.maintenanceWakePods(
       this.opts.maintenanceDormantMs,
       this.opts.maintenanceMaxPerSweep,
     );
+    const refreshed = await this.config.control
+      .refreshRunningIdlePods(this.opts.maintenanceRefreshIdleMs, this.opts.maintenanceMaxPerSweep)
+      .catch(() => [] as string[]);
+    // Unstick any T3 enable orphaned by a gateway restart mid-provision (so it fails + is retryable
+    // instead of spinning forever). Best-effort; never let it break the sweep.
+    const unstuck = await this.config.control.reconcileStuckT3Enables?.().catch(() => [] as string[]) ?? [];
+    return [...woken, ...refreshed, ...unstuck];
   }
 
   /** Reap relay connection rows that have been disconnected for a long time (a relay paired once and

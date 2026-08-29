@@ -8,6 +8,7 @@ import {
   landingExperimentAudit,
   landingExperimentEvents,
   landingExperimentRuns,
+  podBaseImages,
   type Database,
 } from "../src/index.js";
 
@@ -83,5 +84,23 @@ describe("db foundation (pglite, no network)", () => {
     });
     await db.delete(user).where(eq(user.id, "u_1"));
     expect(await db.select().from(session)).toEqual([]);
+  });
+});
+
+describe("pod_base_images carries an optional version (release-versioning migration 0050)", () => {
+  it("defaults version to NULL — every pre-versioning row, which is the common path", async () => {
+    const db = await freshDb();
+    await db.insert(podBaseImages).values({ digest: "d1", env: "pod-base", status: "current" });
+    const [row] = await db.select().from(podBaseImages).where(eq(podBaseImages.digest, "d1"));
+    expect(row.version).toBeNull();
+  });
+
+  it("stores and reads back a version when a build is cut as a release", async () => {
+    const db = await freshDb();
+    await db
+      .insert(podBaseImages)
+      .values({ digest: "d2", env: "pod-base", status: "current", version: "0.1.0" });
+    const [row] = await db.select().from(podBaseImages).where(eq(podBaseImages.digest, "d2"));
+    expect(row.version).toBe("0.1.0");
   });
 });

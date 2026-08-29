@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, openSync, closeSync, rmSync } from "node:fs";
-import type { MetricSample, MetricsSnapshot, BoxStats, PodAgentState, PodIssue } from "@podbay/shared";
+import type { MetricSample, MetricsSnapshot, BoxStats, PodAgentState, PodIssue, RcState } from "@podbay/shared";
 import type {
   SandboxProvider,
   CodexPairing,
@@ -140,6 +140,25 @@ export class FakeProvider implements SandboxProvider {
   async exec(id: string, cmd: string[] = []): Promise<ExecResult> {
     const script = cmd[cmd.length - 1] ?? "";
     this.execScripts.push(script);
+    // Built-in simulated `/agent/rc-restore`: control-plane's `restoreRemoteControl`
+    // (packages/control-plane/src/service.ts) execs `curl ... /agent/rc-restore` and
+    // parses stdout as JSON — there's no real pod-agent behind a fake pod to answer it, so
+    // e2e scripts the OUTCOME via the same per-pod health sidecar as `scripted()` below
+    // (`rcRestoreTo`, written by `scriptPodHealth`). On a match this returns the same
+    // `{ok, reason?, rcState?}` shape the real endpoint does AND mutates the pod's scripted
+    // `rcState`, so the NEXT podHealth() poll reflects the "restored" outcome — same as a
+    // real restart would, without a second scripting call from the test.
+    if (script.includes("agent/rc-restore")) {
+      const scripted = this.scripted(id);
+      if (scripted.rcState === "login-required") {
+        return { exitCode: 0, stdout: JSON.stringify({ ok: false, reason: "login-required" }), stderr: "" };
+      }
+      if (scripted.rcRestoreTo) {
+        this.setScripted(id, { rcState: scripted.rcRestoreTo });
+        return { exitCode: 0, stdout: JSON.stringify({ ok: true, rcState: scripted.rcRestoreTo }), stderr: "" };
+      }
+      return { exitCode: 0, stdout: JSON.stringify({ ok: false }), stderr: "" };
+    }
     const r = this.execHandler?.(script, cmd, id);
     if (typeof r === "string") return { exitCode: 0, stdout: r, stderr: "" };
     return r ?? { exitCode: 0, stdout: "", stderr: "" };
@@ -270,6 +289,14 @@ export class FakeProvider implements SandboxProvider {
     codexStatus?: string;
     agentWaitingFor?: string;
     appListening?: boolean;
+    expiresAt?: number | null;
+    /** rc-reconnect-hardening 5.1: script the claude-code agent's RC classification directly —
+     * the fake stack doesn't run the real classifier (rc-state.ts), so a test just states the
+     * outcome it wants. */
+    rcState?: RcState;
+    /** What `rcState` becomes after a scripted `/agent/rc-restore` call succeeds (see exec()
+     * above). Unset ⇒ the simulated restore reports `{ok:false}`, same as today's no-op default. */
+    rcRestoreTo?: RcState;
   } {
     const f = this.stateFile;
     if (!f) return {};
@@ -286,11 +313,37 @@ export class FakeProvider implements SandboxProvider {
           codexStatus?: string;
           agentWaitingFor?: string;
           appListening?: boolean;
+          expiresAt?: number | null;
+          rcState?: RcState;
+          rcRestoreTo?: RcState;
         }
       >;
       return all[id] ?? {};
     } catch {
       return {};
+    }
+  }
+
+  /** Write-back half of `scripted()`, used ONLY by the built-in `/agent/rc-restore` simulation
+   * in exec() above to mutate a pod's OWN scripted rcState after a "restore" — never called from
+   * outside this class. Best-effort, matching scripted()'s own read: a test double must never
+   * take the run down over a sidecar-file race. No-ops when there's no shared state file (e.g. a
+   * unit test running the fake provider in-memory, not through e2e). */
+  private setScripted(id: string, patch: { rcState?: RcState }): void {
+    const f = this.stateFile;
+    if (!f) return;
+    try {
+      const file = `${f}.health.json`;
+      let all: Record<string, Record<string, unknown>> = {};
+      try {
+        all = JSON.parse(readFileSync(file, "utf8")) as Record<string, Record<string, unknown>>;
+      } catch {
+        /* first writer */
+      }
+      all[id] = { ...(all[id] ?? {}), ...patch };
+      writeFileSync(file, JSON.stringify(all));
+    } catch {
+      /* best-effort: a test double must never take the run down */
     }
   }
 
@@ -303,12 +356,29 @@ export class FakeProvider implements SandboxProvider {
     // hero (and the AgentCards needs-signin state) render instead of jumping past them.
     const authed = !(this.pods.get(id) as { noSession?: boolean } | undefined)?.noSession;
     return {
-      agents: agents.map((a, i) => ({
-        id: a,
-        window: i,
-        authed,
-        rcActive: a === "codex" ? process.env.PODBAY_FAKE_CODEX_RC === "1" : this.sessionUrl != null,
-      })),
+      agents: agents.map((a, i) => {
+        // rc-reconnect-hardening 5.1: a scripted claude-code rcState takes over rcActive's
+        // derivation too, mirroring the real backend's own rule (server.ts's agentStates():
+        // `rcActive: rcState === "active"`) — so a test that scripts "down"/"recovering"/etc.
+        // gets a CONSISTENT pair of fields, not a scripted rcState alongside a stale rcActive
+        // still driven by session-URL presence. Leave every OTHER (unscripted) pod exactly as
+        // before: `this.sessionUrl != null`, so no existing e2e spec is affected.
+        const rcState = a === "claude-code" ? scripted.rcState : undefined;
+        return {
+          id: a,
+          window: i,
+          authed,
+          rcActive:
+            a === "codex"
+              ? process.env.PODBAY_FAKE_CODEX_RC === "1"
+              : rcState !== undefined
+                ? rcState === "active"
+                : this.sessionUrl != null,
+          ...(rcState !== undefined ? { rcState } : {}),
+          // Scriptable login hard-expiry (drives the cockpit's "expiring soon · Reconnect" affordance).
+          expiresAt: a === "claude-code" ? (scripted.expiresAt ?? null) : null,
+        };
+      }),
       issues: scripted.issues ?? this.fakeIssues,
       repairs: this.fakeRepairs,
       repairGaveUp: [],
@@ -470,6 +540,11 @@ export class FakeProvider implements SandboxProvider {
       app: { port: 3000, listening: true },
       sampleIntervalMs: 60_000,
     };
+  }
+
+  /** No real browser in the fake stack — the cockpit falls back to its status line / on-demand frame. */
+  async previewShot(): Promise<Buffer | null> {
+    return null;
   }
   /** Fake GitHub connection state — flips on setGithubToken so the cockpit chip
    * can be driven end-to-end in dev/e2e without a real device flow. */

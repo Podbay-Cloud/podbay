@@ -31,9 +31,13 @@ export interface PodIssue {
 
 export interface HealthInput {
   sessionAlive: boolean;
-  agents: { id: string; window: number | null; authed: boolean }[];
+  agents: { id: string; window: number | null; authed: boolean; loginExpired?: boolean; needsReauth?: boolean; stuckGate?: string; expiresAt?: number | null }[];
   /** Targets the watchdog stopped trying to repair. */
   repairGaveUp: string[];
+  /** For a given `startup:<slug>` target, the working directory its command `cd`s into that no
+   * longer EXISTS. Such a command can never succeed, so the generic "we backed off, retry it"
+   * advice is actively wrong — retrying cannot recreate a directory. Absent for healthy commands. */
+  startupMissingDir?: Record<string, string>;
   /** Home volume. totalMb 0 = unknown (don't invent a disk problem). */
   disk: { usedMb: number; totalMb: number };
   /** RAM. availableMb from /proc/meminfo MemAvailable. Optional/absent → no memory
@@ -133,6 +137,7 @@ export function computeIssues(input: HealthInput): PodIssue[] {
     // command) that kept dying — name it by the owner's own slug, and do NOT tag it as
     // an agent (that would make the cockpit render a phantom agent card).
     const startupSlug = target.startsWith("startup:") ? target.slice("startup:".length) : null;
+    const missingDir = input.startupMissingDir?.[target];
     issues.push({
       id: `repair-gave-up:${target}`,
       severity: "critical",
@@ -140,24 +145,80 @@ export function computeIssues(input: HealthInput): PodIssue[] {
         target === "session"
           ? "Podbay couldn't restart this pod's session"
           : startupSlug
-            ? `${startupSlug === "dev-server" ? "The dev server" : `'${startupSlug}'`} keeps failing to start`
+            ? missingDir
+              ? `'${startupSlug}' can't start — its folder is gone`
+              : `${startupSlug === "dev-server" ? "The dev server" : `'${startupSlug}'`} keeps failing to start`
             : `Podbay couldn't restart ${label(target)}`,
       // Backing off ≠ given up: podbay retries on a spaced schedule, and the owner (or `doctor --fix`)
       // can recover it immediately. Point at real actions — NOT "restart the pod" (there is no such
       // button; the cockpit has Suspend/Resume).
       detail: startupSlug
-        ? startupSlug === "dev-server"
-          ? "It kept failing, so podbay backed off — it retries automatically. Recover it now with 'podbay dev restart' (or 'podbay doctor --fix')."
-          : `It kept failing, so podbay backed off — it retries automatically. Recover it now with 'podbay startup restart ${startupSlug}' (or 'podbay doctor --fix').`
+        ? missingDir
+          ? // A deleted working directory is not a flake — retrying is futile, so say what is
+            // actually wrong and give the two fixes that CAN work.
+            `Its folder ${missingDir} no longer exists, so it fails every time it starts — retrying won't help. Recreate that folder, or remove the command with 'podbay startup remove ${startupSlug}'.`
+          : startupSlug === "dev-server"
+            ? "It kept failing, so podbay backed off — it retries automatically. Recover it now with 'podbay dev restart' (or 'podbay doctor --fix')."
+            : `It kept failing, so podbay backed off — it retries automatically. Recover it now with 'podbay startup restart ${startupSlug}' (or 'podbay doctor --fix').`
         : "It was restarted several times and kept failing, so Podbay backed off. Run 'podbay doctor --fix', or suspend and resume the pod from the dashboard.",
       // The startup/dev cases are recoverable now (doctor --fix restarts them); only the session case
-      // isn't self-fixable from here.
-      fixable: Boolean(startupSlug),
+      // isn't self-fixable from here. A missing folder is NOT fixable by a restart, so don't offer it.
+      fixable: Boolean(startupSlug) && !missingDir,
       ...(target === "session" || startupSlug ? {} : { agent: target }),
     });
   }
 
   for (const a of input.agents) {
+    // An EXPIRED login is invisible otherwise: the agent's window still exists and its credentials
+    // file is still there, but its token is dead — it can't run or connect. This is the blind spot
+    // that hid a logged-out claude on a prod pod for weeks (2026-08-22). Fires regardless of window.
+    if (a.loginExpired) {
+      issues.push({
+        id: `agent-login-expired:${a.id}`,
+        severity: "warn",
+        title: `${label(a.id)} sign-in expired`,
+        detail: `${label(a.id)}'s login has expired — it can't work or connect until you reconnect it (Control → Reconnect ${label(a.id)}). Other agents and the pod are unaffected.`,
+        fixable: false,
+        agent: a.id,
+      });
+    } else if (a.stuckGate) {
+      // The menu watchdog found the agent stuck at a gate it can't safely auto-answer (an owner
+      // decision, or one that survived the drive cap) — surface it instead of a silent hang (3b).
+      issues.push({
+        id: `agent-menu-stuck:${a.id}`,
+        severity: "warn",
+        title: `${label(a.id)} is waiting on you`,
+        detail: `${label(a.id)} is stopped at ${a.stuckGate} in its terminal and can't continue until you answer it (open the terminal tab).`,
+        fixable: false,
+        agent: a.id,
+      });
+    } else if (a.expiresAt != null && a.expiresAt > Date.now() && a.expiresAt - Date.now() < 5 * 24 * 60 * 60 * 1000) {
+      // The login is within 5 days of its HARD expiry while the pod is RUNNING — which means the
+      // auto-refresh keepalive is NOT keeping it fresh (a used/refreshed login stays weeks out). This
+      // is the keepalive-FAILURE fault (velsa's #1): surface only when it's failing, never a routine
+      // countdown nudge. Reconnecting now (or letting the agent do real work) refreshes it.
+      const days = Math.max(1, Math.round((a.expiresAt - Date.now()) / (24 * 60 * 60 * 1000)));
+      issues.push({
+        id: `agent-login-expiring:${a.id}`,
+        severity: "warn",
+        title: `${label(a.id)} login expiring soon`,
+        detail: `${label(a.id)}'s login expires in ~${days} day${days === 1 ? "" : "s"}. A subscription login lasts about a month, and only reconnecting resets the clock — keeping the pod running can't extend it. Reconnect ${label(a.id)} in the Control tab before it lapses to avoid an interruption.`,
+        fixable: false,
+        agent: a.id,
+      });
+    } else if (a.needsReauth) {
+      // A LIVE auth failure the credential-file expiry misses (a mid-session refresh failure while
+      // the stored expiry is still in the future) — detected from the terminal, 2026-08-23. Distinct
+      // from loginExpired so a still-valid-file logout is caught instead of the pod reporting healthy.
+      issues.push({
+        id: `agent-needs-reauth:${a.id}`,
+        severity: "warn",
+        title: `${label(a.id)} signed out`,
+        detail: `${label(a.id)} was signed out mid-session and needs to sign in again (Control → Reconnect ${label(a.id)}, or run /login in the terminal). Podbay restores remote control automatically once you're back in.`,
+        fixable: false,
+        agent: a.id,
+      });
+    }
     if (a.window !== null) continue;
     if (input.repairGaveUp.includes(a.id)) continue; // already reported, louder
     issues.push({

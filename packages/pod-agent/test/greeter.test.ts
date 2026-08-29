@@ -59,6 +59,14 @@ function fakeTmux(opts: {
 const fast = { pollMs: 1, readyTimeoutMs: 300, submitConfirmMs: 250, rcConfirmMs: 100 };
 const noSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, Math.min(ms, 1)));
 const tmpMarker = () => path.join(mkdtempSync(path.join(tmpdir(), "greet-")), "greeted");
+/**
+ * A per-test RC-session-identity state file. MUST be passed by every test that runs the greeter:
+ * without it `runGreeter` falls back to the REAL `/home/dev/.podbay-rc-session-hash`, so one test
+ * run persists a hash into the developer's actual home directory and every later run then reads it
+ * back as "we've seen a session before" — which silently flips the rename decision and made this
+ * suite pass or fail depending on machine history rather than on the code (2026-08-27).
+ */
+const tmpHashPath = () => path.join(mkdtempSync(path.join(tmpdir(), "greet-rc-")), "rc-session-hash");
 
 describe("greeter", () => {
   it("waits for the input prompt (a static promo screen is NOT readiness), then greets", async () => {
@@ -66,7 +74,7 @@ describe("greeter", () => {
     const t = fakeTmux({ bootScreens: ["Welcome to Claude\npromo", "Welcome to Claude\npromo"] });
     const r = await runGreeter({
       sessionName: "main", rcTitle: "Test 3", kickoffTrigger: "Time to get started.",
-      greetedMarkerPath: tmpMarker(), tmux: t.tmux, sleep: noSleep, ...fast,
+      greetedMarkerPath: tmpMarker(), rcSessionHashPath: tmpHashPath(), tmux: t.tmux, sleep: noSleep, ...fast,
     });
     expect(r).toEqual({ ready: true, rcActive: true, greeted: true });
     // types literally (-l) and submits Enter as a SEPARATE keystroke. On a first
@@ -84,7 +92,7 @@ describe("greeter", () => {
     const t = fakeTmux({ entersToSubmit: 3 }); // needs 3 Enters per submit
     const r = await runGreeter({
       sessionName: "main", rcTitle: "T", kickoffTrigger: "Time to get started.",
-      greetedMarkerPath: tmpMarker(), tmux: t.tmux, sleep: noSleep, ...fast,
+      greetedMarkerPath: tmpMarker(), rcSessionHashPath: tmpHashPath(), tmux: t.tmux, sleep: noSleep, ...fast,
     });
     expect(r.greeted).toBe(true);
     expect(t.draft).toBe(""); // retries until it actually submitted
@@ -95,7 +103,7 @@ describe("greeter", () => {
     const t = fakeTmux({ bootScreens: Array.from({ length: 1000 }, (_, i) => `boot ${i}`) });
     const r = await runGreeter({
       sessionName: "main", rcTitle: "T", kickoffTrigger: "x",
-      greetedMarkerPath: tmpMarker(), tmux: t.tmux, sleep: noSleep, ...fast,
+      greetedMarkerPath: tmpMarker(), rcSessionHashPath: tmpHashPath(), tmux: t.tmux, sleep: noSleep, ...fast,
     });
     expect(r).toEqual({ ready: false, rcActive: false, greeted: false });
     expect(t.calls.some((c) => c[0] === "send-keys")).toBe(false); // never typed blind
@@ -105,7 +113,7 @@ describe("greeter", () => {
     const t = fakeTmux({ rcActivates: false });
     const r = await runGreeter({
       sessionName: "main", rcTitle: "T", kickoffTrigger: "Time to get started.",
-      greetedMarkerPath: tmpMarker(), tmux: t.tmux, sleep: noSleep, ...fast,
+      greetedMarkerPath: tmpMarker(), rcSessionHashPath: tmpHashPath(), tmux: t.tmux, sleep: noSleep, ...fast,
     });
     expect(r.rcActive).toBe(false);
     expect(r.greeted).toBe(true); // agent still speaks first
@@ -113,10 +121,11 @@ describe("greeter", () => {
 
   it("greets at most once per pod (marker) — a restart re-enables RC but never re-greets", async () => {
     const marker = tmpMarker();
+    const hashPath = tmpHashPath(); // shared across BOTH greets, like the real persistent volume
     const t1 = fakeTmux({});
     const r1 = await runGreeter({
       sessionName: "main", rcTitle: "T", kickoffTrigger: "go",
-      greetedMarkerPath: marker, tmux: t1.tmux, sleep: noSleep, ...fast,
+      greetedMarkerPath: marker, rcSessionHashPath: hashPath, tmux: t1.tmux, sleep: noSleep, ...fast,
     });
     expect(r1.greeted).toBe(true);
     expect(existsSync(marker)).toBe(true);
@@ -124,7 +133,7 @@ describe("greeter", () => {
     const t2 = fakeTmux({});
     const r2 = await runGreeter({
       sessionName: "main", rcTitle: "T", kickoffTrigger: "go",
-      greetedMarkerPath: marker, tmux: t2.tmux, sleep: noSleep, ...fast,
+      greetedMarkerPath: marker, rcSessionHashPath: hashPath, tmux: t2.tmux, sleep: noSleep, ...fast,
     });
     expect(r2.rcActive).toBe(true); // RC re-enabled after restart
     expect(r2.greeted).toBe(false); // but no duplicate greeting
@@ -179,6 +188,32 @@ describe("greeter", () => {
     expect(enters).toBeGreaterThanOrEqual(2); // one to decline the key, one to pick subscription
   });
 
+  it("driveLoginMenu dismisses the v2.1.x theme picker first, then advances the login menu", async () => {
+    // claude v2.1.215's first-run theme picker ("Choose the text style…") shows BEFORE the login
+    // menu and blocked the drive → `/login` never printed a sign-in URL (velsa, 2026-08-25).
+    const screens = [
+      "Let's get started.\nChoose the text style that looks best with your terminal\n❯ 2. Dark mode ✔",
+      "Select login method:\n❯ 1. Claude account with subscription",
+      "Opening browser…\nPaste code here: ❯",
+    ];
+    let idx = 0;
+    let enters = 0;
+    const tmux = async (args: string[]): Promise<string> => {
+      if (args[0] === "capture-pane") return screens[Math.min(idx, screens.length - 1)];
+      if (args[0] === "send-keys" && args[args.length - 1] === "Enter") {
+        enters++;
+        idx++; // each Enter advances to the next screen
+      }
+      return "";
+    };
+    const ok = await driveLoginMenu({
+      sessionName: "main", tmux, sleep: () => Promise.resolve(),
+      pollMs: 1, waitTimeoutMs: 300, confirmMs: 250,
+    });
+    expect(ok).toBe(true);
+    expect(enters).toBeGreaterThanOrEqual(2); // one to accept the theme, one to pick subscription
+  });
+
   it("driveLoginMenu returns false (no blind keys) when the menu never appears", async () => {
     const calls: string[][] = [];
     const tmux = async (args: string[]): Promise<string> => {
@@ -197,7 +232,7 @@ describe("greeter", () => {
     const t = fakeTmux({});
     const r = await runGreeter({
       sessionName: "main", rcTitle: "T",
-      greetedMarkerPath: tmpMarker(), tmux: t.tmux, sleep: noSleep, ...fast,
+      greetedMarkerPath: tmpMarker(), rcSessionHashPath: tmpHashPath(), tmux: t.tmux, sleep: noSleep, ...fast,
     });
     expect(r.rcActive).toBe(true);
     expect(r.greeted).toBe(false);
@@ -261,7 +296,7 @@ describe("greeter safety: dead agents and blocking gates", () => {
       sessionName: "main",
       rcTitle: "pod",
       kickoffTrigger: "Time to get started.",
-      greetedMarkerPath: tmpMarker(),
+      greetedMarkerPath: tmpMarker(), rcSessionHashPath: tmpHashPath(),
       tmux,
       sleep: noSleep,
       ...fast,

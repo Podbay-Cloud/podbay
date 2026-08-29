@@ -15,6 +15,35 @@ describe("health checks", () => {
     expect(worstSeverity([])).toBeNull();
   });
 
+  it("flags an EXPIRED agent login even though the window still exists (the blind spot)", () => {
+    // The window is present and the creds file exists, but the token is dead — used to report nothing.
+    const out = computeIssues({
+      ...healthy,
+      agents: [{ id: "claude-code", window: 0, authed: false, loginExpired: true }],
+    });
+    const issue = out.find((i) => i.id === "agent-login-expired:claude-code");
+    expect(issue?.agent).toBe("claude-code");
+    expect(issue?.title).toMatch(/sign-in expired/i);
+    // must NOT be confused with the missing-window issue — the window is there
+    expect(out.some((i) => i.id?.startsWith("agent-not-running"))).toBe(false);
+  });
+
+  it("surfaces a live logout (needsReauth) and a stuck menu (stuckGate) as their own issues", () => {
+    const reauth = computeIssues({
+      ...healthy,
+      agents: [{ id: "claude-code", window: 0, authed: true, needsReauth: true }],
+    });
+    expect(reauth.find((i) => i.id === "agent-needs-reauth:claude-code")?.title).toMatch(/signed out/i);
+
+    const stuck = computeIssues({
+      ...healthy,
+      agents: [{ id: "claude-code", window: 0, authed: true, stuckGate: "the folder-trust prompt" }],
+    });
+    const issue = stuck.find((i) => i.id === "agent-menu-stuck:claude-code");
+    expect(issue?.title).toMatch(/waiting on you/i);
+    expect(issue?.detail).toMatch(/folder-trust/i);
+  });
+
   it("does not invent a disk problem when the disk size is unknown", () => {
     // totalMb 0 means we couldn't read it. Reporting "0% free" would be a lie
     // that sends the owner chasing a full disk that isn't full.
@@ -116,5 +145,33 @@ describe("health checks", () => {
     const i = computeIssues({ ...healthy, sessionAlive: false, repairGaveUp: [] });
     expect(worstSeverity(i)).toBe("critical");
     expect(worstSeverity(computeIssues({ ...healthy, codexRuntimeMissing: true }))).toBe("warn");
+  });
+});
+
+describe("a startup command whose folder is gone", () => {
+  // podbay `dev`, 2026-08-29: 'dashboard-concepts' pointed at a git worktree that had been deleted,
+  // so every retry died on `cd: No such file or directory`. The owner was told it "keeps failing"
+  // and offered `startup restart` / `doctor --fix` — neither of which can recreate a directory.
+  it("names the missing folder and offers fixes that can actually work", () => {
+    const [issue] = computeIssues({
+      ...healthy,
+      repairGaveUp: ["startup:dashboard-concepts"],
+      startupMissingDir: { "startup:dashboard-concepts": "/home/dev/worktrees/dashboard-concepts" },
+    });
+    expect(issue.title).toMatch(/folder is gone/i);
+    expect(issue.detail).toContain("/home/dev/worktrees/dashboard-concepts");
+    expect(issue.detail).toMatch(/remove the command|recreate that folder/i);
+    // Advice that cannot work must NOT be offered for this failure mode.
+    expect(issue.detail).not.toMatch(/doctor --fix/i);
+    expect(issue.detail).not.toMatch(/startup restart/i);
+    // …and it must not be advertised as auto-fixable, because a restart cannot repair it.
+    expect(issue.fixable).toBe(false);
+  });
+
+  it("keeps the ordinary retry advice when the folder is fine", () => {
+    const [issue] = computeIssues({ ...healthy, repairGaveUp: ["startup:preview-3000"] });
+    expect(issue.title).toMatch(/keeps failing to start/i);
+    expect(issue.detail).toMatch(/startup restart preview-3000/);
+    expect(issue.fixable).toBe(true);
   });
 });

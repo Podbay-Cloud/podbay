@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# podbay-agent-restart — relaunch this pod's agent after it exited to a bare shell
+# (the "PODBAY-AGENT-EXITED — the agent is NOT running" state). Asks the in-pod
+# supervisor to respawn the agent in its window; the conversation resumes via the
+# boot command's --continue path (which self-heals to a fresh session if the
+# transcript can't resume). Optional first arg picks the agent (claude-code|codex);
+# default is the pod's primary agent.
+set -euo pipefail
+AGENT_URL="http://127.0.0.1:${PODBAY_AGENT_PORT:-8080}"
+AGENT="${1:-}"
+out=$(curl -fsS -m 30 -X POST -H 'content-type: application/json' \
+  --data "$(printf '{"agent":"%s"}' "$AGENT")" "$AGENT_URL/agent/restart" 2>/dev/null) \
+  || { echo "podbay-agent-restart: could not reach the pod agent (try: podbay doctor)" >&2; exit 1; }
+printf '%s\n' "$out" | jq -r 'if .ok then "agent restarted (\(.agent), window \(.window)) — give it a few seconds" else "error: \(.error // "restart failed")" end' 2>/dev/null \
+  || printf '%s\n' "$out"

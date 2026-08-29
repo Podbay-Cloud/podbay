@@ -2,23 +2,46 @@ import { describe, it, expect } from "vitest";
 import { parseNotes, updateSummaryLine, updateHeadline } from "@/components/update-info-dialog";
 
 describe("update notes", () => {
-  it("summarises real notes by count and affected area", () => {
+  it("groups by what the change MEANS to an owner and drops internal churn", () => {
     const notes = [
       "- fix(pod-agent): added agents get the REAL login flow, not a thinner copy",
       "- feat(cockpit): agent cards",
       "- build(incus): disk preflight",
     ].join("\n");
     const { entries } = parseNotes(notes);
-    expect(entries).toHaveLength(3);
-    // developer prefix stripped, sentence capitalised, area labelled separately
+    // build: is internal churn — real work, but nothing an owner can observe. It is DROPPED.
+    expect(entries).toHaveLength(2);
+    expect(entries.some((e) => /disk preflight/i.test(e.text))).toBe(false);
+    // developer prefix stripped, sentence capitalised, area labelled, kind classified
     expect(entries[0]).toEqual({
       area: "agent runtime",
+      kind: "fixed",
       text: "Added agents get the REAL login flow, not a thinner copy",
     });
+    expect(entries[1].kind).toBe("new");
     const line = updateSummaryLine(notes)!;
-    expect(line).toContain("3 changes");
+    // Leads with the KIND of change, not a bare count: "1 fix, 1 new" beats "3 changes".
+    expect(line).toContain("1 fix");
+    expect(line).toContain("1 new");
     expect(line).toContain("agent runtime");
-    expect(line).toContain("dashboard");
+  });
+
+  it("drops issue/PR refs, which point at a PRIVATE repo an owner cannot open", () => {
+    const { entries } = parseNotes("- fix(pod-agent): name the RC session on a cold restart (#49)");
+    expect(entries[0].text).toBe("Name the RC session on a cold restart");
+    expect(entries[0].text).not.toContain("#49");
+  });
+
+  it("reports an internal-only build honestly, without calling it a rebuild", () => {
+    // Every line was churn, so there is nothing to TELL the owner — but the build IS different,
+    // so it must not claim "same software, rebuilt".
+    const churn = ["- chore(deps): bump x", "- test(web): add a case"].join("\n");
+    const p = parseNotes(churn);
+    expect(p.entries).toHaveLength(0);
+    expect(p.empty).toBe(false);
+    expect(p.internalOnly).toBe(true);
+    expect(updateSummaryLine(churn)).toMatch(/internal/i);
+    expect(updateSummaryLine(churn)).not.toMatch(/rebuilt/i);
   });
 
   it("treats a rebuild with nothing new as empty, and says so plainly", () => {

@@ -1,6 +1,6 @@
 import "server-only";
 import { NextResponse } from "next/server";
-import { recordImage, currentImage, pruneImageStore } from "@/lib/image-manifest";
+import { recordImage, currentImage, pruneImageStore, listImages } from "@/lib/image-manifest";
 import { createLogger } from "@podbay/shared/log";
 
 /** How many published images the incus store keeps (newest N), on top of the
@@ -22,9 +22,36 @@ export async function GET(req: Request): Promise<Response> {
   const ok = authed(req);
   if (ok === null) return NextResponse.json({ error: "ADMIN_API_TOKEN not configured" }, { status: 503 });
   if (!ok) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  const env = new URL(req.url).searchParams.get("env") ?? "pod-base";
+  const url = new URL(req.url);
+  const env = url.searchParams.get("env") ?? "pod-base";
+  // `?releases=1`: the source for the static releases.json that self-host reads (release-versioning
+  // §4). Only rows that carry a version — a released image describes itself; a plain build does not.
+  // Newest first. This is the shape published to the public install repo, so it is deliberately just
+  // the owner-facing fields, no internal shas.
+  if (url.searchParams.get("releases")) {
+    const rows = await listImages(env);
+    return NextResponse.json({
+      releases: rows
+        .filter((r) => r.version)
+        .map((r) => ({
+          version: r.version,
+          digest: r.digest,
+          summary: r.summary,
+          notes: r.notes,
+          builtAt: r.builtAt ? r.builtAt.toISOString() : null,
+        })),
+    });
+  }
   const cur = await currentImage(env);
-  return NextResponse.json({ currentDigest: cur?.digest ?? null, currentToSha: cur?.toSha ?? null });
+  return NextResponse.json({
+    currentDigest: cur?.digest ?? null,
+    currentToSha: cur?.toSha ?? null,
+    // The current image's OWN range start. A recorder re-recording that same digest (e.g. to attach
+    // a summary it shipped without) must bound its changelog by this, not by `currentToSha` — which
+    // for a re-record is the image's own end sha, giving an EMPTY range and the false "same software,
+    // rebuilt" note. Mirrors recordImage's fromSha rule so notes and row agree. (Hit live 2026-08-29.)
+    currentFromSha: cur?.fromSha ?? null,
+  });
 }
 
 /**
@@ -56,6 +83,9 @@ export async function POST(req: Request): Promise<Response> {
       toSha: typeof body.toSha === "string" ? body.toSha : null,
       notes: typeof body.notes === "string" ? body.notes : null,
       summary: typeof body.summary === "string" ? body.summary : null,
+      // A release version label (release-versioning). Optional — a plain build records no version and
+      // the row stays digest-identified; the release-cutting flow is what supplies one.
+      version: typeof body.version === "string" && body.version.trim() ? body.version.trim() : null,
       sizeBytes: typeof body.sizeBytes === "number" ? body.sizeBytes : null,
       builtBy: typeof body.builtBy === "string" ? body.builtBy : null,
       builtAt: typeof body.builtAt === "string" ? new Date(body.builtAt) : null,

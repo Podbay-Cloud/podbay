@@ -48,7 +48,7 @@ const TAG: Record<Tone, string> = {
   green: "text-success bg-success/12",
   amber: "text-warning bg-warning/12",
   red: "text-destructive bg-destructive/12",
-  grey: "text-muted-foreground bg-white/[0.05]",
+  grey: "text-muted-foreground bg-white/[0.06]",
 };
 
 /** A live status dot — green running, amber suspended (static), amber pulsing mid-transition. */

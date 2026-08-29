@@ -87,7 +87,7 @@ export default function ConsentBanner() {
           <button
             type="button"
             onClick={() => decide(false)}
-            className="rounded-md border border-border px-3 py-1.5 text-[13px] font-medium text-muted-foreground hover:bg-white/[0.04] hover:text-foreground"
+            className="rounded-md border border-border px-3 py-1.5 text-[13px] font-medium text-muted-foreground hover:bg-white/[0.06] hover:text-foreground"
           >
             Decline
           </button>

@@ -4,6 +4,7 @@ import "./globals.css";
 import ConsentBanner from "@/components/consent-banner";
 import { editionOss } from "@/lib/session";
 import GoogleAnalytics from "@/components/google-analytics";
+import { QueryProvider } from "@/app/providers";
 
 // Self-hosted by next/font (no external request, no layout shift). Exposed as
 // the --font-inter CSS var that --font-ui builds on (see globals.css).
@@ -78,7 +79,11 @@ export default function RootLayout({
             dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
           />
         )}
-        {children}
+        {/* React Query lives at the ROOT so EVERY route tree that renders a react-query component has
+            a client — not just /dashboard. The cockpit at /pods/[slug] has no layout of its own and
+            inherits only this root, so scoping the provider to the dashboard layout crashed the cockpit
+            with "No QueryClient set" (2026-08-23). App-wide is the correct scope. */}
+        <QueryProvider>{children}</QueryProvider>
         {/* Cookie consent + analytics are cloud-only — a single-tenant self-host install sets no
             third-party cookies and ships no analytics, so there's nothing to consent to. */}
         {!oss && (

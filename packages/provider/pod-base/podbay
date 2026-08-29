@@ -53,6 +53,17 @@ cockpit_url() {
   [ -n "$root" ] && echo "https://${root}/dashboard/pods/${slug}"
 }
 
+# A cockpit link that opens straight on the tab the user actually needs, e.g.
+# `cockpit_tab secrets` → https://podbay.cloud/dashboard/pods/<slug>?tab=secrets.
+# The cockpit reads `?tab=` (COCKPIT_TABS in pod-cockpit.tsx: control, settings, secrets, stats,
+# activity, details, admin), so telling someone to "go to Settings → Secrets" is both wrong (secrets
+# is its OWN top-level tab, not a child of Settings) and needless work when a direct link exists.
+cockpit_tab() {
+  local base; base=$(cockpit_url)
+  [ -n "$base" ] || return 0
+  case "$base" in *\?*) echo "${base}&tab=${1}" ;; *) echo "${base}?tab=${1}" ;; esac
+}
+
 cmd_info() {
   need_spec
   local slug env preview policy agent lifecycle
@@ -67,6 +78,10 @@ cmd_info() {
   echo "agent:    ${agent:-claude}"
   if [ -n "$cockpit" ]; then
     echo "cockpit:  ${cockpit}  (the owner's control page for THIS pod — resize, secrets, settings)"
+    # Deep links, so an agent hands the owner a link that OPENS where they need to be instead of
+    # writing "go to Settings → Secrets" and making them navigate (which also gets the path wrong:
+    # secrets is its own tab, not a child of Settings). Owner report, 2026-08-27.
+    echo "          add ?tab=<control|settings|secrets|stats|activity|details> to link straight to a tab"
   fi
   if [ -n "$preview" ]; then
     echo "preview:  ${preview}  (serve on port ${DEFAULT_PORT})"
@@ -304,8 +319,8 @@ cmd_secrets_get() {
   local val
   val=$( set -a; . "$SECRETS_ENV" 2>/dev/null; printf '%s' "${!key-}" )
   if [ -z "$val" ]; then
-    local url; url=$(cockpit_url)
-    die "no secret '$key' set — add it in the pod dashboard, then re-run${url:+:
+    local url; url=$(cockpit_tab secrets)
+    die "no secret '$key' set — add it in the pod dashboard (opens on Secrets), then re-run${url:+:
   $url}"
   fi
   printf '%s\n' "$val"
@@ -336,9 +351,12 @@ cmd_secrets_request() {
   curl -fsS -m 8 -X POST -H 'content-type: application/json' \
     --data "$payload" "http://127.0.0.1:${port}/secret-request" >/dev/null \
     || die "could not record the request (is the pod-agent up?)"
-  local slug url; slug=$(field '.slug'); url=$(cockpit_url)
-  echo "requested '$key'. Ask the owner to add it in the pod dashboard:"
-  echo "  ${url:-https://podbay.cloud/dashboard/pods/${slug:-your-pod}}"
+  # Link STRAIGHT to the Secrets tab. Handing over a bare cockpit link plus "→ Settings → Secrets"
+  # made the owner navigate manually AND named the wrong path (secrets is its own tab, not a child
+  # of Settings). Owner report, 2026-08-27.
+  local slug url; slug=$(field '.slug'); url=$(cockpit_tab secrets)
+  echo "requested '$key'. Ask the owner to add it here (opens on the Secrets tab):"
+  echo "  ${url:-https://podbay.cloud/dashboard/pods/${slug:-your-pod}?tab=secrets}"
 }
 
 cmd_secrets() {
@@ -555,21 +573,29 @@ cmd_startup_list() {
     [ -n "$devout" ] || echo "no startup commands (add one: podbay startup add --do \"…\")"
     return 0
   fi
-  jq -r '.commands[] | "\(if .enabled==false then "off" else "on " end)  \(.slug)\t\(.command)"' "$STARTUP_JSON"
+  jq -r '.commands[] | "\(if .enabled==false then "off" else "on " end)  \(.slug)\(if .port then " :\(.port)" else "" end)\t\(.command)"' "$STARTUP_JSON"
   echo "  reload one on the latest code with: podbay startup restart <slug>  (do NOT hand-kill it — the watchdog races you)"
 }
 
 cmd_startup_add() {
   startup_ensure
-  local slug="" cmd=""
+  local slug="" cmd="" port=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --slug | --name) slug="${2:-}"; shift 2 ;;
       --do | --command) cmd="${2:-}"; shift 2 ;;
+      # Optional: the TCP port this process binds. Declaring it lets 'podbay startup restart/stop'
+      # reliably free the port (kill whatever holds it, wait for it to clear) even when the real
+      # server is a grandchild the pidfile never tracked — the afisha-ops EADDRINUSE-orphan fix.
+      --port) port="${2:-}"; shift 2 ;;
       *) die "unknown flag '$1' (see: podbay startup)" ;;
     esac
   done
-  [ -n "$cmd" ] || die "usage: podbay startup add --do \"command to keep running\" [--slug NAME]"
+  [ -n "$cmd" ] || die "usage: podbay startup add --do \"command to keep running\" [--slug NAME] [--port N]"
+  if [ -n "$port" ]; then
+    case "$port" in *[!0-9]*) die "--port must be a number" ;; esac
+    { [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; } || die "--port must be 1..65535"
+  fi
   if [ -z "$slug" ]; then
     slug=$(printf '%s' "$cmd" | awk '{print $1}' | sed -E 's#.*/##; s/[^a-zA-Z0-9]+/-/g; s/^-+//; s/-+$//')
     slug="${slug:-cmd}"
@@ -577,7 +603,12 @@ cmd_startup_add() {
   case "$slug" in *[!a-zA-Z0-9_-]*) die "slug must be [a-zA-Z0-9_-] (it names a pid/log file)" ;; esac
   ! jq -e --arg s "$slug" '.commands | any(.slug==$s)' "$STARTUP_JSON" >/dev/null 2>&1 \
     || die "a startup command with slug '$slug' already exists (remove it first, or pass --slug)"
-  local entry; entry=$(jq -cn --arg s "$slug" --arg c "$cmd" '{slug:$s,command:$c,enabled:true}')
+  local entry
+  if [ -n "$port" ]; then
+    entry=$(jq -cn --arg s "$slug" --arg c "$cmd" --argjson p "$port" '{slug:$s,command:$c,enabled:true,port:$p}')
+  else
+    entry=$(jq -cn --arg s "$slug" --arg c "$cmd" '{slug:$s,command:$c,enabled:true}')
+  fi
   local tmp; tmp=$(mktemp)
   jq --argjson e "$entry" '.commands += [$e]' "$STARTUP_JSON" > "$tmp" && mv "$tmp" "$STARTUP_JSON"
   echo "startup command '$slug' registered — relaunched on every boot (log: ~/.podbay/startup/$slug.log)."
@@ -614,7 +645,7 @@ cmd_startup() {
     add) shift; cmd_startup_add "$@" ;;
     remove | rm) shift; cmd_startup_remove "${1:-}" ;;
     restart | stop | start) cmd_startup_action "$1" "${2:-}" ;;
-    *) die "usage: podbay startup <list | add --do \"…\" [--slug NAME] | restart|stop|start SLUG | remove SLUG>" ;;
+    *) die "usage: podbay startup <list | add --do \"…\" [--slug NAME] [--port N] | restart|stop|start SLUG | remove SLUG>   (--port lets restart/stop reliably free the port)" ;;
   esac
 }
 
@@ -817,6 +848,84 @@ cmd_msg() {
   esac
 }
 
+# ---- agent CLI version management -------------------------------------------
+# The agent CLIs (claude, codex) are BAKED into the image at pinned versions, owned by
+# root under /usr — the pod runs as `dev`, so a bare `npm i -g …@latest` EACCESes. init.sh
+# points dev's npm prefix at ~/.npm-global (on the persistent volume) and puts it first on
+# PATH, so an update lands there as dev and SHADOWS the baked one, surviving restarts.
+# Codex is special: it is ALSO a standalone RC-daemon build (~/.codex/packages/standalone)
+# that shares ~/.codex state and MUST match the npm version. So we bump BOTH in lockstep and
+# record the chosen release in ~/.config/podbay/codex-pin, which init.sh's pin-enforcer
+# honours — the pod stays reproducible (still pinned), just at the version you chose rather
+# than silently drifting from the standalone's own self-update.
+NPM_PREFIX=/home/dev/.npm-global
+CODEX_PIN_FILE=/home/dev/.config/podbay/codex-pin
+CODEX_SA_DIR=/home/dev/.codex/packages/standalone
+
+_agent_npm_env() {
+  export npm_config_prefix="$NPM_PREFIX"
+  export PATH="$NPM_PREFIX/bin:$PATH"
+  mkdir -p "$NPM_PREFIX/bin"
+}
+
+agent_update_claude() {
+  _agent_npm_env
+  echo "updating claude-code (npm → ~/.npm-global, as dev)…"
+  npm install -g @anthropic-ai/claude-code@latest >/dev/null \
+    || die "npm update of claude-code failed"
+  echo "claude: $(command -v claude) → $(claude --version 2>/dev/null | head -1)"
+}
+
+agent_update_codex() {
+  _agent_npm_env
+  local v="${1:-latest}"
+  if [ "$v" = latest ]; then v=$(npm view @openai/codex version 2>/dev/null) || die "npm view codex failed"; fi
+  [ -n "$v" ] || die "could not resolve a codex version"
+  echo "updating codex → $v (npm + standalone, in lockstep)…"
+  npm install -g "@openai/codex@$v" >/dev/null || die "npm update of codex failed"
+  # The standalone RC-daemon build must match. Reuse a release if already on the volume,
+  # else fetch it the same way the image + self-update do; then repoint `current`.
+  local rel
+  rel=$(ls -1 "$CODEX_SA_DIR/releases" 2>/dev/null | grep "^$v-" | head -1 || true)
+  if [ -z "$rel" ]; then
+    echo "fetching codex standalone $v…"
+    CODEX_HOME=/home/dev/.codex HOME=/home/dev CODEX_VERSION="$v" \
+      sh -c 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' >/dev/null 2>&1 || true
+    rel=$(ls -1 "$CODEX_SA_DIR/releases" 2>/dev/null | grep "^$v-" | head -1 || true)
+  fi
+  [ -n "$rel" ] || die "could not obtain the codex standalone build for $v"
+  ln -sfn "releases/$rel" "$CODEX_SA_DIR/current"
+  mkdir -p "$(dirname "$CODEX_PIN_FILE")" && printf '%s\n' "$rel" > "$CODEX_PIN_FILE"
+  # Restart the RC daemon so it picks up the new standalone (the pod-agent respawns it).
+  pkill -f 'app-server --remote-control' 2>/dev/null || true
+  echo "codex: npm $(codex --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1), standalone $("$CODEX_SA_DIR/current/codex" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) → pinned $rel"
+}
+
+cmd_agent() {
+  case "${1:-versions}" in
+    update)
+      shift || true
+      case "${1:-}" in
+        claude) agent_update_claude ;;
+        codex) shift || true; agent_update_codex "${1:-latest}" ;;
+        --all | "")
+          command -v claude >/dev/null 2>&1 && agent_update_claude
+          command -v codex  >/dev/null 2>&1 && agent_update_codex latest
+          ;;
+        *) die "usage: podbay agent update [claude | codex [version] | --all]" ;;
+      esac
+      ;;
+    versions | "")
+      _agent_npm_env  # report the effective CLIs (dev prefix first), same as the agent uses
+      command -v claude >/dev/null 2>&1 && echo "claude: $(claude --version 2>/dev/null | head -1)  (latest $(npm view @anthropic-ai/claude-code version 2>/dev/null))"
+      command -v codex  >/dev/null 2>&1 && echo "codex:  $(codex --version 2>/dev/null | head -1)  (latest $(npm view @openai/codex version 2>/dev/null))"
+      [ -f "$CODEX_PIN_FILE" ] && echo "codex standalone pinned: $(cat "$CODEX_PIN_FILE")"
+      true
+      ;;
+    *) die "usage: podbay agent <update [claude|codex|--all] | versions>" ;;
+  esac
+}
+
 case "${1:-info}" in
   info) cmd_info ;;
   preview) shift || true; cmd_preview "${1:-}" ;;
@@ -827,6 +936,7 @@ case "${1:-info}" in
   schedule) shift || true; cmd_schedule "$@" ;;
   startup) shift || true; cmd_startup "$@" ;;
   dev) shift || true; cmd_dev "$@" ;;
+  agent) shift || true; cmd_agent "$@" ;;
   msg) shift || true; cmd_msg "$@" ;;
   link) shift || true; cmd_link "${1:-}" ;;
   visibility) shift || true; cmd_visibility "${1:-}" ;;
@@ -837,8 +947,9 @@ case "${1:-info}" in
     echo "              | relay status"
     echo "              | secrets list | secrets get KEY | secrets env | secrets request KEY [why]"
     echo "              | schedule list | schedule add --name … --at HH:MM [--tz IANA] [--days mon,wed|weekdays] --do \"…\" | schedule remove ID"
-    echo "              | startup list | startup add --do \"…\" [--slug NAME] | startup restart|stop|start SLUG | startup remove SLUG"
+    echo "              | startup list | startup add --do \"…\" [--slug NAME] [--port N] | startup restart|stop|start SLUG | startup remove SLUG"
     echo "              | dev restart | dev stop | dev start | dev disable | dev enable | dev logs [N] | dev status  (the SUPERVISED dev server — never hand-kill it; 'disable' if this pod serves its own :3000)"
+    echo "              | agent versions | agent update [claude | codex [version] | --all]  (update the agent CLIs as dev; codex npm+standalone stay in lockstep)"
     echo "              | msg send <pod> <text> | msg inbox | msg reply <id> <text> | msg pods"
     echo "              | link <file>  (a GitHub URL the user can open — pod paths are dead links)"
     echo "              | visibility  (is this pod's preview public or owner-only? — the owner sets it in the dashboard)]" ;;

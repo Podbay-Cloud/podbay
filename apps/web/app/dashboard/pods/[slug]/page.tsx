@@ -3,8 +3,9 @@ import { requireApprovedUser } from "@/lib/access";
 import { getPodService, localPreviewUrl, hostCapacity, latestPodImageDigest } from "@/lib/pod-service";
 import { myRelayLive } from "@/lib/relay-actions";
 import { imageState, sameDigest } from "@/lib/pod-image";
+import { fetchSelfHostRelease } from "@/lib/self-host-releases";
 import { getEnvironmentDetail } from "@/lib/environments";
-import { imageByDigest, listImages } from "@/lib/image-manifest";
+import { imageByDigest, listImages, currentImage } from "@/lib/image-manifest";
 import { ControlError } from "@podbay/control-plane";
 import PodCockpit from "@/components/pod-cockpit";
 import PodErrorActions from "@/components/pod-error-actions";
@@ -37,6 +38,7 @@ type SerializedImage = {
   alias: string | null;
   notes: string | null;
   summary: string | null;
+  version: string | null;
   sizeBytes: number | null;
   builtAt: string | null;
 };
@@ -50,6 +52,7 @@ function serializeImage(
     alias: img.alias,
     notes: img.notes,
     summary: img.summary,
+    version: img.version,
     sizeBytes: img.sizeBytes,
     builtAt: img.builtAt ? img.builtAt.toISOString() : null,
   };
@@ -149,6 +152,12 @@ export default async function PodCockpitPage({ params }: { params: Promise<{ slu
     ? Boolean(pod.imageDigest && ossLatestDigest && !sameDigest(pod.imageDigest, ossLatestDigest))
     : cloudUpdateAvailable;
 
+  // Self-host: what the pending update CONTAINS, from the public release manifest (release-versioning
+  // §4). Never throws — offline/air-gapped falls back to the from→to digest line. Only when an update
+  // is actually offered, so a quiet cockpit does no network.
+  const ossRelease =
+    editionOss() && updateAvailable ? await fetchSelfHostRelease(ossLatestDigest) : null;
+
   // A recent unplanned incident (OOM, crash, wedged) to surface at the top of the pod's
   // dashboard. Best-effort — never block the cockpit if activity can't be read.
   const activity = await getPodActivity(pod.id).catch(() => null);
@@ -198,6 +207,16 @@ export default async function PodCockpitPage({ params }: { params: Promise<{ slu
           images: rangeRows.map(serializeImage).filter((x): x is SerializedImage => x !== null),
         }
       : null;
+
+  // The release version of the image this pod is RUNNING, for the cockpit's "Up to date" line.
+  // When an update is pending, the pod's current row is already in the fetched manifest range; when
+  // up to date, the pod IS on the current image, so currentImage() names it (one indexed lookup on a
+  // tiny table). Null until a release is cut — then the digest shows alone, exactly as today.
+  const currentVersion = editionOss()
+    ? null
+    : updateAvailable
+      ? (currentImageRow?.version ?? null)
+      : ((await currentImage("pod-base").catch(() => null))?.version ?? null);
 
   // The active agent drives both onboarding copy AND the "ready" derivation —
   // Codex has no RC session URL, so its ready signal differs (see deriveSetupStep).
@@ -254,8 +273,11 @@ export default async function PodCockpitPage({ params }: { params: Promise<{ slu
             : []
         }
         imageDigest={pod.imageDigest}
+        currentVersion={currentVersion}
         updateAvailable={updateAvailable}
         newImageDigest={ossLatestDigest}
+        ossReleaseVersion={ossRelease?.version ?? null}
+        ossReleaseSummary={ossRelease?.summary ?? null}
         updateInfo={updateInfo}
         agent={agent}
         adminActions={adminActions}
@@ -264,6 +286,11 @@ export default async function PodCockpitPage({ params }: { params: Promise<{ slu
         updatingSince={pod.updatingSince}
         updateStageInitial={pod.updateStage}
         maintenanceKindInitial={pod.maintenanceKind}
+        t3Control={pod.t3Control}
+        t3Connected={pod.t3Connected}
+        t3Since={pod.t3Since}
+        agentAuth={pod.agentAuth ?? null}
+        t3StageInitial={pod.t3Stage}
         status={pod.status}
         size={pod.size}
         diskGb={pod.diskGb}

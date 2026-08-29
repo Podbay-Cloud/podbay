@@ -60,7 +60,9 @@ test.describe("onboarding hero", () => {
     await expect(link).toHaveAttribute("href", /claude\.ai\/oauth/);
 
     // …and the paste-a-code control accepts a code and reports it sent (typed into the PTY).
-    await page.getByPlaceholder(/Authorization code/i).fill("e2e-auth-code-123");
+    // Placeholder is "Paste the code here" (paste-code-input.tsx's default); the spec still looked
+    // for the older "Authorization code" wording and waited 90s for an input that never matched.
+    await page.getByPlaceholder(/Paste the code/i).fill("e2e-auth-code-123");
     await page.getByRole("button", { name: /^Submit code$/i }).click();
     await expect(page.getByRole("button", { name: /Sent ✓/ })).toBeVisible({ timeout: 10_000 });
   });

@@ -20,6 +20,8 @@ export default async function DashboardLayout({ children }: { children: React.Re
   // Cloud marketing attribution — no place in a single-tenant self-host install (and it
   // hits landing-experiment tables that aren't part of the OSS surface).
   if (!editionOss()) await linkCurrentLandingAttribution(user.id);
+  // QueryProvider now lives in the ROOT layout (app/layout.tsx) so it covers every route, not just
+  // this one — see the note there. Don't re-add it here.
   return (
     <DashboardShell
       userName={user.name}

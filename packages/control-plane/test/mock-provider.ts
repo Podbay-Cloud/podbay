@@ -115,6 +115,11 @@ export class MockProvider implements SandboxProvider {
       sampleIntervalMs: 1000,
     };
   }
+  /** Scriptable preview thumbnail per pod; unset → null (nothing serving). */
+  previewShots = new Map<string, Buffer>();
+  async previewShot(id: string): Promise<Buffer | null> {
+    return this.previewShots.get(id) ?? null;
+  }
   /** RC session URL per pod (tests set this to simulate the greeter observing it). */
   agentSession = new Map<string, string | null>();
   async agentSessionUrl(id: string): Promise<string | null> {
@@ -129,6 +134,10 @@ export class MockProvider implements SandboxProvider {
   /** When set, updateImage awaits it — lets a test observe the row DURING the
    * update (the durable "updating" flag). */
   updateImageGate?: Promise<void>;
+  /** Concurrency instrumentation for the bulk-update cap: how many updateImage calls are running
+   * right now, and the high-water mark across the run. */
+  updatesInFlight = 0;
+  maxUpdatesInFlight = 0;
   /** Records add-agent calls (slice 3). Returns a window index like the real one. */
   addedAgents: { id: string; agent: string }[] = [];
   /** Scripted per-agent states (agent-card cockpit tests). */
@@ -147,9 +156,15 @@ export class MockProvider implements SandboxProvider {
       agentStatus: this.agentStatusResult,
       codexStatus: this.codexStatusResult,
       agentWaitingFor: null,
+      idleMs: this.idleMsResult,
+      lastActivityMs: this.lastActivityMsResult,
       ...(this.appListeningResult !== undefined ? { appListening: this.appListeningResult } : {}),
     };
   }
+  /** DEPRECATED terminal-output idle the health reports; null = not reported. */
+  idleMsResult: number | null = null;
+  /** The HONEST activity signal (ms since newest transcript entry); null = old image (callers fall back). */
+  lastActivityMsResult: number | null = null;
 
   /** Scriptable doctor report. */
   doctorResult: {
@@ -213,7 +228,14 @@ export class MockProvider implements SandboxProvider {
     this.updateClaudeFiles.push({ id, paths: (opts?.claudeFiles ?? []).map((f) => f.guest_path) });
     this.updatePermissions.push(opts?.permissions);
     onStage?.("recreating");
-    if (this.updateImageGate) await this.updateImageGate;
+    // Track how many updateImage calls are in flight at once, so a test can assert the bulk cap.
+    this.updatesInFlight++;
+    this.maxUpdatesInFlight = Math.max(this.maxUpdatesInFlight, this.updatesInFlight);
+    try {
+      if (this.updateImageGate) await this.updateImageGate;
+    } finally {
+      this.updatesInFlight--;
+    }
     const p = this.pods.get(id);
     if (!p) throw new Error(`no pod ${id}`);
     const next = { ...p, imageDigest: image.split("@")[1] ?? image };

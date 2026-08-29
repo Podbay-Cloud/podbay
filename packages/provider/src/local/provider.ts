@@ -534,6 +534,8 @@ export class LocalProvider implements SandboxProvider {
       agentStatus: h?.agentStatus ?? null,
       codexStatus: h?.codexStatus ?? null,
       agentWaitingFor: h?.agentWaitingFor ?? null,
+      idleMs: h?.idleMs ?? null,
+      lastActivityMs: h?.lastActivityMs ?? null,
       ...(typeof h?.appListening === "boolean" ? { appListening: h.appListening } : {}),
     };
   }
@@ -543,6 +545,19 @@ export class LocalProvider implements SandboxProvider {
     // ignore it and always return the full ring — so switching windows changed nothing (velsa).
     const snap = (await this.agentGet(id, "/metrics")) as MetricsSnapshot | null;
     return snap && windowMs ? narrowSnapshot(snap, windowMs) : snap;
+  }
+
+  async previewShot(id: string): Promise<Buffer | null> {
+    // Raw bytes, not JSON — so this can't reuse agentGet. Same base URL, longer budget (a capture
+    // takes ~1-3s), 204/error → null.
+    try {
+      const base = await this.podAddress(id, 8080);
+      const r = await fetch(`${base}/preview-shot`, { signal: AbortSignal.timeout(12_000) });
+      if (!r.ok) return null;
+      return Buffer.from(await r.arrayBuffer());
+    } catch {
+      return null;
+    }
   }
 
   async agentIdleMs(id: string): Promise<number | null> {

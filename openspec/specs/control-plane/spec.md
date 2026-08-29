@@ -295,15 +295,39 @@ the pod live; otherwise the change lands on the next resume, with the DB as sour
 
 ### Requirement: Activity and onboarding milestones
 
-The control plane SHALL bump `lastActiveAt` on terminal activity (owner-scoped, no provider call).
-It SHALL record idempotent onboarding milestones — `authedAt` when the agent first reports logged
-in, and `sessionUrl` (the remote-control deep link) — so the launch wizard's step survives refresh,
-close, and resume.
+`lastActiveAt` SHALL reflect when the pod's AGENT last did real work — NOT terminal traffic. "Real
+work" is the timestamp of the agent's newest TRANSCRIPT entry: a message, tool call, or tool result
+(the same source the agent app shows), which correctly counts remote-control and autonomous turns and
+long silent tool tasks. Terminal traffic SHALL NOT bump it: a running app or a spinner streams
+terminal output every second, which pinned an idle pod to "active now" (observed on prod 2026-08-19);
+the gateway's terminal `markActive`/`touch` path is therefore removed. Wherever the control plane
+already has a health probe in hand (the reconcile sweep, the dashboard signals sweep), it SHALL
+advance `lastActiveAt` to that transcript time when it is newer than the recorded value — never moving
+it backward, margin-throttled. The signal is `lastActivityMs` from the pod's `/healthz` on images that
+report it; for OLDER images that do not, the control plane SHALL read the same two transcript sources
+(Claude transcripts + Codex rollouts) in-pod via `exec`, throttled per pod (~60s), so an un-updated
+pod shows honest agent time WITHOUT a recreate. The control plane SHALL NOT fall back to the live
+`agentStatus` `busy`/`idle` flag, which flickers `busy` for an idle agent and would re-pin it to
+"now". This keeps every reader honest: "active X ago", the default recency sort, and the idle-update
+dwell reflect real agent work, so a pod used only via the app (whose traffic never touches the
+terminal) is not shown idle-for-hours while its agent is busy, and an idle pod whose app is noisy on
+the terminal is not shown active. Consequence, accepted: a pod used purely via its terminal SHELL with
+no agent turn reads as idle. It SHALL also record idempotent onboarding milestones — `authedAt` when the
+agent first reports logged in, and `sessionUrl` (the remote-control deep link) — so the launch
+wizard's step survives refresh, close, and resume.
 
 #### Scenario: markActive updates activity only
 
 - **WHEN** `markActive` is called for an owner's pod
 - **THEN** the record's `lastActiveAt` SHALL be updated and no provider call SHALL be made
+
+#### Scenario: Agent work advances activity even without terminal traffic
+
+- **WHEN** a health probe reports the agent was active (a recent turn) more recently than the pod's
+  recorded `lastActiveAt`
+- **THEN** `lastActiveAt` SHALL be advanced to that time, so agent work via remote-control or
+  autonomously counts as activity; and it SHALL NOT be moved backward when the agent's last turn is
+  older than the recorded value
 
 #### Scenario: Milestones are recorded once
 

@@ -53,7 +53,9 @@
 .primaryCta { background: var(--blue); color: white; }
 .primaryCta:hover { background: #6a97ff; }
 .secondaryCta { border: 1px solid var(--line); color: var(--text); }
-.secondaryCta svg { width: 16px; margin-left: 7px; }
+.secondaryCta svg { width: 16px; height: 16px; margin-left: 7px; }
+/* Leading icon (e.g. the GitHub mark) mirrors the trailing spacing. */
+.secondaryCta svg:first-child { margin-left: 0; margin-right: 7px; }
 .secondaryCta:hover { border-color: #536268; background: var(--panel); }
 .subscriptionLine { display: grid; width: fit-content; max-width: 100%; grid-template-columns: 16px minmax(0, auto); align-items: center; gap: 8px 12px; margin-top: 19px; }
 .subscriptionLine svg { width: 16px; color: var(--green); }

@@ -48,6 +48,21 @@ mkdir -p "$WORK" /home/dev/.claude
 # dirs we just made so the dev server works on the very first boot.
 chown dev:dev "$WORK" /home/dev/.claude 2>/dev/null || true
 
+# --- Dev-writable npm prefix so `podbay agent update` works as dev ------------------------
+# The agent CLIs (claude, codex) are baked root-owned under /usr; dev can't `npm i -g` there
+# (EACCES). Point dev's npm prefix at ~/.npm-global (persistent volume) and put it first on
+# PATH, so `podbay agent update` lands there and SHADOWS the baked CLIs — for interactive
+# shells AND any process the owner launches as dev (e.g. an agent-harness backend). The
+# pod-agent's own tmux session gets the same PATH from main.ts. Idempotent; runs every boot.
+NPM_PREFIX=/home/dev/.npm-global
+mkdir -p "$NPM_PREFIX/bin"
+grep -q "^prefix=" /home/dev/.npmrc 2>/dev/null || echo "prefix=$NPM_PREFIX" >> /home/dev/.npmrc
+for rc in /home/dev/.bashrc /home/dev/.profile; do
+  touch "$rc" 2>/dev/null || true
+  grep -q ".npm-global/bin" "$rc" 2>/dev/null || echo 'export PATH=/home/dev/.npm-global/bin:$PATH' >> "$rc"
+done
+chown -R dev:dev "$NPM_PREFIX" /home/dev/.npmrc /home/dev/.bashrc /home/dev/.profile 2>/dev/null || true
+
 # Pre-seed the CLI's first-run state so LOGIN IS THE ONLY INTERACTIVE STEP. Every key
 # here suppresses a modal that would otherwise block an unattended session:
 #   theme/hasCompletedOnboarding      — the first-run theme picker
@@ -192,7 +207,7 @@ chown dev:dev /home/dev/.codex /home/dev/.codex/config.toml 2>/dev/null || true
 # to nothing. Renaming a pod LATER cannot move the Codex label; that is a
 # platform limit, not an oversight.
 # >>> podbay:pod-hostname
-POD_NAME_RAW="${POD_NAME_RAW:-$(python3 -c 'import json; print(json.load(open("/etc/podbay/pod-spec.json")).get("podName") or "")' 2>/dev/null)}"
+POD_NAME_RAW="${POD_NAME_RAW:-$(python3 -c 'import json; print(json.load(open("/etc/podbay/pod-spec.json")).get("podName") or "")' 2>/dev/null || true)}"
 POD_HOSTNAME="$(printf '%s' "$POD_NAME_RAW" | tr "[:upper:]" "[:lower:]" | tr -c "a-z0-9-" "-" | sed "s/-\{2,\}/-/g; s/^-//; s/-$//" | cut -c1-63)"
 if [ -n "$POD_HOSTNAME" ] && [ "$POD_HOSTNAME" != "$(hostname)" ]; then
   echo "podbay: hostname → $POD_HOSTNAME (pod name)"
@@ -214,7 +229,7 @@ fi
 # ANY declared agent, not agents[0]. Keying on the PRIMARY meant a Claude pod that
 # later gained Codex never got the daemon binary — so its "turn remote control on"
 # could never work, silently, forever (live find: cheerful-donkey-6bc4, 2026-07-29).
-CODEX_SA_AGENT="${CODEX_SA_AGENT:-$(python3 -c 'import json; a=json.load(open("/etc/podbay/pod-spec.json")).get("agents") or []; print("codex" if "codex" in a else (a[0] if a else ""))' 2>/dev/null)}"
+CODEX_SA_AGENT="${CODEX_SA_AGENT:-$(python3 -c 'import json; a=json.load(open("/etc/podbay/pod-spec.json")).get("agents") or []; print("codex" if "codex" in a else (a[0] if a else ""))' 2>/dev/null || true)}"
 CODEX_SA_SRC="${CODEX_SA_SRC:-/opt/podbay/codex-standalone/packages/standalone}"
 CODEX_SA_DST="${CODEX_SA_DST:-/home/dev/.codex/packages/standalone}"
 CODEX_SA_OWNER="${CODEX_SA_OWNER:-dev:dev}"
@@ -243,7 +258,12 @@ fi
 # This undoes a self-update rather than trying to prevent one — the CLI offers no
 # switch for that. Relative symlink so it survives the copy.
 # >>> podbay:codex-standalone-pin
-CODEX_SA_PIN="${CODEX_SA_PIN:-$(ls -1 "$CODEX_SA_SRC/releases" 2>/dev/null | head -1)}"
+# A DELIBERATE per-pod override (`podbay agent update codex` writes the chosen release here)
+# wins over the image default — so a managed update survives reboot AND the pod stays
+# reproducible (still pinned, just to the version the owner picked, not a silent self-update).
+CODEX_SA_PIN_FILE="${CODEX_SA_PIN_FILE:-/home/dev/.config/podbay/codex-pin}"
+CODEX_SA_PIN="${CODEX_SA_PIN:-$(cat "$CODEX_SA_PIN_FILE" 2>/dev/null | head -1)}"
+[ -n "$CODEX_SA_PIN" ] || CODEX_SA_PIN="$(ls -1 "$CODEX_SA_SRC/releases" 2>/dev/null | head -1)"
 if [ -n "$CODEX_SA_PIN" ] && [ -d "$CODEX_SA_DST/releases" ]; then
   if [ ! -d "$CODEX_SA_DST/releases/$CODEX_SA_PIN" ] && [ -d "$CODEX_SA_SRC/releases/$CODEX_SA_PIN" ]; then
     cp -a "$CODEX_SA_SRC/releases/$CODEX_SA_PIN" "$CODEX_SA_DST/releases/$CODEX_SA_PIN" 2>/dev/null || true

@@ -8,6 +8,7 @@ import DashboardPage from "@/components/dashboard-page";
 import SlotMeter from "@/components/slot-meter";
 import { editionOss } from "@/lib/session";
 import { sameDigest } from "@/lib/pod-image";
+import { currentImage } from "@/lib/image-manifest";
 import { Button } from "@/components/ui/button";
 import { getEnvironmentDetail } from "@/lib/environments";
 import { isAdmin } from "@/lib/access-rules";
@@ -52,6 +53,21 @@ export default async function Dashboard() {
     const pin = p.provider === "incus" ? incusPin : flyPin;
     return Boolean(pin && p.imageDigest && !sameDigest(p.imageDigest, pin));
   };
+
+  // The image every eligible pod updates TO — the current pod-base, for the bulk-update modal's
+  // "what's new" panel. Cloud-only (bulk update is Incus); a serializable slice for the client.
+  // Best-effort: a manifest read failure just leaves the modal without the changelog.
+  const targetImageRow = editionOss() ? null : await currentImage("pod-base").catch(() => null);
+  const targetImage = targetImageRow
+    ? {
+        digest: targetImageRow.digest,
+        summary: targetImageRow.summary,
+        notes: targetImageRow.notes,
+        version: targetImageRow.version,
+        builtAt: targetImageRow.builtAt ? targetImageRow.builtAt.toISOString() : null,
+        sizeBytes: targetImageRow.sizeBytes,
+      }
+    : null;
 
   // Which of the on-screen envs declare secrets — resolve each distinct env once
   // so cards can offer a Secrets panel only where it's meaningful.
@@ -111,6 +127,7 @@ export default async function Dashboard() {
         <section>
           <PodCardList
             bulkUpdate={!editionOss()}
+            targetImage={targetImage}
             cards={pods.map((p): PodCardProps => ({
               slug: p.id,
               name: p.name,
@@ -124,8 +141,11 @@ export default async function Dashboard() {
               lifecycleLocked: lifecycleLocked.get(p.environmentName) ?? false,
               authedAt: p.authedAt,
               sessionUrl: p.sessionUrl,
+              t3Control: p.t3Control,
+              t3Since: p.t3Since,
               updateReady: updateReady(p),
               updating: isUpdating(p),
+              imageDigest: p.imageDigest,
               autoUpdate: p.autoUpdate,
               lastActiveAtIso: p.lastActiveAt,
               canRetry: !envMissing.get(p.environmentName),

@@ -22,6 +22,7 @@ function toRecord(row: Row): PodRecord {
     lifecycle: row.lifecycle as PodRecord["lifecycle"],
     autoUpdate: (row.autoUpdate ?? "inherit") as PodRecord["autoUpdate"],
     previewPublic: row.previewPublic,
+    previewAppAuth: row.previewAppAuth,
     githubRepo: row.githubRepo ?? null,
     agents: (row.agents as PodRecord["agents"]) ?? null,
     agentAuth: (row.agentAuth as PodRecord["agentAuth"]) ?? null,
@@ -35,6 +36,10 @@ function toRecord(row: Row): PodRecord {
     updatingSince: row.updatingSince ? row.updatingSince.toISOString() : null,
     maintenanceKind: row.maintenanceKind ?? null,
     updateStage: row.updateStage ?? null,
+    t3Control: row.t3Control ?? false,
+    t3Since: row.t3Since ? row.t3Since.toISOString() : null,
+    t3Stage: row.t3Stage ?? null,
+    t3Connected: row.t3Connected ?? false,
     provider: row.provider,
     size: row.size as PodRecord["size"],
     diskGb: row.diskGb,
@@ -66,6 +71,7 @@ export class DrizzlePodStore implements PodStore {
       lifecycle: record.lifecycle,
       autoUpdate: record.autoUpdate,
       previewPublic: record.previewPublic,
+      previewAppAuth: record.previewAppAuth,
       githubRepo: record.githubRepo,
       agents: record.agents,
       agentAuth: record.agentAuth,
@@ -79,6 +85,10 @@ export class DrizzlePodStore implements PodStore {
       updatingSince: record.updatingSince ? new Date(record.updatingSince) : null,
       maintenanceKind: record.maintenanceKind ?? null,
       updateStage: record.updateStage,
+      t3Control: record.t3Control ?? false,
+      t3Since: record.t3Since ? new Date(record.t3Since) : null,
+      t3Stage: record.t3Stage ?? null,
+      t3Connected: record.t3Connected ?? false,
       provider: record.provider,
       size: record.size,
       diskGb: record.diskGb,
@@ -140,8 +150,15 @@ export class DrizzlePodStore implements PodStore {
       set.updatingSince = patch.updatingSince ? new Date(patch.updatingSince) : null;
     if (patch.maintenanceKind !== undefined) set.maintenanceKind = patch.maintenanceKind;
     if (patch.updateStage !== undefined) set.updateStage = patch.updateStage;
+    if (patch.t3Control !== undefined) set.t3Control = patch.t3Control;
+    if (patch.t3Since !== undefined) set.t3Since = patch.t3Since ? new Date(patch.t3Since) : null;
+    if (patch.t3Stage !== undefined) set.t3Stage = patch.t3Stage;
+    if (patch.t3Connected !== undefined) set.t3Connected = patch.t3Connected;
     if (patch.provider !== undefined) set.provider = patch.provider;
     if (patch.agents !== undefined) set.agents = patch.agents; // "Add agent" appends post-launch
+    // agentAuth was a column + read + inserted, but NOT mapped here — so update({agentAuth}) built an
+    // empty SET → "No values to set" (the setup-token/renew flow's first real run, velsa 2026-08-24).
+    if (patch.agentAuth !== undefined) set.agentAuth = patch.agentAuth;
     if (patch.size !== undefined) set.size = patch.size;
     if (patch.diskGb !== undefined) set.diskGb = patch.diskGb;
     // Self-host explicit sizing — without these, a resize's `update({cpus, memoryMb})` built an
@@ -158,6 +175,14 @@ export class DrizzlePodStore implements PodStore {
     if (patch.createdAt !== undefined) set.createdAt = new Date(patch.createdAt);
     if (patch.lastActiveAt !== undefined) set.lastActiveAt = new Date(patch.lastActiveAt);
 
+    // Defense-in-depth: an empty SET (a patch where every field was unmapped, like the agentAuth bug
+    // above, or the 2026-08-13 resize one) must be a NO-OP, not a Drizzle "No values to set" crash. A
+    // caller that changes nothing just gets the current record back.
+    if (Object.keys(set).length === 0) {
+      const cur = await this.get(id);
+      if (!cur) throw new Error(`pod record ${id} not found`);
+      return cur;
+    }
     await this.db.update(pods).set(set).where(eq(pods.id, id));
     const updated = await this.get(id);
     if (!updated) throw new Error(`pod record ${id} not found`);

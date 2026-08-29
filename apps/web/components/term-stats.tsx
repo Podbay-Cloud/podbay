@@ -1,8 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { getPodMetrics } from "@/lib/actions";
-import type { MetricsSnapshot } from "@podbay/shared";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
+import type { MetricsSnapshot } from "@podbay/shared/metrics-types";
+import { apiGet } from "@/lib/api-fetch";
+import { qk } from "@/lib/query-keys";
 
 // How much the strip may shrink from its natural width before we hide it outright
 // (a little graceful give, then it's gone — it never clips down to a stump). The
@@ -51,7 +53,15 @@ const pct = (used: number, total: number) => (total > 0 ? Math.round((used / tot
 
 export default function TermStats({ podId }: { podId: string }) {
   const [windowMs, setWindowMs] = useState(WINDOWS[0]!.ms);
-  const [snap, setSnap] = useState<MetricsSnapshot | null>(null);
+  // Shares the qk.metrics cache with the Stats tab — cached, polled every 15s, keepPreviousData so a
+  // window switch keeps the strip populated. A reject retries then errors (values fall back to "—"),
+  // never sticks.
+  const { data: snap = null } = useQuery({
+    queryKey: qk.metrics(podId, windowMs),
+    queryFn: () => apiGet<MetricsSnapshot | null>(`/api/pods/${podId}/metrics?window=${windowMs}`),
+    refetchInterval: 15_000,
+    placeholderData: keepPreviousData,
+  });
   const rootRef = useRef<HTMLDivElement>(null);
   const naturalRef = useRef(0);
   const [fits, setFits] = useState(true);
@@ -107,17 +117,6 @@ export default function TermStats({ podId }: { podId: string }) {
   useLayoutEffect(() => {
     measure();
   }, [snap, measure]);
-
-  useEffect(() => {
-    let live = true;
-    const load = () => getPodMetrics(podId, windowMs).then((s) => live && setSnap(s));
-    void load();
-    const t = setInterval(() => void load(), 15_000);
-    return () => {
-      live = false;
-      clearInterval(t);
-    };
-  }, [podId, windowMs]);
 
   const series = snap?.series ?? [];
   const last = series[series.length - 1];

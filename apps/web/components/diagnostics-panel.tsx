@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { Loader2, Stethoscope } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { collectPodDiagnostics } from "@/lib/admin-pod-actions";
@@ -16,18 +16,18 @@ import type { DiagnosticReport } from "@podbay/provider";
  * person clicking the button is the one who should know it.
  */
 export default function DiagnosticsPanel({ id, running }: { id: string; running: boolean }) {
-  const [report, setReport] = useState<DiagnosticReport | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const run = async () => {
-    setBusy(true);
-    setError(null);
-    const r = await collectPodDiagnostics(id);
-    if ("error" in r) setError(r.error);
-    else setReport(r);
-    setBusy(false);
-  };
+  // useMutation owns the collect action's busy/error/result state — a reject now surfaces the error
+  // and resets the button instead of leaving the spinner stuck on "Collect".
+  const collect = useMutation({
+    mutationFn: async (): Promise<DiagnosticReport> => {
+      const r = await collectPodDiagnostics(id);
+      if ("error" in r) throw new Error(r.error);
+      return r;
+    },
+  });
+  const report = collect.data ?? null;
+  const busy = collect.isPending;
+  const error = collect.error ? (collect.error as Error).message : null;
 
   return (
     <div className="flex flex-col gap-2.5">
@@ -36,7 +36,7 @@ export default function DiagnosticsPanel({ id, running }: { id: string; running:
           Machine facts only — disk, ports, process names, our setup log, package state. Never file
           contents, secret values, or agent transcripts. The owner sees that you collected this.
         </span>
-        <Button variant="outline" size="sm" disabled={!running || busy} onClick={() => void run()}>
+        <Button variant="outline" size="sm" disabled={!running || busy} onClick={() => collect.mutate()}>
           {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Stethoscope className="size-3.5" />}
           Collect
         </Button>

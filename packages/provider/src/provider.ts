@@ -31,6 +31,11 @@ export interface SandboxProvider {
   /** The pod-agent's resource-metrics snapshot (Stats tab), or null if the agent
    * is unreachable / too old to serve /metrics. */
   fetchMetrics(id: string, windowMs?: number): Promise<MetricsSnapshot | null>;
+  /** A PNG thumbnail of the pod's own preview app (localhost:3000), captured by the pod-agent with the
+   * image's prebaked headless Chromium — so the cockpit shows a lightweight image instead of framing
+   * the whole live site. Null when nothing is serving the port, the agent is unreachable, or the image
+   * is too old to serve it. */
+  previewShot(id: string): Promise<Buffer | null>;
   /** Host-level stats for the self-hosted box this provider runs (backoffice).
    * Optional — providers without a "box" concept (Fly) omit it. */
   boxStats?(): Promise<BoxStats>;
@@ -200,6 +205,14 @@ export interface PodHealth {
   /** What the CLI says it's blocked on (e.g. "dialog open") — distinguishes
    * "needs an answer from you" from plain waiting. Absent on older images. */
   agentWaitingFor?: string | null;
+  /** DEPRECATED for activity — time since the last terminal OUTPUT (spinners/redraws tick it), so it
+   * "lies" about real work. Kept for older callers; use `lastActivityMs` instead. */
+  idleMs?: number | null;
+  /** Milliseconds since the agent's newest TRANSCRIPT entry — a message, tool CALL, or tool RESULT
+   * (the same source the Claude app shows). The HONEST "last active" signal: it reflects real turns
+   * and tool work, unlike `idleMs` (terminal output) or `lastActiveAt` (terminal traffic only, blind
+   * to app/remote-control and autonomous work). Null on an image that doesn't report it. */
+  lastActivityMs?: number | null;
   /** Whether anything is serving the preview port (:3000) right now. Absent
    * (undefined) on older images — callers must treat that as unknown, not false. */
   appListening?: boolean;

@@ -73,7 +73,15 @@ async function main(): Promise<void> {
   const server = new AgentServer({
     sessionName: "main",
     cwd: path.join(home, "work"),
-    env: { HOME: home, USER: "dev" },
+    // Put the dev-writable npm prefix FIRST on PATH so `podbay agent update` takes effect:
+    // it installs the agent CLIs into ~/.npm-global as dev (the baked ones under /usr are
+    // root-owned and un-updatable), and the updated claude/codex must SHADOW them for the
+    // agent this pod-agent launches. Persists on the home volume across restarts.
+    env: {
+      HOME: home,
+      USER: "dev",
+      PATH: `${home}/.npm-global/bin:${process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}`,
+    },
     uid: isRoot ? 1000 : undefined,
     gid: isRoot ? 1000 : undefined,
     bootCommand: bootCommandForAgent(agent, mode, agentAuth),
@@ -103,10 +111,12 @@ async function main(): Promise<void> {
             rcTitle: sanitizeSessionName(sessionName),
             agentAuth,
             kickoffTrigger: existsSync(KICKOFF_PATH) ? KICKOFF_TRIGGER : undefined,
-            // Cold restart of an already-greeted pod: nudge the resumed agent so
-            // it orients instead of sitting silent in a seemingly-empty session. When
-            // the restart was an OOM, the nudge leads with an owner-facing notice.
-            resumeTrigger: existsSync(KICKOFF_PATH) ? resumeNudge() : undefined,
+            // Cold restart of an already-greeted pod: nudge the resumed agent so it orients instead of
+            // sitting silent in a seemingly-empty session (when the restart was an OOM, the nudge leads
+            // with an owner-facing notice). ALWAYS provided — NOT gated on a kickoff — so a pod with no
+            // kickoff still gets the nudge on restart instead of resuming silently (owner: first10 got
+            // the handoff note but never the "Resuming — where are we?" turn, 2026-08-26).
+            resumeTrigger: resumeNudge(),
           }
         : undefined,
     host: process.env.PODBAY_AGENT_HOST ?? "::",

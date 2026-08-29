@@ -19,11 +19,11 @@ export default function Harness() {
         info={{
           targetDigest: "8298d6135b5aef5ba05d31238c8a2e915228de440fa99d7bc8209f3ec248ddb4",
           currentDigest: "60a5bc7ca2931cdec5e7fa70b9daa19c850253ada38b7ab420125ed0bf0977b5",
-          target: { digest: "8298d6135b5a", alias: null, notes: null, summary: null, sizeBytes: 3322444513, builtAt: "2026-08-02T02:10:00.000Z" },
-          current: { digest: "60a5bc7ca293", alias: null, notes: null, summary: null, sizeBytes: 3300000000, builtAt: "2026-07-30T22:00:00.000Z" },
+          target: { digest: "8298d6135b5a", alias: null, notes: null, summary: null, version: "0.2.0", sizeBytes: 3322444513, builtAt: "2026-08-02T02:10:00.000Z" },
+          current: { digest: "60a5bc7ca293", alias: null, notes: null, summary: null, version: "0.1.0", sizeBytes: 3300000000, builtAt: "2026-07-30T22:00:00.000Z" },
           images: [
             {
-              digest: "8298d6135b5a", alias: null,
+              digest: "8298d6135b5a", alias: null, version: null,
               // User-facing summary leads; the commit changelog collapses under it.
               summary:
                 "Your pod's activity history now shows suspended time and crash markers, so you can see at a glance when it slept or restarted. Nothing you need to do — just clearer stats.",
@@ -35,14 +35,14 @@ export default function Harness() {
               ]),
             },
             {
-              digest: "aa11bb22cc33", alias: null, summary: null, sizeBytes: 3310000000, builtAt: "2026-08-01T12:00:00.000Z",
+              digest: "aa11bb22cc33", alias: null, version: null, summary: null, sizeBytes: 3310000000, builtAt: "2026-08-01T12:00:00.000Z",
               notes: N([
                 "feat(relay): the policy layer — allowlist, rate caps, queueing, fail-closed",
                 "feat(web-fetch): podbay fetch get — the ladder as one enforced command",
               ]),
             },
             {
-              digest: "dd44ee55ff66", alias: null, summary: null, sizeBytes: 3305000000, builtAt: "2026-07-31T09:00:00.000Z",
+              digest: "dd44ee55ff66", alias: null, version: null, summary: null, sizeBytes: 3305000000, builtAt: "2026-07-31T09:00:00.000Z",
               notes: N([
                 "fix(pod-agent): added agents get the REAL login flow, not a thinner copy",
                 "feat(observability): OOM detection, incident classifier, owner banner",

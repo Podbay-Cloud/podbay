@@ -104,7 +104,7 @@ export function StatusAction({ id, status }: { id: string; status: string }) {
               <Button variant="outline" size="sm" disabled={pending} onClick={() => setConfirmSuspend(false)}>
                 Cancel
               </Button>
-              <Button size="sm" disabled={pending} className="bg-warning text-black hover:bg-warning/90" onClick={() => run(() => adminSleepPod(id), true)}>
+              <Button variant="outline" size="sm" disabled={pending} className="border-warning/40 text-warning hover:bg-warning/10 hover:text-warning" onClick={() => run(() => adminSleepPod(id), true)}>
                 {pending ? "Working…" : "Suspend"}
               </Button>
             </AlertDialogFooter>
@@ -185,7 +185,7 @@ export function ImageActions({
       <button
         type="button"
         aria-label="Image details"
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-white/[0.04] hover:text-foreground"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-white/[0.06] hover:text-foreground"
         onClick={() => setInfoOpen(true)}
       >
         <Info className="h-4 w-4" />
@@ -212,7 +212,7 @@ export function ImageActions({
             <Button variant="outline" size="sm" disabled={pending} onClick={() => setConfirmUpdate(false)}>
               Cancel
             </Button>
-            <Button size="sm" disabled={pending} className="bg-warning text-black hover:bg-warning/90" onClick={runUpdate}>
+            <Button variant="outline" size="sm" disabled={pending} className="border-warning/40 text-warning hover:bg-warning/10 hover:text-warning" onClick={runUpdate}>
               {pending ? "Working…" : "Update & restart"}
             </Button>
           </AlertDialogFooter>

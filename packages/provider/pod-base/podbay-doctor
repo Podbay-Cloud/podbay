@@ -190,6 +190,103 @@ check_codex_daemon() {
       "Paired devices can't reach this pod until it starts." "$fixed"
 }
 
+# Claude remote control's lifecycle classification (rc-state.ts's `RcState`, surfaced additively on
+# /healthz as `rcState` — task 2.4). Doctor reads the SAME classification pod-agent's automatic
+# recovery and health reporting use, rather than re-deriving a competing opinion from `authed`/
+# `rcActive` alone: that old boolean pairing cannot tell a login problem (only the owner's `/login`
+# fixes it) apart from a confirmed bridge failure (`--fix` can repair it) apart from genuinely
+# insufficient evidence (not a problem at all) — exactly the "doctor found no problems and RC is
+# OBVIOUSLY still off" class of complaint `rcState` exists to close.
+#
+# An older pod-agent image that predates `rcState` entirely sends no such field — that is treated the
+# same as `unknown` (never guessed as `down` or `active` from the old boolean), matching
+# openspec/specs/pod-agent/spec.md's "An older pod image's absent rcState is treated as unknown"
+# scenario. The pre-`rcState` heuristic is deliberately NOT resurrected as a fallback: it cannot
+# distinguish the states doctor now needs to tell apart, and using its result to guess `down` risks
+# exactly the misdiagnosis this task fixes (e.g. a live blocking OAuth dialog the old heuristic never
+# saw, reading as a healthy login with RC merely down).
+_rc_state() {
+  echo "$1" | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception: print("unknown"); sys.exit()
+a = next((x for x in d.get("agents", []) if x.get("id") == "claude-code"), None)
+s = a.get("rcState") if a else None
+print(s if s in ("active", "recovering", "down", "login-required", "unknown") else "unknown")
+' 2>/dev/null
+}
+# Is a T3 handover actually DECLARED? `podbay startup add --slug t3-code` writes this before the
+# RC-off marker is ever set, and the declaration is durable across restarts — so it, not a live
+# process, is the honest witness. Missing file ⇒ nothing registered (startup_ensure creates it).
+_t3_registered() {
+  grep -q '"slug"[[:space:]]*:[[:space:]]*"t3-code"' "$HOME_DIR/.podbay/startup.json" 2>/dev/null
+}
+
+# An RC-off marker with no harness behind it silently disables ALL of Claude remote control — the
+# greeter (so no "resuming where we are" nudge after a restart), the fail-state watchdog, and
+# /agent/rc-restore all return early on it, forever, with no error surfaced anywhere. A failed T3
+# enable can strand it: the rollback's yield-false is a `curl … || true` inside a `.catch()`, so one
+# missed call leaves it behind. podbay `first10` sat like this 2026-08-23 → 2026-08-29, and doctor
+# called it healthy the whole time because check_remote_control treats the marker as intentional.
+check_rc_yield_orphan() {
+  [ -f "$HOME_DIR/.podbay/claude-rc-off" ] || return 0
+  _t3_registered && return 0   # legitimate handover — T3 really is in control
+  local fixed=false
+  if [ "$FIX" = 1 ]; then
+    # Clear it, THEN restore: the marker was gating /agent/rc-restore too, so the call is only
+    # possible once it is gone. Never declare success from submission — re-read the classifier.
+    rm -f "$HOME_DIR/.podbay/claude-rc-off"
+    if [ -f "$HOME_DIR/.claude/.credentials.json" ]; then
+      curl -fsS -m 20 -X POST "$AGENT_URL/agent/rc-restore" -H 'Content-Type: application/json' -d '{}' >/dev/null 2>&1 || true
+      sleep 4
+      local h; h=$(curl -fsS -m 5 "$AGENT_URL/healthz" 2>/dev/null)
+      [ -n "$h" ] && [ "$(_rc_state "$h")" = "active" ] && fixed=true
+    else
+      fixed=true   # no login to restore; clearing the stale marker is the whole repair
+    fi
+  fi
+  add "remote-control-yield-orphan" "warn" "Remote control was left switched off by a failed T3 setup" \
+      "Nothing is driving this pod's Claude, so it has no remote-control session and won't greet you after a restart. Running doctor with --fix clears it." "$fixed"
+}
+
+check_remote_control() {
+  has_agent claude-code || return 0
+  [ -f "$HOME_DIR/.claude/.credentials.json" ] || return 0   # not signed in → nothing to restore
+  # Yielded to T3 → intentional, nothing to restore. Only trustworthy because check_rc_yield_orphan
+  # (above) has already cleared the marker if no harness backs it — see there.
+  [ -f "$HOME_DIR/.podbay/claude-rc-off" ] && return 0
+  local h; h=$(curl -fsS -m 5 "$AGENT_URL/healthz" 2>/dev/null) || return 0
+  local state; state=$(_rc_state "$h")
+  case "$state" in
+    active|recovering) return 0 ;;  # nothing to report: live, or a bounded restore is already in flight
+  esac
+  if [ "$state" = "login-required" ]; then
+    # Doctor cannot repair a login problem — only the owner's own sign-in can — so --fix MUST NOT even
+    # attempt the restore call here; that would be a wasted (and misleadingly-worded) request against a
+    # state no restore can ever clear. Distinct id from remote-control-down so a caller (or the owner
+    # reading the report) can tell "you must reconnect" apart from "a restore was attempted".
+    add "remote-control-login-required" "warn" "Claude's sign-in needs your attention" \
+        "Remote control can't start until you reconnect — sign in again from the pod's card in the dashboard." false
+    return 0
+  fi
+  # state == "unknown": genuinely insufficient current evidence (e.g. early boot before RC has been
+  # established either way) — not a confirmed problem, so — matching this script's own "green is
+  # empty" rule (see the header comment) — say nothing rather than raise a low-confidence finding that
+  # would just add noise most of the time.
+  [ "$state" = "unknown" ] && return 0
+  # state == "down": a valid login, RC confirmed unavailable, not yielded — the one state --fix may
+  # repair. Re-read the classifier after attempting (never declare success from mere submission).
+  local fixed=false
+  if [ "$FIX" = 1 ]; then
+    curl -fsS -m 20 -X POST "$AGENT_URL/agent/rc-restore" -H 'Content-Type: application/json' -d '{}' >/dev/null 2>&1 || true
+    sleep 4
+    local h2; h2=$(curl -fsS -m 5 "$AGENT_URL/healthz" 2>/dev/null)
+    [ -n "$h2" ] && [ "$(_rc_state "$h2")" = "active" ] && fixed=true
+  fi
+  add "remote-control-down" "warn" "Remote control is off but Claude is signed in" \
+      "Claude is logged in but has no live remote-control session — the Claude app/browser can't reach this pod until it's restored." "$fixed"
+}
+
 check_agent_windows() {
   local agents; agents=$(spec_agents)
   [ -n "$agents" ] || return 0
@@ -201,19 +298,40 @@ check_agent_windows() {
   local windows; windows=$(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null)
   local primary=1
   for a in $agents; do
-    if [ "$primary" = 1 ]; then primary=0; continue; fi   # primary owns window 0, named by its shell
-    printf '%s\n' "$windows" | grep -qx "$a" && continue
-    local fixed=false
-    if [ "$FIX" = 1 ]; then
-      # Reuse the pod-agent's own add path — idempotent by window name, and it
-      # knows the right boot command. Never hand-roll the invocation here.
-      curl -fsS -m 20 -X POST "$AGENT_URL/agent/add" -H 'Content-Type: application/json' \
-        -d "{\"agent\":\"$a\"}" >/dev/null 2>&1 && sleep 2
-      printf '%s\n' "$(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null)" \
-        | grep -qx "$a" && fixed=true
+    local target
+    if [ "$primary" = 1 ]; then
+      primary=0
+      target="$SESSION:0"   # primary owns window 0, named by its shell
+    else
+      # An ADDED agent needs a named window. If it's GONE, restore it via the pod-agent's
+      # own add path (idempotent by window name; it knows the right boot command).
+      if ! printf '%s\n' "$windows" | grep -qx "$a"; then
+        local fixed=false
+        if [ "$FIX" = 1 ]; then
+          curl -fsS -m 20 -X POST "$AGENT_URL/agent/add" -H 'Content-Type: application/json' \
+            -d "{\"agent\":\"$a\"}" >/dev/null 2>&1 && sleep 2
+          printf '%s\n' "$(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null)" \
+            | grep -qx "$a" && fixed=true
+        fi
+        add "agent-not-running:$a" "warn" "$a isn't running" \
+            "Its terminal window is gone." "$fixed"
+        continue
+      fi
+      target="$SESSION:$a"
     fi
-    add "agent-not-running:$a" "warn" "$a isn't running" \
-        "Its terminal window is gone." "$fixed"
+    # The window EXISTS — but is the agent alive, or did it exit to a bare shell? The supervisor
+    # prints PODBAY-AGENT-EXITED into the pane on give-up (window looks fine, agent is dead — the
+    # exact blind spot where doctor used to say "no problems"). --fix relaunches it via /agent/restart.
+    if tmux capture-pane -t "$target" -p 2>/dev/null | grep -q "PODBAY-AGENT-EXITED"; then
+      local fixed=false
+      if [ "$FIX" = 1 ]; then
+        curl -fsS -m 20 -X POST "$AGENT_URL/agent/restart" -H 'Content-Type: application/json' \
+          -d "{\"agent\":\"$a\"}" >/dev/null 2>&1 && sleep 2
+        tmux capture-pane -t "$target" -p 2>/dev/null | grep -q "PODBAY-AGENT-EXITED" || fixed=true
+      fi
+      add "agent-dead:$a" "warn" "$a exited to a bare shell" \
+          "The agent process is gone; commands typed there don't reach it. Recover with 'podbay-agent-restart'." "$fixed"
+    fi
   done
 }
 
@@ -404,6 +522,8 @@ check_startup_procs   # --fix recovers a backed-off startup proc BEFORE we impor
 import_agent_issues
 check_codex_runtime
 check_codex_daemon
+check_rc_yield_orphan   # BEFORE check_remote_control: clears a stale marker that would make it return green
+check_remote_control
 check_agent_windows
 check_dev_server
 check_stale_setup_lock

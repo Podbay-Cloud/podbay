@@ -14,6 +14,7 @@ import { TrackedLink } from "./landing-examples";
 import { getCurrentUser } from "@/lib/session";
 import { listEnvironments } from "@/lib/environments";
 import styles from "./landing-agent.module.css";
+import GithubMark from "@/components/github-mark";
 import LandingAccountLink from "@/components/landing-account-link";
 import LandingFooter from "@/components/landing-footer";
 import { LANDING_PLAYBOOKS, type LandingPlaybookId } from "@/lib/landing-playbooks";
@@ -71,7 +72,7 @@ export default async function AgentComputerLanding({
               target="_blank"
               rel="noopener"
             >
-              Self-host it <ArrowUpRight aria-hidden />
+              <GithubMark /> Self-host it <ArrowUpRight aria-hidden />
             </a>
           </div>
           <div className={styles.subscriptionLine}>

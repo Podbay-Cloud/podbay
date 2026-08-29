@@ -13,7 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBadge } from "@/components/pod-status";
 import { StatusAction, ImageActions, DangerZone, ResizeAction } from "@/components/admin-pod-controls";
 import { listImages } from "@/lib/image-manifest";
-import { imageState, shortDigest } from "@/lib/pod-image";
+import { imageState, shortDigest, imageVersionLabel } from "@/lib/pod-image";
 import AutoRefresh from "@/components/auto-refresh";
 import Elapsed from "@/components/elapsed";
 import LifecycleTimeline from "@/components/lifecycle-timeline";
@@ -143,6 +143,7 @@ export default async function AdminPodPage({ params }: { params: Promise<{ id: s
   const sorted = [...events].sort((a, b) => b.at.localeCompare(a.at));
   const canRollback = events.some((e) => e.type === "updated" && (e.meta as { from?: unknown })?.from);
   const currentMeta = toMeta(digest);
+  const currentImgVersion = digest ? (byDigest.get(digest)?.version ?? null) : null;
   const lastUpdate = sorted.find((e) => e.type === "updated" && (e.meta as { from?: unknown })?.from);
   const rollbackMeta = canRollback ? toMeta((lastUpdate?.meta as { from?: string })?.from) : null;
 
@@ -277,7 +278,7 @@ export default async function AdminPodPage({ params }: { params: Promise<{ id: s
       label: "Image",
       value: (
         <code className="font-mono text-[12px] text-muted-foreground">
-          {digest ? shortDigest(digest) : "— (unknown)"}
+          {digest ? imageVersionLabel(currentImgVersion, digest) : "— (unknown)"}
         </code>
       ),
       action: <ImageActions id={pod.id} stale={stale} updating={img.updating} current={currentMeta} rollbackTo={rollbackMeta} />,

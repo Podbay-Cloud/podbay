@@ -18,6 +18,8 @@ import {
 import type { FetchMemory } from "./fetch-memory.js";
 import {
   AgentMessages,
+  InvalidMessage,
+  MSG_MAX_BODY,
   resolvePodRef,
   SYSTEM_SENDER,
   MSG_PAIR_CAP,
@@ -49,7 +51,7 @@ import type {
   GhDevicePoll,
 } from "@podbay/provider";
 import { buildInitFiles } from "@podbay/provider";
-import { requestHandoff, writeResizeNote } from "./handoff.js";
+import { requestHandoff, writeResizeNote, writeT3HandoffNote, T3_HANDOFF_REQUEST } from "./handoff.js";
 import type { PodStore } from "./store.js";
 import type { SecretVault } from "./secret-vault.js";
 import {
@@ -70,6 +72,34 @@ import { usageForPod, type PodUsage } from "./metrics.js";
  * doesn't exec on every reconcile sweep. A successful refresh updates config_hash and stops retrying
  * outright; this only bounds the failure case. */
 const CONFIG_DRIFT_BACKOFF_MS = 10 * 60_000;
+
+
+/** In-pod reader for the agent's newest activity — used for images that don't report `lastActivityMs`
+ * on /healthz. Scans Claude transcripts (per-line `"timestamp"`) + Codex rollout mtimes (the SAME two
+ * sources the new pod-agent reads natively) and prints MS SINCE the newest entry, computed with the
+ * pod's own clock so there's no host/pod skew. Prints `-1` when there's no transcript at all. */
+const AGENT_ACTIVITY_SCRIPT = [
+  "now=$(date +%s%3N); newest=0",
+  "for f in $(find /home/dev/.claude/projects -name '*.jsonl' 2>/dev/null); do",
+  "  ts=$(tail -c 131072 \"$f\" 2>/dev/null | grep -ohE '\"timestamp\":\"[^\"]+\"' | tail -1 | sed -E 's/.*:\"//; s/\"$//')",
+  "  [ -z \"$ts\" ] && continue",
+  "  e=$(date -d \"$ts\" +%s%3N 2>/dev/null) || continue",
+  "  [ \"$e\" -gt \"$newest\" ] && newest=$e",
+  "done",
+  "for f in $(find /home/dev/.codex/sessions -name 'rollout-*.jsonl' 2>/dev/null); do",
+  "  m=$(( $(stat -c %Y \"$f\" 2>/dev/null || echo 0) * 1000 ))",
+  "  [ \"$m\" -gt \"$newest\" ] && newest=$m",
+  "done",
+  "if [ \"$newest\" -gt 0 ]; then echo $(( now - newest )); else echo -1; fi",
+].join("\n");
+
+/** Max pods the bulk "update idle pods" action recreates AT ONCE — the rest queue behind them so a
+ * large fleet updates in waves instead of hammering the box with N simultaneous Incus recreates. */
+const BULK_UPDATE_CONCURRENCY = 3;
+/** Idle-by-inactivity floor for a pod whose agent status is UNKNOWN (null — Claude not reporting). We
+ * can't confirm it's idle live, so require a much longer demonstrated inactivity than the normal dwell
+ * before auto-updating it — a conservative "clearly abandoned" bar (owner decision, 2026-08-26). */
+const UNKNOWN_STATUS_IDLE_MS = 4 * 60 * 60 * 1000;
 
 /** Stable hash of the config layer we deliver to a pod — the `/etc/podbay/claude/*` files (sorted by
  * path so order can't perturb it) plus the permissions slice. Drift-detection compares this: it
@@ -137,10 +167,46 @@ export const AGENT_API_KEY_SECRET: Record<string, string> = {
   "claude-code": "PODBAY_AGENT_ANTHROPIC_KEY",
   codex: "PODBAY_AGENT_OPENAI_KEY",
 };
+/** Reserved secret carrying the ~1-year `claude setup-token`; boot.ts maps it onto
+ * CLAUDE_CODE_OAUTH_TOKEN for the agent PROCESS (RESERVED_CLAUDE_OAUTH_TOKEN there). Hidden from the
+ * user's secret list. See docs/strategy/agent-auth-lifecycle.md. */
+export const CLAUDE_OAUTH_TOKEN_SECRET = "PODBAY_AGENT_CLAUDE_OAUTH_TOKEN";
+
+/** The port T3's `t3 serve` binds on the pod. Deliberately NOT :3000 — the podbay preview always
+ * proxies :3000, so keeping T3 off it lets the pod's OWN app keep serving there (its preview stays
+ * live) WHILE T3 drives the agents. The T3 app reaches `t3 serve` via T3's own relay (relay.t3.codes),
+ * which follows the serve port, not :3000. (rework 2026-08-25) */
+const T3_SERVE_PORT = 7373;
+/** Rough installed size of the `t3@latest` npx package (~671MB measured 2026-08-25) — the denominator
+ * for the download progress %. Approximate on purpose; the bar is capped at 99% until :port answers. */
+const T3_RUNTIME_BYTES = 700 * 1024 * 1024;
+/** Past this age, an enable's `t3_since` is treated as ORPHANED (its detached task died — a gateway
+ * restart mid-enable), not in-flight — so a re-enable is allowed to recover it. Comfortably beyond the
+ * ~300s `:port` poll budget. */
+const T3_ENABLE_STALE_MS = 8 * 60 * 1000;
 const RESERVED_SECRET_KEYS = new Set([
   GH_CLONE_TOKEN_KEY,
+  CLAUDE_OAUTH_TOKEN_SECRET,
   ...Object.values(AGENT_API_KEY_SECRET),
 ]);
+
+/** The setup-token is INFERENCE-ONLY — it cannot do Claude's native Remote Control. So it is "enough"
+ * ONLY when T3 is driving (T3 runs the CLI over its own channel, no native RC needed). A setup-token pod
+ * still under PODBAY control genuinely DOES need a subscription sign-in (for RC), so we must NOT mask its
+ * "needs sign-in" there. Only when `t3Control` is true is the token the complete auth — then report
+ * Claude authed (the pod-agent's file-based `authed` reads false because `.credentials.json` is relocated
+ * by design; the token IS the auth, verified via `claude -p`). The 1-year hard expiry still surfaces via
+ * `expiresAt`. Proper long-term fix: a token-aware healthz in the pod-agent (needs an image). */
+function setupTokenAuthed<T extends { id: string; authed: boolean; loginExpired?: boolean; needsReauth?: boolean }>(
+  agents: T[],
+  agentAuth: string | null | undefined,
+  t3Control: boolean | null | undefined,
+): T[] {
+  if (agentAuth !== "setup-token" || !t3Control) return agents;
+  return agents.map((a) =>
+    a.id === "claude-code" ? { ...a, authed: true, loginExpired: false, needsReauth: false } : a,
+  );
+}
 
 export interface LaunchOptions {
   /** Display name (trimmed, ≤60 chars; empty ⇒ falls back to the slug). */
@@ -328,6 +394,7 @@ export class PodService {
       // Env-declared default (docs: first-10-customers wants a shareable landing
       // from launch; private surfaces gate themselves in-app). Owner can flip it.
       previewPublic: resolved.preview === "public",
+      previewAppAuth: false, // set later by a backend flavor (e.g. T3 Code), never a launch default
       // BYO-repo (docs/plans/byo-repo-plan.md): the repo to clone into ~/work. The token
       // rides as a reserved encrypted pod-secret below, never on this row.
       githubRepo: opts.githubRepo?.trim() || null,
@@ -343,6 +410,10 @@ export class PodService {
       updatingSince: null,
       updateStage: null,
       maintenanceKind: null,
+      t3Control: false,
+      t3Since: null,
+      t3Stage: null,
+      t3Connected: false,
       provider: this.defaultName(),
       size,
       diskGb: POD_TIERS[size].diskGb,
@@ -354,7 +425,10 @@ export class PodService {
       provisionLeaseUntil: null,
       provisionError: null,
       walkthroughSeenAt: null,
-      position: null,
+      // A concrete position at the TOP of the owner's manual order — never null. A null position
+      // used to mean "float above the manual order, sorted by status/recency", which made a new
+      // card re-sort ITSELF as its status changed instead of staying where the owner left it.
+      position: await this.nextTopPosition(ownerId),
       createdAt: now,
       lastActiveAt: now,
     };
@@ -916,21 +990,44 @@ export class PodService {
   };
   private sortForDisplay(pods: PodRecord[]): PodRecord[] {
     const rank = (s: PodStatus) => PodService.STATUS_RANK[s] ?? 1;
-    // MANUAL order wins: hand-placed pods (position set) keep their exact order.
-    // Never-placed pods (position null — e.g. created after the owner last sorted)
-    // float ABOVE the placed ones in the default status/recency sort, so a brand-new
-    // pod appears at the top where it's easy to find and drag into place.
+    // The dashboard is MANUALLY ordered. Every pod now gets a real `position` at creation
+    // (see `nextTopPosition` — a new pod is placed ABOVE the existing ones), so the first
+    // branch is the normal path and a card NEVER moves on its own.
+    //
+    // The null branches below are legacy-only: rows created before positions were assigned at
+    // creation. They still sort above placed pods (unchanged, so an existing dashboard doesn't
+    // jump), but note the ordering among them is deliberately NO LONGER status-ranked — status
+    // rank meant a null-position card physically REORDERED ITSELF as its pod went
+    // Working → Waiting → Idle, which is what the owner saw as "cards jumping to the top"
+    // (2026-08-27). Recency alone is stable enough for the shrinking legacy set, and the 0049
+    // migration backfills these so the branch stops being reachable at all.
     return [...pods].sort((a, b) => {
       if (a.position != null && b.position != null)
         return a.position - b.position || a.id.localeCompare(b.id);
       if (a.position != null) return 1;
       if (b.position != null) return -1;
       return (
-        rank(a.status) - rank(b.status) ||
         b.lastActiveAt.localeCompare(a.lastActiveAt) || // most-recently-active first (matches the card's "active X ago")
         a.id.localeCompare(b.id)
       );
     });
+  }
+
+  /**
+   * The `position` a NEWLY created pod should take so it lands at the TOP of the owner's
+   * hand-ordered dashboard — one below the current minimum (positions are a plain ordering key,
+   * so negatives are fine and avoid renumbering every other row on every launch).
+   *
+   * Why assign at creation at all: a null position used to mean "float above the manual order and
+   * sort by status/recency", so a brand-new pod appeared on top but ALSO kept re-sorting itself as
+   * its status changed — the owner's manual order was never actually authoritative. Giving the pod
+   * a concrete position keeps the "new pods on top" behaviour while making it STICK.
+   */
+  private async nextTopPosition(ownerId: string): Promise<number> {
+    const placed = (await this.store.listByOwner(ownerId))
+      .map((p) => p.position)
+      .filter((p): p is number => p != null);
+    return placed.length ? Math.min(...placed) - 1 : 0;
   }
 
   /**
@@ -1482,8 +1579,16 @@ export class PodService {
           createdAt: created && !Number.isNaN(created.getTime()) ? created : undefined,
         });
       } catch (e) {
-        // One bad/undeliverable line must not discard the rest of the drain — but a throw here is
-        // a TRANSIENT failure (e.g. the DB insert), so withhold the ack and retry the whole batch.
+        if (e instanceof InvalidMessage) {
+          // PERMANENT failure (body too long / malformed) — it will NEVER route, so retrying only
+          // wedges the pod's ENTIRE outbox forever: a >4000-char message re-failed every drain poll,
+          // never confirmed, and blocked all of the pod's subsequent sends (makore→first10, 2026-08-25).
+          // Bounce it to the sender and count it HANDLED so the batch can be confirmed and move on.
+          await this.bounceInvalid(rec, line, e.message).catch(() => undefined);
+          this.log.warn("msg_route_bounced_invalid", { podId: rec.id, reason: e.message });
+          continue;
+        }
+        // TRANSIENT failure (e.g. a DB insert) — withhold the ack and retry the whole batch next pass.
         allHandled = false;
         this.log.warn("msg_route_failed", { podId: rec.id, err: (e as Error).message });
       }
@@ -1533,6 +1638,20 @@ export class PodService {
       .catch(() => undefined);
   }
 
+  /** Bounce a PERMANENTLY-invalid outbox line (body too long / malformed) back to its sender, so the
+   * sender learns it wasn't delivered instead of silently believing it sent — and, critically, so the
+   * drain can confirm the batch rather than re-failing it forever. */
+  private async bounceInvalid(rec: PodRecord, line: OutboxLine, reason: string): Promise<void> {
+    if (!this.agentMessages) return;
+    const detail = /too long/i.test(reason)
+      ? `it was ${line.body.length} characters and the limit is ${MSG_MAX_BODY} — split it into smaller messages and resend.`
+      : reason;
+    const body = `Couldn't deliver your message to "${line.to}": ${detail}`;
+    await this.agentMessages
+      .route({ id: `bounce_${line.id}`, ownerId: rec.ownerId, fromPod: SYSTEM_SENDER, toPod: rec.id, body })
+      .catch(() => undefined);
+  }
+
   /** Bounce when a sender→recipient pair is over the rate cap. */
   private async bounceRate(rec: PodRecord, line: OutboxLine, toId: string): Promise<void> {
     if (!this.agentMessages) return;
@@ -1559,6 +1678,12 @@ export class PodService {
     if (typeof prov.podHealth !== "function") return;
     const health = await prov.podHealth(rec.id).catch(() => null);
     if (!health) return;
+    // Keep lastActiveAt honest while we have the health in hand: it tracks the AGENT DOING REAL WORK
+    // (via remote control or autonomously) — NOT terminal traffic, which a running app/spinner streams
+    // continuously. Advance lastActiveAt to the agent's real last turn when that's newer. This one
+    // write fixes EVERY lastActiveAt reader at once: the card + cockpit "active X ago", the dashboard
+    // sort, admin, and suspended.
+    await this.bumpLastActive(rec, await this.agentActivityMs(prov, rec.id, health));
     const repairs = health.repairs ?? [];
     const ooms = health.ooms ?? [];
     if (repairs.length === 0 && ooms.length === 0) return;
@@ -1686,6 +1811,283 @@ export class PodService {
     return updated;
   }
 
+  /** Delegated-auth preview: the gateway forwards :3000 as public transport, but access is gated by
+   * the UPSTREAM app's own auth (an agent-harness backend like T3 Code guards its own WS with a
+   * pairing token). Distinct from previewPublic so the UX labels it honestly and a backend flavor
+   * sets it rather than the owner flipping a generic "public" toggle. DB-only; the gateway reads it. */
+  async setPreviewAppAuth(ownerId: string, id: string, previewAppAuth: boolean): Promise<PodRecord> {
+    const rec = await this.owned(ownerId, id);
+    const updated = await this.store.update(id, { previewAppAuth });
+    await this.providerFor(rec.provider)
+      .patchPodSpec?.(id, { previewAppAuth })
+      .catch(() => undefined);
+    return updated;
+  }
+
+  private t3Credential(stdout: string): string {
+    const m = (stdout ?? "").match(/"credential"\s*:\s*"([^"]+)"/);
+    if (!m) throw new Error("could not mint a T3 Code pairing token — the backend may still be starting; try again in a moment");
+    return m[1];
+  }
+
+  /** Tell the pod-agent to yield (true) or resume (false) its own remote-control for BOTH agents, so
+   * an external harness (T3 Code) can own them without a fight. Best-effort exec-curl to the pod's
+   * control socket; NEVER touches the credential files, so the agents stay signed in across the
+   * hand-off in both directions. Mirrors reconnectAgent's exec-curl shape. */
+  private async execRcYield(rec: PodRecord, id: string, doYield: boolean): Promise<void> {
+    await this.providerFor(rec.provider).exec(id, [
+      "bash",
+      "-lc",
+      `curl -fsS -m 20 -X POST -H 'content-type: application/json' --data '{"yield":${doYield}}' http://127.0.0.1:8080/agent/rc-yield >/dev/null 2>&1 || true`,
+    ]);
+  }
+
+  private async setT3Stage(id: string, stage: string): Promise<void> {
+    this.log.info("t3_enable_stage", { podId: id, stage });
+    await this.store.update(id, { t3Stage: stage }).catch(() => undefined);
+  }
+
+  /** Turn a pod into a T3 Code backend, ASYNCHRONOUSLY. Marks the row provisioning (t3Since/t3Stage,
+   * the render source of truth the cockpit polls) and detaches the setup, because the first run
+   * downloads t3 and can take a minute or two — a blocking action would spin the button and risk a
+   * timeout. When it finishes, `t3Control` is true and the cockpit fetches a pairing token via
+   * mintT3Pairing. Returns immediately. */
+  async startT3Enable(ownerId: string, id: string, backendUrl: string): Promise<void> {
+    const rec = await this.owned(ownerId, id);
+    if (rec.status !== "running") throw new ControlError("the pod must be running to enable T3 Code", "invalid");
+    // IDEMPOTENT. Three surfaces trigger an enable (completeSetupToken server action, the cockpit's
+    // launch/auto-enable effect, the connect-panel button) with no cross-coordination — so this MUST
+    // no-op when an enable is already in flight or already done, or a second call resets t3Stage back
+    // to "preparing" and spawns a second runT3Enable that stomps the first (removes the startup the
+    // other just added, double-yields RC, races the :3000 poll). Disambiguate by durable state, not by
+    // trusting the caller. (t3ttt didn't actually double-enable, but the hole was real — 2026-08-25.)
+    if (rec.t3Control) {
+      this.log.info("t3_enable_skip", { podId: id, reason: "already_in_control" });
+      return;
+    }
+    // Block a CONCURRENT enable (a second trigger seconds after the first), but NOT a stale one: the
+    // enable is a detached in-memory task, so a gateway restart mid-enable orphans it — t3_since stays
+    // set forever with no task advancing it. Only a RECENT t3_since means a live enable; a stale one is
+    // an orphan we must be allowed to re-run (else the guard makes "stuck forever" unrecoverable).
+    if (rec.t3Since && Date.now() - Date.parse(rec.t3Since) < T3_ENABLE_STALE_MS) {
+      this.log.info("t3_enable_skip", { podId: id, reason: "already_in_flight", since: rec.t3Since });
+      return;
+    }
+    if (rec.t3Since) this.log.info("t3_enable_recover", { podId: id, staleSince: rec.t3Since });
+    this.log.info("t3_enable_start", { podId: id });
+    await this.store.update(id, { t3Since: new Date().toISOString(), t3Stage: "preparing" });
+    // Detached: failures set t3Stage="error" + clear t3Since so the cockpit reports them.
+    void this.runT3Enable(rec, id, backendUrl).catch((e) => this.clearT3Failure(rec, id, e));
+  }
+
+  /** The staged T3 provisioning (detached). Frees :3000, yields Podbay's own RC to T3, registers the
+   * durable `t3 serve` startup, waits for it to answer, then flips the preview to delegated-auth and
+   * marks T3 in control. Each stage is written to t3Stage for the wizard. */
+  private async runT3Enable(rec: PodRecord, id: string, backendUrl: string): Promise<void> {
+    const prov = this.providerFor(rec.provider);
+    // preparing: hand our own agent RC over to T3 (creds untouched). We do NOT stop the pod's :3000 dev
+    // server anymore — T3 runs on T3_SERVE_PORT, so :3000 stays the user's app and its preview keeps
+    // working while T3 drives the agents. `podbay dev enable` clears any stale disable marker left by a
+    // pod that was enabled under the old (T3-on-:3000) flow, so :3000 is guaranteed to be the user's app.
+    await this.setT3Stage(id, "preparing");
+    // `podbay startup`/`podbay dev` MUST run as the dev user: `startup add` writes DEV's
+    // ~/.podbay/startup.json (the only one the pod-agent supervises), so a root-context add lands where
+    // the supervisor never looks → `startup start` fails → t3 never launches → the enable hangs on the
+    // port poll. prov.exec defaults to root, so wrap in `su - dev`. (real root cause, 2026-08-24)
+    await prov.exec(id, ["su", "-", "dev", "-c", "podbay dev enable >/dev/null 2>&1 || true; podbay startup remove t3-code >/dev/null 2>&1 || true"]);
+    // Run the handoff and the t3 download/launch CONCURRENTLY (owner ask 2026-08-24): they're
+    // independent — the handoff needs Podbay's agents still LIVE (so it must precede the yield), while
+    // registering + launching `t3 serve` (which cold-downloads t3 via npx, the slow part) touches
+    // nothing agent-side. Overlapping them means the ~25s handoff no longer stacks on top of the
+    // multi-minute download. t3 doesn't drive the agents until a device pairs, so it coming up before
+    // the yield is harmless. `podbay startup add` only WRITES the declaration (starts next boot) — the
+    // enable MUST also `startup start` it, or :3000 never answers (the bug that made T3 enable never
+    // work, first10 2026-08-23).
+    await this.setT3Stage(id, "downloading");
+    // Full handoff budget (default HANDOFF_TIMEOUT_MS, 60s — same as an update), NOT a shortened one:
+    // now that the handoff overlaps the multi-minute download, capping it early saves nothing and would
+    // only risk cutting off a busy agent mid-note (owner asked why it was shorter, 2026-08-24).
+    const handoffP = requestHandoff({ provider: prov, podId: id, log: this.log, request: T3_HANDOFF_REQUEST })
+      .catch(() => undefined)
+      .then(() =>
+        writeT3HandoffNote({ provider: prov, podId: id, direction: "to-t3", at: new Date().toISOString(), log: this.log }),
+      );
+    const downloadP = (async () => {
+      // On a setup-token (unattended) pod, launch t3 serve with the 1-year token mapped into ITS env so
+      // T3's OWN spawned Claude runs on the token (T3 doesn't go through Podbay's agentInvocation, so the
+      // reserved-secret mapping wouldn't otherwise reach it — t3-unattended-integration 2.1). The value
+      // expands at t3-launch time from the reserved secret in secrets-load.sh — it's single-quoted in the
+      // outer command, so the token NEVER lands in the stored startup declaration.
+      const tokenEnv =
+        rec.agentAuth === "setup-token" ? `env CLAUDE_CODE_OAUTH_TOKEN="$${CLAUDE_OAUTH_TOKEN_SECRET}" ` : "";
+      await prov.exec(id, [
+        "su",
+        "-",
+        "dev",
+        "-c",
+        `podbay startup add --slug t3-code --port ${T3_SERVE_PORT} --do '${tokenEnv}T3CODE_NO_BROWSER=1 npx --yes t3@latest serve --host 0.0.0.0 --port ${T3_SERVE_PORT} --base-dir /home/dev/.t3 --auto-bootstrap-project-from-cwd /home/dev/work' >/dev/null 2>&1 || true`,
+      ]);
+      await prov.exec(id, ["su", "-", "dev", "-c", "podbay startup start t3-code >/dev/null 2>&1 || true"]);
+    })();
+    await Promise.allSettled([handoffP, downloadP]);
+    // Yield RC only AFTER the handoff has run against the live agents.
+    await this.execRcYield(rec, id, true);
+    // Poll for :3000 with SHORT execs (each returns immediately) rather than ONE long exec — the incus
+    // exec is capped server-side (~60s), which would cut off a single long wait before a cold npx
+    // download finished. The FIRST-RUN `npx t3@latest serve` download is the slow part and on a cold
+    // cache (every pod's first enable) it exceeds the old 150s budget — that timeout failed the first
+    // enable for basically every user, and only "worked" on retry once ~/.npm was warm (test:2,
+    // 2026-08-23). Budget ~300s (100 × 3s); the cache lives on the durable home volume, so subsequent
+    // enables answer in seconds. Stay on the "downloading" stage during the wait — it read as a stuck
+    // "starting" for minutes; flip to "starting" only once :3000 answers. If it never does, throw →
+    // clearT3Failure rolls the pod back rather than leaving it stranded.
+    let up = false;
+    for (let i = 0; i < 100; i++) {
+      // In ONE short exec: check :port, and (while still downloading) measure the npx cache size so the
+      // wizard can show a REAL % instead of a spinner that reads as stuck. `du -sb` is cheap; the value
+      // rides in t3Stage as `downloading:<pct>` (no new column) and the client parses the suffix.
+      const r = await prov
+        .exec(id, [
+          "bash",
+          "-lc",
+          `curl -sf -o /dev/null http://127.0.0.1:${T3_SERVE_PORT}/ && echo UP || du -sb /home/dev/.npm/_npx 2>/dev/null | cut -f1`,
+        ])
+        .catch(() => null);
+      const out = r?.stdout?.trim() ?? "";
+      if (out.includes("UP")) {
+        up = true;
+        break;
+      }
+      const bytes = Number.parseInt(out, 10);
+      if (Number.isFinite(bytes) && bytes > 0) {
+        const pct = Math.min(99, Math.round((bytes / T3_RUNTIME_BYTES) * 100));
+        // Write the row directly (not setT3Stage) so the 3s progress ticks don't spam the stage log.
+        await this.store.update(id, { t3Stage: `downloading:${pct}` }).catch(() => undefined);
+      }
+      await new Promise((res) => setTimeout(res, 3_000));
+    }
+    if (!up) throw new Error(`T3 backend didn't answer on :${T3_SERVE_PORT} within ~300s`);
+    await this.setT3Stage(id, "starting");
+    // ready: T3 in control, clear the wizard. NOTE: we do NOT set previewAppAuth — the pod's own app
+    // keeps :3000 (its preview stays owner-auth as normal); T3 is reached via its relay, not the podbay
+    // preview, so the old delegated-auth flip is neither needed nor wanted (rework 2026-08-25).
+    await this.store.update(id, { t3Control: true, t3Since: null, t3Stage: "ready" });
+    this.log.info("t3_enable_ready", { podId: id });
+  }
+
+  private async clearT3Failure(rec: PodRecord, id: string, e: unknown): Promise<void> {
+    this.log.error("t3_enable_failed", { podId: id, err: e });
+    // Roll back the "preparing" side-effects so a failed enable doesn't strand the pod with its dev
+    // server disabled and :3000 dead (podbay first10 hit exactly that — the preview went dark). Mirrors
+    // disableT3Backend's restore; best-effort, must never throw over the original failure.
+    try {
+      const prov = this.providerFor(rec.provider);
+      await prov
+        .exec(id, [
+          "su",
+          "-",
+          "dev",
+          "-c",
+          "podbay startup remove t3-code >/dev/null 2>&1 || true; pkill -f 't3@latest serve' >/dev/null 2>&1 || true; pkill -f 't3 serve' >/dev/null 2>&1 || true; podbay dev enable >/dev/null 2>&1 || true",
+        ])
+        .catch(() => undefined);
+      await this.execRcYield(rec, id, false).catch(() => undefined);
+      await prov.patchPodSpec?.(id, { previewAppAuth: false }).catch(() => undefined);
+    } catch {
+      /* best-effort rollback */
+    }
+    // Leave t3Control false; surface the failure to the cockpit via t3Stage="error".
+    await this.store.update(id, { previewAppAuth: false, t3Control: false, t3Since: null, t3Stage: "error", t3Connected: false }).catch(() => undefined);
+  }
+
+  /** T3 enable/disable progress for the cockpit wizard — read from the durable row (t3Since/t3Stage),
+   * refresh-safe and consistent with the "in control" banner. `active` while provisioning. */
+  async t3Progress(
+    ownerId: string,
+    id: string,
+  ): Promise<{ active: boolean; stage: string | null; startedAt: string | null; inControl: boolean }> {
+    const rec = await this.owned(ownerId, id);
+    return {
+      active: Boolean(rec.t3Since),
+      stage: rec.t3Stage,
+      startedAt: rec.t3Since,
+      inControl: rec.t3Control,
+    };
+  }
+
+  /** Unstick ORPHANED T3 enables. `runT3Enable` is a detached in-memory task, so a gateway restart
+   * mid-enable kills it while `t3_since` stays set — the wizard then polls forever. A live enable
+   * self-terminates within the ~300s poll budget, so any pod whose enable has been "in flight" past the
+   * stale window (and isn't in control, and isn't a disable) is an orphan → fail it so the wizard
+   * surfaces an error and the owner can retry. Idempotent; safe on every maintenance sweep. */
+  async reconcileStuckT3Enables(): Promise<string[]> {
+    const now = Date.now();
+    const stuck: string[] = [];
+    let pods: PodRecord[];
+    try {
+      pods = await this.store.list();
+    } catch {
+      return stuck;
+    }
+    for (const rec of pods) {
+      if (rec.t3Control || !rec.t3Since || rec.t3Stage === "stopping") continue;
+      if (now - Date.parse(rec.t3Since) < T3_ENABLE_STALE_MS) continue;
+      this.log.warn("t3_enable_orphaned", { podId: rec.id, since: rec.t3Since });
+      await this.clearT3Failure(rec, rec.id, new Error("T3 enable orphaned (gateway restarted mid-enable)")).catch(
+        () => undefined,
+      );
+      stuck.push(rec.id);
+    }
+    return stuck;
+  }
+
+  /** Turn OFF T3 Code control — the exact inverse of enable, and the path that was entirely missing.
+   * Stops `t3 serve`, removes its durable startup, returns the preview to owner-auth, restores the
+   * Podbay dev server on :3000, and hands agent RC back to Podbay. Idempotent + safe to re-run: it
+   * re-asserts the full Podbay-in-control target state. Agents stay signed in (creds untouched). */
+  async disableT3Backend(ownerId: string, id: string): Promise<void> {
+    const rec = await this.owned(ownerId, id);
+    if (rec.status !== "running") throw new ControlError("the pod must be running to turn off T3 Code", "invalid");
+    const prov = this.providerFor(rec.provider);
+    await this.store.update(id, { t3Since: new Date().toISOString(), t3Stage: "stopping" });
+    try {
+      // Stop t3 + free the port FIRST, then flip auth back and restore the dev server,
+      // so :3000 is never double-bound.
+      await prov.exec(id, ["su", "-", "dev", "-c", "podbay startup remove t3-code >/dev/null 2>&1 || true; pkill -f 't3@latest serve' >/dev/null 2>&1 || true; pkill -f 't3 serve' >/dev/null 2>&1 || true"]);
+      await this.store.update(id, { previewAppAuth: false });
+      await prov.patchPodSpec?.(id, { previewAppAuth: false }).catch(() => undefined);
+      await prov.exec(id, ["su", "-", "dev", "-c", "podbay dev enable >/dev/null 2>&1 || true"]);
+      // T3's sessions aren't in our tmux, so there's nothing to `requestHandoff` from — instead drop a
+      // pointer note directing the resumed Podbay agent at the working tree T3 edited (git diff) + T3's
+      // own history. Written BEFORE the yield-back so it's in place when Podbay's RC respawns the agent.
+      await writeT3HandoffNote({ provider: prov, podId: id, direction: "to-podbay", at: new Date().toISOString(), log: this.log });
+      // Hand agent remote-control back to Podbay (clears both RC-off sentinels + restarts RC).
+      await this.execRcYield(rec, id, false);
+      await this.store.update(id, { t3Control: false, t3Since: null, t3Stage: null, t3Connected: false });
+    } catch (e) {
+      await this.store.update(id, { t3Since: null, t3Stage: "error" }).catch(() => undefined);
+      throw e;
+    }
+  }
+
+  /** Mint a fresh T3 pairing token for an already-enabled pod (the "regenerate code" action) —
+   * no re-provision, just `auth pairing create` against the running t3. */
+  async mintT3Pairing(
+    ownerId: string,
+    id: string,
+    backendUrl: string,
+  ): Promise<{ backendUrl: string; token: string; pairUrl: string }> {
+    const rec = await this.owned(ownerId, id);
+    const prov = this.providerFor(rec.provider);
+    const out = await prov.exec(id, [
+      "bash",
+      "-lc",
+      `T3CODE_NO_BROWSER=1 npx --yes t3@latest auth pairing create --base-dir /home/dev/.t3 --ttl 24h --label podbay --base-url ${JSON.stringify(backendUrl)} --json 2>/dev/null`,
+    ]);
+    const token = this.t3Credential(out.stdout);
+    return { backendUrl, token, pairUrl: `${backendUrl}/pair#token=${token}` };
+  }
+
   /** Fleet-updates (C): the pod's auto-update opt-out. "off" excludes it from the "update idle pods"
    * bulk action (a pod running a service the owner updates deliberately); "inherit" includes it. */
   async setAutoUpdate(ownerId: string, id: string, autoUpdate: "inherit" | "off"): Promise<PodRecord> {
@@ -1711,19 +2113,30 @@ export class PodService {
         if (!p.imageDigest || short(p.imageDigest) === short(pin)) return false; // not behind
         if (p.status !== "running" || p.updatingSince) return false; // must be up + not already updating
         if (p.autoUpdate === "off") return false; // owner excluded it (C)
-        // Idle across ALL the pod's agents — not just Claude. Requiring agentStatus==="idle" skipped
-        // codex-only pods (their Claude agentStatus is null). Eligible = at least one agent
-        // AFFIRMATIVELY idle AND neither agent busy/working (so a busy codex still blocks an update).
+        // T3 drives the pod's session (Claude yields to T3, so its status is always null); an auto-update
+        // recreates the pod and would interrupt the live T3 session. Never auto-update a T3 pod (owner
+        // decision, 2026-08-26) — it updates manually via Settings → Update.
+        if (p.t3Control) return false;
         const l = liveBy.get(p.id);
-        const someIdle = l?.agentStatus === "idle" || l?.codexStatus === "idle";
         const anyBusy =
           l?.agentStatus === "busy" ||
           l?.agentStatus === "waiting" ||
           l?.agentStatus === "shell" ||
           l?.codexStatus === "busy";
-        if (!someIdle || anyBusy) return false; // not idle right now
-        if (now - Date.parse(p.lastActiveAt) < dwellMs) return false; // …and idle for the dwell window
-        return true;
+        if (anyBusy) return false; // a busy agent blocks the update
+        // TRUE idle time — the agent's session-file mtime (counts app/RC + autonomous turns), falling
+        // back to lastActiveAt only when the image doesn't report it.
+        const idleMs = l?.agentIdleMs ?? now - Date.parse(p.lastActiveAt);
+        // Eligible = at least one agent AFFIRMATIVELY idle for the dwell, OR the agent status is UNKNOWN
+        // (both null — Claude not reporting, e.g. sitting at a gate) but the pod has been demonstrably
+        // inactive for a MUCH longer window. The second arm covers a pod we can't confirm live but which
+        // is clearly abandoned (test:1: null status, inactive ~2 days) — owner: idle-by-inactivity.
+        const someIdle = l?.agentStatus === "idle" || l?.codexStatus === "idle";
+        const statusUnknown = l?.agentStatus == null && l?.codexStatus == null;
+        const eligible =
+          (someIdle && idleMs >= dwellMs) ||
+          (statusUnknown && idleMs >= UNKNOWN_STATUS_IDLE_MS);
+        return eligible;
       })
       .map((p) => p.id);
   }
@@ -1736,18 +2149,41 @@ export class PodService {
     pin: string | null,
     dwellMs: number,
     image: string,
+    concurrency = BULK_UPDATE_CONCURRENCY,
   ): Promise<{ started: string[] }> {
     const slugs = await this.updatableIdlePods(ownerId, pin, dwellMs);
-    const started: string[] = [];
-    for (const id of slugs) {
-      try {
-        await this.startPodImageUpdate(ownerId, id, image);
-        started.push(id);
-      } catch (e) {
-        this.log.warn("bulk_update_pod_failed", { id, err: String(e) });
+    if (slugs.length === 0) return { started: [] };
+    // Process the recreates in the BACKGROUND, at most `concurrency` at once — firing all N at once
+    // was N simultaneous Incus recreates on the box (a thundering herd at fleet scale). Detached so
+    // the action returns immediately; each pod's row flips to "updating" only when its recreate
+    // actually starts, so the cards roll through the waves honestly.
+    void this.runIdleUpdateBatch(ownerId, slugs, image, concurrency);
+    return { started: slugs };
+  }
+
+  /** Run a set of pod updates with a fixed concurrency cap. N worker "lanes" each pull the next pod
+   * and await its full recreate before taking another — so no more than `concurrency` recreates run
+   * at once. A failed pod is logged and skipped (applyPodImageUpdate never rejects), never stalling
+   * the batch. */
+  private async runIdleUpdateBatch(
+    ownerId: string,
+    slugs: string[],
+    image: string,
+    concurrency: number,
+  ): Promise<void> {
+    let next = 0;
+    const lane = async (): Promise<void> => {
+      while (next < slugs.length) {
+        const id = slugs[next++]!;
+        try {
+          await this.applyPodImageUpdate(ownerId, id, image);
+        } catch (e) {
+          this.log.warn("bulk_update_pod_failed", { id, err: String(e) });
+        }
       }
-    }
-    return { started };
+    };
+    const lanes = Math.max(1, Math.min(concurrency, slugs.length));
+    await Promise.all(Array.from({ length: lanes }, () => lane()));
   }
 
   /** Record that the owner has seen the post-create connect walkthrough, so it never
@@ -1864,7 +2300,9 @@ export class PodService {
   }
 
   async agentStates(ownerId: string, id: string): Promise<PodAgentState[]> {
-    return (await this.podHealth(ownerId, id)).agents;
+    const rec = await this.owned(ownerId, id);
+    const agents = (await this.podHealth(ownerId, id)).agents;
+    return setupTokenAuthed(agents, rec.agentAuth, rec.t3Control);
   }
 
   /** Send the sign-in code the owner pasted in the cockpit to a specific agent's
@@ -1875,10 +2313,276 @@ export class PodService {
     if (rec.status !== "running") {
       throw new ControlError("the pod must be running to sign an agent in", "invalid");
     }
-    if (!(rec.agents ?? []).some((a) => a === agent)) {
+    // Validate against the LIVE agents (authoritative for "what's actually running"), falling back to
+    // the stored config. A legacy pod can have a null `agents` column (created before we tracked it)
+    // while genuinely running the agent — guarding on the stored value ALONE wrongly rejected its
+    // sign-in ("this pod does not run claude-code" on test:1, agents=NULL, seen 2026-08-25) even though
+    // the wizard, driven by the same live health, was showing that agent's OAuth URL. Only block when we
+    // have a known, non-empty agent set that excludes it; if we can't determine the set, don't block.
+    const live = (await this.podHealth(ownerId, id)).agents.map((a) => a.id);
+    const known = live.length ? live : (rec.agents ?? []);
+    if (known.length && !known.includes(agent)) {
       throw new ControlError(`this pod does not run ${agent}`, "invalid");
     }
     await this.providerFor(rec.provider).sendAgentInput(id, agent, text);
+  }
+
+  /** Reconnect an agent whose login has EXPIRED: wipe the dead token and respawn the agent so its
+   * boot takes the `/login` branch and prints a fresh device-auth URL — which the cockpit's existing
+   * sign-in UI (authUrl + paste-code) then surfaces. Owner-scoped. */
+  async reconnectAgent(ownerId: string, id: string, agent: string): Promise<void> {
+    if (agent !== "claude-code" && agent !== "codex") throw new ControlError("unknown agent", "invalid");
+    const rec = await this.owned(ownerId, id);
+    if (rec.status !== "running") throw new ControlError("the pod must be running to reconnect an agent", "invalid");
+    const credPath = agent === "codex" ? "/home/dev/.codex/auth.json" : "/home/dev/.claude/.credentials.json";
+    await this.providerFor(rec.provider).exec(id, [
+      "bash",
+      "-lc",
+      `rm -f ${credPath}; curl -fsS -m 20 -X POST -H 'content-type: application/json' --data '{"agent":"${agent}"}' http://127.0.0.1:8080/agent/restart >/dev/null 2>&1 || true`,
+    ]);
+  }
+
+  /** Ask the pod to restore Claude's remote-control session — the SAME bounded primitive doctor uses
+   * (`/agent/rc-restore`, shouldAttemptRcRestore/reenableRemoteControl in pod-agent's rc-state.ts and
+   * server.ts), exposed as an explicit cockpit action for `rcState: "down"`. Unlike reconnectAgent this
+   * does NOT fire-and-forget: the endpoint returns a JSON body (`{ok, reason?, rcState?}`) describing
+   * what it actually observed, and the design (rc-reconnect-hardening) explicitly calls for surfacing
+   * that observed outcome rather than assuming the request worked — so this reads and returns it.
+   * Scoped to the PRIMARY Claude agent: the endpoint has no per-agent selector (it classifies via
+   * `primaryRcState()`), so there is no `agent` parameter here to thread through. */
+  async restoreRemoteControl(
+    ownerId: string,
+    id: string,
+  ): Promise<{ ok: boolean; reason?: string; rcState?: string }> {
+    const rec = await this.owned(ownerId, id);
+    if (rec.status !== "running")
+      throw new ControlError("the pod must be running to restore remote control", "invalid");
+    const r = await this.providerFor(rec.provider).exec(id, [
+      "bash",
+      "-lc",
+      "curl -fsS -m 20 -X POST http://127.0.0.1:8080/agent/rc-restore",
+    ]);
+    if (r.exitCode !== 0 || !r.stdout.trim()) return { ok: false };
+    try {
+      const parsed: unknown = JSON.parse(r.stdout);
+      if (parsed && typeof parsed === "object" && typeof (parsed as { ok?: unknown }).ok === "boolean") {
+        return parsed as { ok: boolean; reason?: string; rcState?: string };
+      }
+    } catch {
+      // Unparsable body — fall through to the honest failure below rather than crash the request.
+    }
+    return { ok: false };
+  }
+
+  /** Start `claude setup-token` on the pod (a detached tmux) and return the owner-approval URL — the
+   * `scope=user:inference` OAuth URL. The owner approves it in a browser, then calls completeSetupToken
+   * with the code. Owner-scoped. Mechanism proven manually 2026-08-23; see docs/strategy/agent-auth-lifecycle.md.
+   * NB: LIVE-VERIFY the full chain (token → vault → env → boot on token) on a real pod before relying. */
+  async startSetupToken(ownerId: string, id: string): Promise<{ authUrl: string }> {
+    const rec = await this.owned(ownerId, id);
+    if (rec.status !== "running") throw new ControlError("the pod must be running to renew the token", "invalid");
+    const prov = this.providerFor(rec.provider);
+    await prov.exec(id, [
+      "bash",
+      "-lc",
+      `su - dev -c 'tmux kill-session -t podbay-setuptok 2>/dev/null; tmux new-session -d -s podbay-setuptok "claude setup-token; sleep 900"; tmux resize-window -t podbay-setuptok -x 600 -y 60 2>/dev/null'`,
+    ]);
+    // Pre-warm the T3 runtime cache in the BACKGROUND while the owner does the setup-token OAuth (~a
+    // minute). `npx t3@latest` downloads to the durable ~/.npm, so by the time they enable T3 the
+    // "Downloading the T3 runtime" step is instant instead of a cold ~30–60s fetch. Best-effort, detached.
+    await prov
+      .exec(id, ["su", "-", "dev", "-c", "nohup bash -lc 'npx --yes t3@latest --version >/dev/null 2>&1' >/dev/null 2>&1 &"])
+      .catch(() => undefined);
+    for (let i = 0; i < 15; i++) {
+      const r = await prov
+        .exec(id, [
+          "bash",
+          "-lc",
+          `su - dev -c "tmux capture-pane -t podbay-setuptok -p -J" 2>/dev/null | grep -oE "https://claude.com/cai/oauth/authorize[^ ]+" | head -1`,
+        ])
+        .catch(() => null);
+      const url = r?.stdout?.trim();
+      if (url && url.startsWith("https://")) return { authUrl: url };
+      await new Promise((res) => setTimeout(res, 2_000));
+    }
+    throw new ControlError("couldn't get a setup-token URL from the pod — try again", "invalid");
+  }
+
+  /** Feed the owner's approval code to the waiting `claude setup-token`, capture the ~1-year token,
+   * store it as the reserved secret (never logged), flip the pod to setup-token auth, and restart the
+   * agent so it boots on the token. Owner-scoped. */
+  async completeSetupToken(ownerId: string, id: string, code: string): Promise<void> {
+    const rec = await this.owned(ownerId, id);
+    const prov = this.providerFor(rec.provider);
+    if (!this.config.secretVault) throw new ControlError("no secret vault configured", "invalid");
+    const safe = code.trim();
+    // OAuth codes are url-safe base64 + a `#state` suffix; reject anything else so it can't inject shell.
+    if (!/^[A-Za-z0-9._~+/#=-]{8,4096}$/.test(safe)) throw new ControlError("that doesn't look like a valid code", "invalid");
+    await prov.exec(id, [
+      "bash",
+      "-lc",
+      `su - dev -c 'tmux send-keys -t podbay-setuptok -l ${safe}; sleep 1; tmux send-keys -t podbay-setuptok Enter'`,
+    ]);
+    let token = "";
+    for (let i = 0; i < 8; i++) {
+      await new Promise((res) => setTimeout(res, 2_000));
+      const r = await prov
+        .exec(id, [
+          "bash",
+          "-lc",
+          `su - dev -c "tmux capture-pane -t podbay-setuptok -p -J" 2>/dev/null | grep -oE "sk-ant-oat[0-9A-Za-z._-]+" | head -1`,
+        ])
+        .catch(() => null);
+      const t = r?.stdout?.trim();
+      if (t && t.startsWith("sk-ant-oat")) {
+        token = t;
+        break;
+      }
+    }
+    await prov
+      .exec(id, ["bash", "-lc", `su - dev -c 'tmux kill-session -t podbay-setuptok 2>/dev/null'`])
+      .catch(() => undefined);
+    if (!token) throw new ControlError("the pod didn't return a token — approve the URL, then try again", "invalid");
+    // Store + switch mode. The token NEVER rides a log line (captured out-of-band above). pushSecrets
+    // syncs the vault to the pod's secrets-load.sh so the RESTARTED agent's fresh `bash -lc` actually
+    // sees PODBAY_AGENT_CLAUDE_OAUTH_TOKEN (without this the restart boots on an absent token).
+    await this.config.secretVault.set(id, CLAUDE_OAUTH_TOKEN_SECRET, token);
+    await this.pushSecrets(id).catch(() => undefined);
+    await this.store.update(id, { agentAuth: "setup-token" });
+    await prov.patchPodSpec?.(id, { agentAuth: "setup-token" }).catch(() => undefined);
+    // Relocate the subscription credential so the 1-year token ACTUALLY takes effect: `claude` prefers
+    // `.credentials.json` over `CLAUDE_CODE_OAUTH_TOKEN` when both exist (verified 2026-08-24, test:1),
+    // so without this the setup-token switch — here AND boot.ts's `env CLAUDE_CODE_OAUTH_TOKEN=… claude`
+    // — is a silent no-op that keeps using the monthly subscription login. Backed up (NOT deleted) so a
+    // revert to subscription can restore it (see reverting flows). Best-effort; never fail the switch.
+    await prov
+      .exec(id, [
+        "bash",
+        "-lc",
+        "mv -f /home/dev/.claude/.credentials.json /home/dev/.claude/.credentials.json.pre-setuptoken 2>/dev/null || true",
+      ])
+      .catch(() => undefined);
+    // Restart claude so it boots on the token (boot.ts maps the reserved secret → CLAUDE_CODE_OAUTH_TOKEN).
+    await prov
+      .exec(id, [
+        "bash",
+        "-lc",
+        `curl -fsS -m 20 -X POST -H 'content-type: application/json' --data '{"agent":"claude-code"}' http://127.0.0.1:8080/agent/restart >/dev/null 2>&1 || true`,
+      ])
+      .catch(() => undefined);
+  }
+
+  // ---- T3 Connect (t3-connect-account-wizard) -----------------------------------------------------
+  // Sign the pod's t3 into the OWNER's T3 cloud account and link this environment, so it SYNCS to their
+  // devices + is remotely reachable. A local pairing (QR/token) only reaches one device; the account
+  // link is what makes "open T3 on any device and it's there" work. Same OOB-OAuth shape as setup-token.
+
+  /** Start `t3 connect login --headless`: it prints an app.t3.codes/connect OAuth URL and waits for a
+   * pasted code. Capture + return the URL for the wizard. */
+  async startT3Connect(ownerId: string, id: string): Promise<{ authUrl: string }> {
+    const rec = await this.owned(ownerId, id);
+    if (rec.status !== "running") throw new ControlError("the pod must be running to connect T3", "invalid");
+    const prov = this.providerFor(rec.provider);
+    await prov.exec(id, [
+      "bash",
+      "-lc",
+      `su - dev -c 'tmux kill-session -t podbay-t3conn 2>/dev/null; tmux new-session -d -s podbay-t3conn "cd ~/work 2>/dev/null || cd ~; npx --yes t3@latest connect login --headless --base-dir /home/dev/.t3; sleep 900"; tmux resize-window -t podbay-t3conn -x 600 -y 60 2>/dev/null'`,
+    ]);
+    for (let i = 0; i < 25; i++) {
+      const r = await prov
+        .exec(id, [
+          "bash",
+          "-lc",
+          `su - dev -c "tmux capture-pane -t podbay-t3conn -p -J" 2>/dev/null | grep -oE "https://app.t3.codes/connect[^ ]+" | head -1`,
+        ])
+        .catch(() => null);
+      const url = r?.stdout?.trim();
+      if (url && url.startsWith("https://")) return { authUrl: url };
+      await new Promise((res) => setTimeout(res, 2_000));
+    }
+    throw new ControlError("couldn't get a T3 sign-in URL from the pod — try again", "invalid");
+  }
+
+  /** Finish T3 Connect: feed the pasted code into `t3 connect login`, confirm, then `t3 connect link` to
+   * register this environment for remote access so it appears + is reachable on every device on the
+   * owner's T3 account. Sets t3Connected. */
+  async completeT3Connect(ownerId: string, id: string, code: string): Promise<void> {
+    const rec = await this.owned(ownerId, id);
+    const prov = this.providerFor(rec.provider);
+    const safe = code.trim();
+    if (!/^[A-Za-z0-9._~+/#=-]{4,4096}$/.test(safe)) throw new ControlError("that doesn't look like a valid code", "invalid");
+    await prov.exec(id, [
+      "bash",
+      "-lc",
+      `su - dev -c 'tmux send-keys -t podbay-t3conn -l ${safe}; sleep 1; tmux send-keys -t podbay-t3conn Enter'`,
+    ]);
+    // `t3 connect login` writes this secret on success — a FAST, deterministic check. (Pane-scraping the
+    // success line was unreliable; running `connect status` re-inits t3 each call, too slow to poll.)
+    let authed = false;
+    for (let i = 0; i < 24; i++) {
+      await new Promise((res) => setTimeout(res, 1_500));
+      const r = await prov
+        .exec(id, [
+          "su",
+          "-",
+          "dev",
+          "-c",
+          "test -f /home/dev/.t3/userdata/secrets/cloud-cli-oauth-token.bin && echo OK || true",
+        ])
+        .catch(() => null);
+      if (r?.stdout?.includes("OK")) {
+        authed = true;
+        break;
+      }
+    }
+    await prov
+      .exec(id, ["bash", "-lc", `su - dev -c 'tmux kill-session -t podbay-t3conn 2>/dev/null'`])
+      .catch(() => undefined);
+    if (!authed) throw new ControlError("T3 didn't confirm the sign-in — approve the URL, then try again", "invalid");
+    // Account signed in — now LINK this environment: `yes` auto-accepts the relay-client (cloudflared)
+    // install prompt, then restarting t3 serve provisions the env link + launches the managed tunnel
+    // (status pending → provisioned). The relay download is ~a minute on a cold cache, so run it DETACHED
+    // — the account is already connected; the tunnel follows behind, no need to block the owner on it.
+    await prov
+      .exec(id, [
+        "su",
+        "-",
+        "dev",
+        "-c",
+        "nohup bash -c 'cd ~/work 2>/dev/null || cd ~; yes | npx --yes t3@latest connect link --base-dir /home/dev/.t3; podbay startup restart t3-code' >/dev/null 2>&1 &",
+      ])
+      .catch(() => undefined);
+    await this.store.update(id, { t3Connected: true });
+  }
+
+  /** The INVERSE of completeSetupToken (t3-unattended-integration 1.2): return a setup-token pod to its
+   * subscription login. Needed when the owner turns off unattended/T3 mode, or when a setup-token pod is
+   * stuck under Podbay control (the inference-only token can't drive Podbay's native RC, so Claude has no
+   * usable login there). Restore the backed-up `.credentials.json`, flip agentAuth back to subscription,
+   * and respawn Claude so it boots on the cred — or on `/login` for a fresh subscription sign-in if there
+   * was no backup. Owner-scoped. Best-effort on the pod side; the DB flip is the source of truth. */
+  async revertToSubscription(ownerId: string, id: string): Promise<void> {
+    const rec = await this.owned(ownerId, id);
+    if (rec.status !== "running") throw new ControlError("the pod must be running to change its login", "invalid");
+    const prov = this.providerFor(rec.provider);
+    await prov
+      .exec(id, [
+        "bash",
+        "-lc",
+        "mv -f /home/dev/.claude/.credentials.json.pre-setuptoken /home/dev/.claude/.credentials.json 2>/dev/null || true",
+      ])
+      .catch(() => undefined);
+    await this.store.update(id, { agentAuth: "subscription" });
+    await prov.patchPodSpec?.(id, { agentAuth: "subscription" }).catch(() => undefined);
+    // Respawn Claude so it re-reads its auth mode: boot.ts no longer maps the token, so it boots on the
+    // restored subscription cred (or drops to /login for a fresh sign-in).
+    await prov
+      .exec(id, [
+        "bash",
+        "-lc",
+        `curl -fsS -m 20 -X POST -H 'content-type: application/json' --data '{"agent":"claude-code"}' http://127.0.0.1:8080/agent/restart >/dev/null 2>&1 || true`,
+      ])
+      .catch(() => undefined);
   }
 
   /** Run the pod's doctor, owner-scoped. `fix` applies the SAFE repairs only —
@@ -1929,6 +2633,7 @@ export class PodService {
       id: p.id,
       status: p.status,
       updating: Boolean(p.updatingSince),
+      agentIdleMs: null as number | null, // overridden below when a running pod's health reports it
     });
     const rows: PodLiveSignals[] = [];
     const CONCURRENCY = 6;
@@ -1962,12 +2667,21 @@ export class PodService {
               const m = await prov.fetchMetrics(p.id).catch(() => null);
               if (m?.app && typeof m.app.listening === "boolean") appListening = m.app.listening;
             }
+            // The honest agent-activity signal: lastActivityMs from the new image, else the agent
+            // transcript read via exec for older images (throttled per pod). Drives BOTH the card's
+            // "active X ago" AND the lastActiveAt bump — so an un-updated pod shows real agent time
+            // (not terminal noise) without a recreate.
+            const activityMs = await this.agentActivityMs(prov, p.id, h);
+            await this.bumpLastActive(p, activityMs);
             return {
               ...base(p),
               agentStatus: h.agentStatus ?? null,
               codexStatus: h.codexStatus ?? null,
               agentWaitingFor: h.agentWaitingFor ?? null,
-              agents: h.agents.map((a) => ({ id: a.id, authed: a.authed })),
+              // HONEST activity (newest transcript entry), not idleMs noise. Null only when even the
+              // transcript read finds nothing (fresh pod) → client falls back to server-rendered lastActiveAt.
+              agentIdleMs: activityMs,
+              agents: setupTokenAuthed(h.agents.map((a) => ({ id: a.id, authed: a.authed, loginExpired: a.loginExpired ?? false, needsReauth: a.needsReauth ?? false, expiresAt: a.expiresAt ?? null })), p.agentAuth, p.t3Control),
               appListening,
               criticalIssue: critical ? { title: critical.title, detail: critical.detail } : null,
               unreachable: false,
@@ -2163,9 +2877,39 @@ export class PodService {
    * decision, or null if no such pod. Do NOT use for owner-scoped operations. */
   async lookupForPreview(
     id: string,
-  ): Promise<{ podId: string; ownerId: string; previewPublic: boolean } | null> {
+  ): Promise<{ podId: string; ownerId: string; previewPublic: boolean; previewAppAuth: boolean } | null> {
     const rec = await this.store.get(id);
-    return rec ? { podId: rec.id, ownerId: rec.ownerId, previewPublic: rec.previewPublic } : null;
+    return rec
+      ? { podId: rec.id, ownerId: rec.ownerId, previewPublic: rec.previewPublic, previewAppAuth: rec.previewAppAuth }
+      : null;
+  }
+
+  /** Best-effort: unlink the pod's T3 Connect environment from the relay BEFORE the machine is torn
+   * down, so a destroyed pod FREES its account slot. Orphaned env links accumulate and hit the
+   * per-account tunnel quota — the exact 403 that blocked a fresh connect (2026-08-25). `t3 connect
+   * unlink` calls `DELETE /v1/client/environment-links/:id` (frees the slot) AND the relay is flaky
+   * (observed 500 upstream_unavailable; the CLI itself says "run again when the relay is reachable"),
+   * so RETRY with backoff. Requires the pod still running (to exec + reach its stored token); a
+   * stopped pod is skipped. NEVER throws — teardown must proceed even if the unlink can't complete. */
+  private async t3UnlinkOnDestroy(rec: PodRecord, id: string): Promise<void> {
+    if (!(rec.t3Connected || rec.t3Control) || rec.status !== "running") return;
+    const prov = this.providerFor(rec.provider);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const r = await prov
+        .exec(id, ["su", "-", "dev", "-c", "npx --yes t3@latest connect unlink --base-dir /home/dev/.t3 2>&1"])
+        .catch(() => null);
+      const out = `${r?.stdout ?? ""}${r?.stderr ?? ""}`;
+      // Retry only the relay's TRANSIENT failures (5xx / upstream_unavailable / "run again when the
+      // relay is reachable" / network). A clean exit with none of those = the env record is revoked.
+      const transient = /upstream_unavailable|internal_error|reachable|revoke the relay|ECONN|timed?\s*out|\b5\d\d\b/i.test(out);
+      if (r && r.exitCode === 0 && !transient) {
+        this.log.info("t3_unlink_on_destroy", { podId: id, attempt });
+        return;
+      }
+      this.log.info("t3_unlink_retry", { podId: id, attempt, out: out.slice(0, 160) });
+      if (attempt < 3) await new Promise((res) => setTimeout(res, attempt * 3000));
+    }
+    this.log.warn("t3_unlink_on_destroy_failed", { podId: id, note: "env link may still hold an account slot" });
   }
 
   async destroy(ownerId: string, id: string): Promise<void> {
@@ -2173,6 +2917,8 @@ export class PodService {
     // Persist the state FIRST: teardown takes 10-20s (machine destroy + volume
     // detach retries) and the UI must keep showing "removing" across refreshes.
     await this.store.update(id, { status: "destroying" });
+    // Free the pod's T3 Connect env slot while the machine is still alive to exec (best-effort).
+    await this.t3UnlinkOnDestroy(rec, id).catch(() => undefined);
     try {
       await this.providerFor(rec.provider).destroy(id);
     } catch (e) {
@@ -2221,6 +2967,16 @@ export class PodService {
       .catch(() => null);
   }
 
+  /** A PNG thumbnail of the pod's own preview app, captured pod-side. Owner-scoped; null when the pod
+   * isn't running, nothing serves the port, or the agent can't produce one. */
+  async podPreviewShot(ownerId: string, id: string): Promise<Buffer | null> {
+    const rec = await this.owned(ownerId, id);
+    if (rec.status !== "running") return null;
+    return this.providerFor(rec.provider)
+      .previewShot(id)
+      .catch(() => null);
+  }
+
   /**
    * Usage for ONE pod, derived from its event log. Owner-scoped (the cockpit's
    * Stats tab). Users see usage; cost stays in the backoffice (decided 2026-07-17).
@@ -2253,21 +3009,42 @@ export class PodService {
     // source of truth: the pods list and the cockpit both read updatingSince, so
     // the pod shows "Updating…" straight from the backend and survives a
     // navigate-away/refresh — NOT client-only state (regression fixed 2026-07-24).
+    await this.markUpdateStarted(rec, id, image);
+    // Detached on purpose: no await. Failures land as an update_failed event AND
+    // clear the in-flight flag, so the UI reports them instead of the caller.
+    void this.runPodImageUpdate(rec, id, image).catch((e) => this.clearUpdateFailure(rec, id, e));
+  }
+
+  /** Flag the row "updating" (the render source of truth) + emit update_started. */
+  private async markUpdateStarted(rec: PodRecord, id: string, image: string): Promise<void> {
     await this.store.update(id, {
       updatingSince: new Date().toISOString(),
       updateStage: "starting",
       maintenanceKind: "update",
     });
     await this.emit(rec, "update_started", { to: image });
-    // Detached on purpose: no await. Failures land as an update_failed event AND
-    // clear the in-flight flag, so the UI reports them instead of the caller.
-    void this.runPodImageUpdate(rec, id, image).catch(async (e) => {
-      this.log.error("update_pod_image_failed", { podId: id, err: e });
-      await this.store
-        .update(id, { updatingSince: null, updateStage: null, maintenanceKind: null })
-        .catch(() => undefined);
-      await this.emit(rec, "update_failed", { error: (e as Error)?.message ?? String(e) });
-    });
+  }
+
+  /** On a failed recreate: clear the in-flight flag and emit update_failed so the UI reports it. */
+  private async clearUpdateFailure(rec: PodRecord, id: string, e: unknown): Promise<void> {
+    this.log.error("update_pod_image_failed", { podId: id, err: e });
+    await this.store
+      .update(id, { updatingSince: null, updateStage: null, maintenanceKind: null })
+      .catch(() => undefined);
+    await this.emit(rec, "update_failed", { error: (e as Error)?.message ?? String(e) });
+  }
+
+  /** AWAITABLE image update — same as startPodImageUpdate but it does NOT detach the recreate, so a
+   * caller (the bulk-update batch) can bound how many run at once. Its failure handling is identical,
+   * so a failed pod never rejects this and never stalls the batch. */
+  private async applyPodImageUpdate(ownerId: string, id: string, image: string): Promise<void> {
+    const rec = await this.owned(ownerId, id);
+    await this.markUpdateStarted(rec, id, image);
+    try {
+      await this.runPodImageUpdate(rec, id, image);
+    } catch (e) {
+      await this.clearUpdateFailure(rec, id, e);
+    }
   }
 
   /** Whether an update is in flight for this pod, and the stage it's on — read
@@ -2376,10 +3153,61 @@ export class PodService {
     return updated;
   }
 
-  /** Bump lastActiveAt on terminal activity (no provider call). Owner-scoped. */
-  async markActive(ownerId: string, id: string): Promise<void> {
-    await this.owned(ownerId, id);
-    await this.store.update(id, { lastActiveAt: new Date().toISOString() });
+  /**
+   * The agent's REAL last-activity for a pod whose image doesn't report `lastActivityMs` on /healthz
+   * (older images): exec a tiny reader in the pod that scans the Claude transcripts + Codex rollouts —
+   * the SAME source the new image reads natively — so an un-updated pod still shows honest agent time
+   * WITHOUT a recreate. Throttled per pod (~60s) so a frequent dashboard poll doesn't hammer the box;
+   * the cached value ages forward between probes. As pods take the new image this path falls away.
+   * Returns ms since the newest transcript entry, or null (fresh pod / no transcript / read failed). */
+  private readonly agentActivityCache = new Map<string, { at: number; ms: number | null }>();
+  private async transcriptActivityMs(prov: SandboxProvider, id: string): Promise<number | null> {
+    const now = Date.now();
+    const cached = this.agentActivityCache.get(id);
+    if (cached && now - cached.at < 60_000) {
+      return cached.ms === null ? null : cached.ms + (now - cached.at); // age it forward
+    }
+    if (typeof prov.exec !== "function") return cached?.ms ?? null;
+    try {
+      const r = await prov.exec(id, ["bash", "-lc", AGENT_ACTIVITY_SCRIPT]);
+      const n = Number.parseInt((r.stdout ?? "").trim(), 10);
+      const ms = Number.isFinite(n) && n >= 0 ? n : null;
+      this.agentActivityCache.set(id, { at: now, ms });
+      return ms;
+    } catch {
+      return cached?.ms ?? null;
+    }
+  }
+
+  /** The honest activity signal for a pod: `lastActivityMs` from the new image, else the agent
+   * transcript read via exec for older images. Ms since the agent's newest transcript entry, or null. */
+  private async agentActivityMs(
+    prov: SandboxProvider,
+    id: string,
+    health: PodHealth,
+  ): Promise<number | null> {
+    if (typeof health.lastActivityMs === "number" && Number.isFinite(health.lastActivityMs) && health.lastActivityMs >= 0) {
+      return health.lastActivityMs;
+    }
+    return this.transcriptActivityMs(prov, id);
+  }
+
+  /**
+   * Advance lastActiveAt to the agent's real last activity (`activityMs` = ms since its newest
+   * TRANSCRIPT entry — message, tool call, or tool result, the same source the agent app shows) when
+   * that's newer than recorded. `lastActiveAt` tracks the AGENT DOING REAL WORK — deliberately NOT
+   * terminal traffic: a running app or a spinner streams terminal output every second, which pinned an
+   * idle pod to "active now" (makore.app prod, 2026-08-19). Terminal traffic no longer bumps it (the
+   * gateway's `markActive`/`touch` path was removed), and we do NOT fall back to the flickery
+   * `agentStatus === "busy"`. Never regresses; margin-throttled; best-effort. */
+  private async bumpLastActive(rec: PodRecord, activityMs: number | null): Promise<void> {
+    if (activityMs === null || !Number.isFinite(activityMs) || activityMs < 0) return;
+    const activeAt = Date.now() - activityMs;
+    // Only when meaningfully newer than recorded — avoids a write per tick and never regresses.
+    if (activeAt - Date.parse(rec.lastActiveAt) < 30_000) return;
+    await this.store
+      .update(rec.id, { lastActiveAt: new Date(activeAt).toISOString() })
+      .catch(() => undefined);
   }
 
   /**
@@ -2633,10 +3461,26 @@ export class PodService {
       }
       // Onboarding state (sign-in URL, and the transition to authed) normally reaches the DB via
       // the pod-agent PUSHING it over the control link to the gateway. A self-host (no gateway) has
-      // no push, so PULL it from /healthz here while the pod is still onboarding. Idempotent, so in
-      // cloud this is harmless belt-and-suspenders (recordAuthed/recordAuthUrl no-op once set).
-      if (!record.sessionUrl) {
-        const agent = (await prov.podHealth(id).catch(() => null))?.agents?.[0];
+      // no push, so PULL it from /healthz here. Idempotent, so in cloud this is harmless
+      // belt-and-suspenders (recordAuthed/recordAuthUrl no-op once set).
+      const agent = (await prov.podHealth(id).catch(() => null))?.agents?.[0];
+      // RECONNECT: the row thinks the pod is authed (authedAt/sessionUrl set from a PRIOR login), but
+      // the live agent is unauthed again with a fresh sign-in URL (or reports expired/needs-reauth) —
+      // its login was wiped/expired. Reset the stale authed markers + dead session URL and capture the
+      // new authUrl, so the sign-in wizard surfaces it. Without this, EVERY reconnect of a pod that was
+      // ever signed in hangs on "Getting the sign-in link…" while the URL sits unread (owner, makore.app
+      // dev, 2026-08-26) — the onboarding pull below is gated on !authedAt && !sessionUrl and never runs.
+      const reconnecting =
+        record.authedAt != null &&
+        agent != null &&
+        !agent.authed &&
+        (agent.authUrl != null || agent.loginExpired === true || agent.needsReauth === true);
+      if (reconnecting) {
+        await this.store
+          .update(id, { authedAt: null, sessionUrl: null, authUrl: agent!.authUrl ?? null })
+          .catch(() => undefined);
+        record = { ...record, authedAt: null, sessionUrl: null, authUrl: agent!.authUrl ?? null };
+      } else if (!record.sessionUrl) {
         if (agent?.authed && !record.authedAt) {
           await this.recordAuthed(record.ownerId, id).catch(() => undefined);
           record = { ...record, authedAt: new Date().toISOString(), authUrl: null };
@@ -2786,6 +3630,20 @@ export class PodService {
     // the rotated token on that sleep. Best-effort, bounded.
     await Promise.all(woken.map((id) => this.forceTokenRefresh(id)));
     return woken;
+  }
+
+  /** DISABLED (agent-auth-lifecycle, 2026-08-23) — this was a NO-OP that gave false confidence.
+   *
+   * The premise ("run a trivial `claude -p` so the CLI refreshes the login before hard-expiry") is
+   * WRONG: verified live on podbay first10 that a real `claude -p` turn — and the access-token refresh
+   * that ran the same day — left `refreshTokenExpiresAt` unmoved. A subscription `/login` has a FIXED
+   * ~monthly hard expiry that only a full re-login resets; activity does not extend it. So this sweep
+   * could never prevent the lapse it claimed to. Kept as a no-op stub (the gateway still calls it) so
+   * nothing reports a near-expiry login as "kept alive". The real answer is the renewal/reminder UX
+   * (detect + cockpit/pods-list + batched email) and, for pods that don't need native RC, the ~1-year
+   * `claude setup-token` mode. See docs/strategy/agent-auth-lifecycle.md. */
+  async refreshRunningIdlePods(_idleMs: number, _maxPerSweep = 5, _now = Date.now()): Promise<string[]> {
+    return [];
   }
 
   /** Wait (bounded) for a woken pod to be reachable, then run one tiny headless

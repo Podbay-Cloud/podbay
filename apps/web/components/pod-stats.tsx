@@ -1,9 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import type { MetricsSnapshot, MetricSample } from "@podbay/shared/metrics-types";
-import { getPodMetrics } from "@/lib/actions";
 import { getAdminPodMetrics } from "@/lib/admin-pod-actions";
+import { apiGet } from "@/lib/api-fetch";
+import { qk } from "@/lib/query-keys";
+import { Skeleton } from "@/components/ui/skeleton";
 import { activityShare, type ActivityShare } from "@/lib/activity-share";
 
 /**
@@ -266,34 +269,40 @@ export default function PodStats({
   cpus?: number | null;
   memoryMb?: number | null;
 }) {
-  const [snap, setSnap] = useState<MetricsSnapshot | null>(null);
-  const [loaded, setLoaded] = useState(false);
   const [windowMs, setWindowMs] = useState<number>(WINDOWS[1].ms);
-  const alive = useRef(true);
 
-  useEffect(() => {
-    alive.current = true;
-    const load = async () => {
-      // The pod serves the requested window at ITS resolution — a month costs
-      // hourly points, not a month of minutes (see pod-agent rollup.ts).
-      const m = await (admin
+  // Metrics via react-query, keyed by window (each window is a different rollup tier on the pod, not
+  // a bigger payload). Cache + keepPreviousData means switching windows or re-opening Stats paints the
+  // last data instantly then refreshes; bounded retry replaces the old hand-rolled slow-timeout+retry
+  // (a hung call is bounded by the 30s server-side incus timeout, then react-query retries).
+  const { data: snap, isLoading } = useQuery({
+    // The pod serves the requested window at ITS resolution — a month costs hourly points, not a month
+    // of minutes (see pod-agent rollup.ts).
+    queryKey: qk.metrics(slug, windowMs),
+    // Owner path is a Route Handler (GET) so the stats poll runs on the parallel HTTP lane and isn't
+    // starved by the live poll; the admin variant stays on its (admin-authed) server action.
+    queryFn: () =>
+      admin
         ? getAdminPodMetrics(slug, windowMs)
-        : getPodMetrics(slug, windowMs)
-      ).catch(() => null);
-      if (!alive.current) return;
-      setSnap(m);
-      setLoaded(true);
-    };
-    void load();
-    const t = setInterval(load, 30_000);
-    return () => {
-      alive.current = false;
-      clearInterval(t);
-    };
-  }, [slug, windowMs, admin]);
+        : apiGet<MetricsSnapshot | null>(`/api/pods/${slug}/metrics?window=${windowMs}`),
+    refetchInterval: 30_000,
+    placeholderData: keepPreviousData,
+  });
 
-  if (!loaded) {
-    return <p className="py-6 text-center text-[13px] text-muted-foreground">Loading metrics…</p>;
+  if (isLoading && !snap) {
+    return (
+      <div className="flex flex-col gap-2.5">
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="flex flex-col gap-2 rounded-xl border border-border/60 bg-white/[0.02] px-3.5 py-3">
+            <div className="flex items-center justify-between">
+              <Skeleton className="h-3.5 w-16" />
+              <Skeleton className="h-3.5 w-20" />
+            </div>
+            <Skeleton className="h-9 w-full" />
+          </div>
+        ))}
+      </div>
+    );
   }
   if (!snap || snap.series.length === 0) {
     return (
@@ -337,7 +346,7 @@ export default function PodStats({
               onClick={() => setWindowMs(w.ms)}
               className={`rounded-md px-2.5 py-1 text-[12.5px] transition-colors ${
                 windowMs === w.ms
-                  ? "bg-white/[0.08] text-foreground"
+                  ? "bg-white/[0.06] text-foreground"
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >

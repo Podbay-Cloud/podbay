@@ -65,3 +65,21 @@ export function shortDigest(d: string | null | undefined): string {
   if (!d) return "—";
   return d.startsWith("sha256:") ? d.slice(7, 19) : d.slice(0, 12);
 }
+
+/**
+ * The owner-facing identity of a build: the release version when it has one, ALWAYS with the short
+ * digest kept alongside it — `v0.4.2 (a1b2c3)`. The digest is never dropped, because a version is
+ * not unique per build (an untagged rebuild inherits the current version), so support must still be
+ * able to disambiguate two builds that share a version. With no version this is exactly today's
+ * short digest, so every pre-versioning row — the common case until releases are cut — is unchanged.
+ * A leading `v` is normalized so a stored "0.1.0" and a stored "v0.1.0" render identically.
+ */
+export function imageVersionLabel(
+  version: string | null | undefined,
+  digest: string | null | undefined,
+): string {
+  const short = shortDigest(digest);
+  if (!version || !version.trim()) return short;
+  const v = version.trim().replace(/^v/i, "");
+  return short === "—" ? `v${v}` : `v${v} (${short})`;
+}

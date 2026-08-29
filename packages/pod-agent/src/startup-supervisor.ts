@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 /**
  * Supervision for the pod's long-running NON-agent processes: the dev server and the
@@ -91,15 +92,58 @@ export function declaredStartupProcesses(
     if (!slug || !command || !enabled) continue;
     // Slug doubles as a filename + repair target; init.sh created it, but be defensive.
     if (!/^[A-Za-z0-9._-]{1,64}$/.test(slug)) continue;
+    // Optional declared port (`podbay startup add --port`). When set, stop/restart/supervision can
+    // reason about the ACTUAL port-holder — the fix for a process whose real server is a grandchild
+    // the pidfile/command-match never reached, leaving an EADDRINUSE orphan on the port (afisha-ops).
+    const rawPort = (c as { port?: unknown })?.port;
+    const port = typeof rawPort === "number" && Number.isInteger(rawPort) && rawPort > 0 && rawPort < 65536
+      ? rawPort
+      : undefined;
     out.push({
       slug,
       command,
       cwd: work,
       pidfile: `${home}/.podbay/startup/${slug}.pid`,
       logfile: `${home}/.podbay/startup/${slug}.log`,
+      ...(port ? { probePort: port } : {}),
     });
   }
   return out;
+}
+
+/** Parse `ss -H -ltnp` output into the pids LISTENING (the `pid=NNN` fields). Testable in isolation
+ * so the port-reaper's parsing is verified without a live socket. Deduped. */
+export function parseListeningPids(ssOutput: string): number[] {
+  const pids = new Set<number>();
+  for (const m of ssOutput.matchAll(/pid=(\d+)/g)) {
+    const pid = Number.parseInt(m[1]!, 10);
+    if (Number.isFinite(pid) && pid > 1) pids.add(pid);
+  }
+  return [...pids];
+}
+
+/**
+ * Every descendant of `root` (children, grandchildren, …) via a `children(pid)` lookup — so a stop can
+ * reap a whole process TREE, not just the tracked pid. The leaf that actually binds the port is often a
+ * grandchild that escaped the tracked pid's process group, which a group-kill alone misses. Excludes
+ * `root`; cycle-safe (a malformed ppid loop can't hang it). Extracted (with an injectable lookup) so
+ * the tree-reaping restart is unit-testable without spawning real processes.
+ */
+export function collectDescendants(root: number, children: (pid: number) => number[]): number[] {
+  const found: number[] = [];
+  const seen = new Set<number>([root]);
+  const queue = [root];
+  while (queue.length) {
+    const parent = queue.shift()!;
+    for (const child of children(parent)) {
+      if (Number.isFinite(child) && child > 1 && !seen.has(child)) {
+        seen.add(child);
+        found.push(child);
+        queue.push(child);
+      }
+    }
+  }
+  return found;
 }
 
 /**
@@ -191,7 +235,17 @@ export interface RespawnDeps {
  * pass sees it alive. Detached — it must outlive a pod-agent restart, exactly like nohup.
  */
 export function respawnStartupProcess(p: StartupProcess, deps: RespawnDeps): number {
-  const openLog = deps.openLog ?? ((f: string) => openSync(f, "a"));
+  // Ensure the log's dir exists first. A custom `podbay startup add` slug logs under
+  // ~/.podbay/startup/<slug>.log, a subdir NOTHING creates (the dev server uses a flat
+  // ~/.podbay-dev.log, so it never hit this) — so openSync threw ENOENT and the pod-agent's
+  // /startup start handler 500'd EVERY time, which is exactly what silently broke T3 enable:
+  // t3 never launched, :3000 never came up, the wizard hung on "downloading" for 300s. (2026-08-24)
+  const openLog =
+    deps.openLog ??
+    ((f: string) => {
+      mkdirSync(dirname(f), { recursive: true });
+      return openSync(f, "a");
+    });
   const writePid = deps.writePidfile ?? ((f: string, pid: number) => writeFileSync(f, `${pid}\n`));
   const doSpawn = deps.spawnFn ?? spawn;
   const fd = openLog(p.logfile);
@@ -216,4 +270,27 @@ export function respawnStartupProcess(p: StartupProcess, deps: RespawnDeps): num
       /* fd already inherited by the child */
     }
   }
+}
+
+/**
+ * The directory a startup command `cd`s into before doing anything, or null if it doesn't.
+ *
+ * Startup commands are shell strings, and the overwhelmingly common shape is
+ * `cd <dir> && <run something>` (that is what `podbay startup add` produces for a worktree or a
+ * subproject). If that directory has since been deleted, the command can NEVER succeed — every
+ * retry dies on `cd: No such file or directory` — yet the owner is told "it keeps failing" and
+ * offered `startup restart` / `doctor --fix`, neither of which can conjure the directory back.
+ * Naming the real blocker turns an unactionable error into a one-line fix. (podbay `dev`,
+ * `dashboard-concepts` → a deleted worktree, 2026-08-29.)
+ *
+ * Deliberately conservative: only a LEADING `cd`, only when followed by `&&`/`;`, and quotes are
+ * stripped but no shell expansion is attempted — a path containing `$VAR` or a subshell returns
+ * null rather than a guess, because a wrong "this directory is missing" is worse than silence.
+ */
+export function leadingCdPath(command: string): string | null {
+  const m = command.trim().match(/^cd\s+("([^"]+)"|'([^']+)'|[^\s;&]+)\s*(?:&&|;)/);
+  if (!m) return null;
+  const path = m[2] ?? m[3] ?? m[1];
+  if (!path || /[$`*?~]|\\\$/.test(path)) return null; // unexpanded — don't guess
+  return path.startsWith("/") ? path : null; // relative to an unknown cwd — can't check it
 }

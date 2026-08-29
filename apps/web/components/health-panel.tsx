@@ -1,11 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Check, Info, Loader2, OctagonAlert, RotateCw, Wrench } from "lucide-react";
 import type { PodIssue } from "@podbay/shared";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { runPodDoctor } from "@/lib/actions";
 import { runAdminPodDoctor } from "@/lib/admin-pod-actions";
+import { qk } from "@/lib/query-keys";
 
 const TONE = {
   critical: { Icon: OctagonAlert, cls: "text-destructive" },
@@ -58,45 +60,56 @@ export default function HealthPanel({
     run: () => void;
   }) => void;
 }) {
-  const [issues, setIssues] = useState<Finding[] | null>(null);
-  const [checking, setChecking] = useState(false);
-  const [fixing, setFixing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
-  /** Doctor is the ACTIVE check: it probes things /healthz can't see (a missing
-   * runtime, a stale setup marker) and, with fix, repairs what is safe. */
-  const doctor = useCallback(
-    async (mode: "check" | "safe" | "invasive") => {
-      mode === "check" ? setChecking(true) : setFixing(true);
-      setError(null);
-      const r =
-        admin && mode !== "invasive"
-          ? await runAdminPodDoctor(slug, mode)
-          : await runPodDoctor(slug, mode);
-      if ("error" in r) setError(r.error);
-      else {
-        setIssues(
-          r.issues.map((i: DoctorFinding) => ({
-            ...i,
-            severity: (i.severity === "critical" ? "critical" : i.severity === "info" ? "info" : "warn") as PodIssue["severity"],
-            fixable: !i.fixed,
-          })),
-        );
-      }
-      mode === "check" ? setChecking(false) : setFixing(false);
+  /** Doctor is the ACTIVE check: it probes things /healthz can't see (a missing runtime, a stale
+   * setup marker) and, with fix, repairs what is safe. The action's finding shape is normalized here
+   * once — the on-open check and the fix mutations both go through it. */
+  const mapFindings = (issues: DoctorFinding[]): Finding[] =>
+    issues.map((i) => ({
+      ...i,
+      severity: (i.severity === "critical" ? "critical" : i.severity === "info" ? "info" : "warn") as PodIssue["severity"],
+      fixable: !i.fixed,
+    }));
+
+  // Doctor on open, and doctor on demand — ONE source (qk.doctor). The panel used to load the pod's
+  // PASSIVE findings and then let "Run doctor" replace them with a DIFFERENT check set, so the button
+  // appeared to clear a finding that came straight back on the next page load (owner, 2026-07-29).
+  // Doctor now includes /healthz's findings, so both paths agree by construction. react-query: bounded
+  // retry (a reject no longer hangs the spinner), no polling (an explicit check, not a live signal).
+  const {
+    data: checkData,
+    isFetching: checking,
+    error: checkErr,
+    refetch,
+  } = useQuery({
+    queryKey: qk.doctor(slug),
+    enabled: running,
+    staleTime: Infinity, // don't auto-refetch — the owner runs it on demand
+    refetchInterval: false,
+    queryFn: async () => {
+      const r = admin ? await runAdminPodDoctor(slug, "check") : await runPodDoctor(slug, "check");
+      if ("error" in r) throw new Error(r.error);
+      return mapFindings(r.issues);
     },
-    [slug, admin],
-  );
+  });
 
-  // Doctor on open, and doctor on demand — ONE source. The panel used to load the
-  // pod's PASSIVE findings and then let "Run doctor" replace them with a DIFFERENT
-  // check set, so the button appeared to clear a finding that came straight back on
-  // the next page load (owner, 2026-07-29). Doctor now includes /healthz's
-  // findings, so both paths agree by construction.
-  useEffect(() => {
-    if (running) void doctor("check");
-    else setIssues(null);
-  }, [running, doctor]);
+  // A fix re-runs doctor in fix mode and returns the fresh finding set; write it straight into the
+  // query cache so the panel reflects the post-fix state without a second round-trip.
+  const fixMut = useMutation({
+    mutationFn: async (mode: "safe" | "invasive") => {
+      const r =
+        admin && mode !== "invasive" ? await runAdminPodDoctor(slug, mode) : await runPodDoctor(slug, mode);
+      if ("error" in r) throw new Error(r.error);
+      return mapFindings(r.issues);
+    },
+    onSuccess: (findings) => queryClient.setQueryData(qk.doctor(slug), findings),
+  });
+  const fixing = fixMut.isPending;
+
+  // Not running ⇒ the pod can't report on itself; don't show stale cached findings.
+  const issues: Finding[] | null = running ? (checkData ?? null) : null;
+  const error = checkErr ? (checkErr as Error).message : fixMut.error ? (fixMut.error as Error).message : null;
 
   return (
     <div className="flex flex-col gap-2.5">
@@ -115,13 +128,13 @@ export default function HealthPanel({
             variant="outline"
             size="sm"
             disabled={!running || checking || fixing}
-            onClick={() => void doctor("check")}
+            onClick={() => void refetch()}
           >
             {checking ? <Loader2 className="size-3.5 animate-spin" /> : <RotateCw className="size-3.5" />}
             Run doctor
           </Button>
           {issues && issues.some((i) => i.fixable && !i.invasive) && (
-            <Button size="sm" disabled={!running || fixing} onClick={() => void doctor("safe")}>
+            <Button size="sm" disabled={!running || fixing} onClick={() => fixMut.mutate("safe")}>
               {fixing ? <Loader2 className="size-3.5 animate-spin" /> : <Wrench className="size-3.5" />}
               Fix what&apos;s safe
             </Button>
@@ -154,7 +167,7 @@ export default function HealthPanel({
                     </>
                   ),
                   confirmLabel: "Replace and repair",
-                  run: () => void doctor("invasive"),
+                  run: () => fixMut.mutate("invasive"),
                 })
               }
             >
@@ -163,6 +176,13 @@ export default function HealthPanel({
           )}
         </div>
       </div>
+
+      {running && issues === null && checking && (
+        <div className="flex flex-col gap-2.5">
+          <Skeleton className="h-14 w-full rounded-lg" />
+          <Skeleton className="h-14 w-full rounded-lg" />
+        </div>
+      )}
 
       {running && issues !== null && issues.length === 0 && (
         <p className="flex items-center gap-2 text-[13px] text-success">

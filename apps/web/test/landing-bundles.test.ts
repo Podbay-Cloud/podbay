@@ -34,14 +34,12 @@ describe("revised landing bundles", () => {
   });
 
   it("leads Agent Computer with the laptop benefit and lazy-loads playbook proof", () => {
-    expect(computer).toContain("Your coding agent keeps working after your laptop closes.");
-    expect(computer).toContain("Claude is the interface. Your pod is its computer in the cloud.");
+    expect(computer).toContain("The always-on computer for your coding agent.");
+    expect(computer).toContain("Close the lid &mdash; it keeps working.");
+    expect(computer).toContain("Claude is the interface. Podbay is its computer.");
     expect(computer).not.toContain("Claude is the interface. Your pod is the computer.");
-    expect(computer).toContain("Start in Claude on desktop. Continue from your phone.");
-    expect(computer).toMatch(/Your pod keeps working between\s+them\./);
-    expect(computer).toMatch(
-      /It&rsquo;s a private virtual machine hosted by Podbay, with Claude Code, your\s+project, and your tools inside\./,
-    );
+    expect(computer).toContain("Podbay runs the machine your session lives on.");
+    expect(computer).toContain("Remote control gives you access. Podbay gives you uptime.");
     expect(computer).not.toContain("Podbay hosts that computer as a private VM");
     expect(computer).not.toContain("Your private pod keeps the project");
     expect(computer).toContain("Claude Desktop");
@@ -69,7 +67,7 @@ describe("revised landing bundles", () => {
     expect(computer).not.toContain("Podbay computer");
     expect(computer).not.toContain("Tests passed");
     expect(computer).not.toContain("Preview updated");
-    expect(computer).toContain("See how it works");
+    expect(computer).toContain("Self-host it");
     expect(computer).toContain("Give Claude a real home");
     expect(computer).not.toContain("Give Claude a computer");
     expect(computer).toContain("Use your existing Claude subscription.");

@@ -85,6 +85,9 @@ export interface PodRecord {
   autoUpdate: "inherit" | "off";
   /** Preview URL access: false = owner-authed only, true = public. */
   previewPublic: boolean;
+  /** Delegated-auth preview: the gateway forwards :3000 as public transport, gated by the UPSTREAM
+   * app's own auth (an agent-harness backend like T3 Code with its pairing token). */
+  previewAppAuth: boolean;
   /** BYO-repo: "owner/name" GitHub repo cloned into ~/work at first boot, or null
    * (docs/plans/byo-repo-plan.md). Non-sensitive; the clone token rides as a reserved
    * encrypted pod-secret, never on this row. */
@@ -133,6 +136,17 @@ export interface PodRecord {
    * word instead of calling every restart an "update". */
   maintenanceKind: "update" | "resize" | null;
   updateStage: string | null;
+  /** T3 Code control (t3-code-first-class). `t3Control` = an external harness (T3 Code)
+   * owns the pod's agents right now — drives the "in control" banner + hides conflicting
+   * Podbay controls, durable/refresh-safe. `t3Since` (ISO) is set while the enable/disable
+   * wizard runs and cleared when it finishes; `t3Stage` is the coarse phase for display
+   * (preparing → downloading → starting → pairing → ready). Mirrors updatingSince/updateStage. */
+  t3Control: boolean;
+  t3Since: string | null;
+  t3Stage: string | null;
+  /** t3Connected: the pod's t3 is signed into the owner's T3 cloud account + this env is linked, so it
+   * syncs to their devices (t3-connect-account-wizard). Distinct from t3Control (agents handed to T3). */
+  t3Connected: boolean;
   /** Which SandboxProvider hosts this pod ('fly' | 'incus'). Written at launch;
    * every provider call routes through it (docs/strategy/infra-strategy.md M1). */
   provider: string;
@@ -203,8 +217,12 @@ export interface PodLiveSignals {
   codexStatus: string | null;
   /** The CLI's "what am I blocked on" detail (e.g. "dialog open"), when reported. */
   agentWaitingFor: string | null;
+  /** Milliseconds since the agent's last real turn (session-file mtime) — the agent's TRUE idle
+   * duration, unlike `lastActiveAt` which only tracks client-proxied terminal traffic. Drives the
+   * idle-update dwell + the bulk-update modal's idle label. Null on an image that doesn't report it. */
+  agentIdleMs: number | null;
   /** Per-agent activity for multi-agent pods: id + that agent's authed state. */
-  agents: { id: string; authed: boolean }[];
+  agents: { id: string; authed: boolean; loginExpired?: boolean; needsReauth?: boolean; expiresAt?: number | null }[];
   /** true/false = the pod reported whether :3000 is serving; null = unknown
    * (image predates the field, or unreachable) — the card must NOT claim "no app". */
   appListening: boolean | null;

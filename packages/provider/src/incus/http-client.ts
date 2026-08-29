@@ -85,6 +85,11 @@ export class IncusApi {
     path: string,
     body?: Buffer | string,
     headers?: Record<string, string>,
+    /** Socket timeout (ms). Without one, a stalled incus daemon leaves the request pending FOREVER —
+     * which hung the cockpit's Stats tab on "Loading metrics…" until the user switched tabs to remount
+     * (velsa, 2026-08-23). 30s covers every quick call; the long server-side operation WAIT
+     * (`/wait?timeout=…`) passes a bigger value from waitOp so it isn't cut off. */
+    timeoutMs = 30_000,
   ): Promise<{ status: number; body: Buffer }> {
     const sep = path.includes("?") ? "&" : "?";
     const options: RequestOptions = {
@@ -105,19 +110,21 @@ export class IncusApi {
           resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks) }),
         );
       });
+      req.setTimeout(timeoutMs, () => req.destroy(new Error(`incus ${method} ${path}: timed out after ${timeoutMs}ms`)));
       req.on("error", reject);
       if (body !== undefined) req.write(body);
       req.end();
     });
   }
 
-  private async req<T>(method: string, path: string, body?: unknown): Promise<IncusResponse<T>> {
+  private async req<T>(method: string, path: string, body?: unknown, timeoutMs?: number): Promise<IncusResponse<T>> {
     const payload = body !== undefined ? JSON.stringify(body) : undefined;
     const { body: buf } = await this.raw(
       method,
       path,
       payload,
       payload !== undefined ? { "content-type": "application/json" } : undefined,
+      timeoutMs,
     );
     let json: IncusResponse<T>;
     try {
@@ -142,6 +149,10 @@ export class IncusApi {
     const r = await this.req<{ status: string; err?: string }>(
       "GET",
       `${operationUrl}/wait?timeout=${timeoutSecs}`,
+      undefined,
+      // This request BLOCKS server-side for up to timeoutSecs, so the socket timeout must outlast it
+      // (30s slack) — otherwise a legitimately-long stop/create operation would be cut off.
+      (timeoutSecs + 30) * 1000,
     );
     if (r.metadata?.status !== "Success") {
       throw new IncusApiError(r.metadata?.err ?? "operation failed", 500);
@@ -266,6 +277,11 @@ export class IncusApi {
     const op = await this.req<{ status: string; metadata?: { return?: number; output?: Record<string, string> } }>(
       "GET",
       `${r.operation}/wait?timeout=${timeoutSecs}`,
+      undefined,
+      // The socket timeout MUST outlast the server-side /wait block (mirrors waitOp). Without this it
+      // defaulted to 30s, so ANY exec whose command ran >30s died mid-wait with a spurious socket
+      // timeout — e.g. the T3 "wait for :3000" loop, which then reported enable as failed.
+      (timeoutSecs + 30) * 1000,
     );
     const exitCode = op.metadata?.metadata?.return ?? -1;
     const output = op.metadata?.metadata?.output ?? {};

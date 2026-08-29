@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { PhaseHeader } from "@/components/phase-header";
 import { Check, Loader2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
-import { parseNotes, type UpdateInfo } from "@/components/update-info-dialog";
 
 /**
  * Full-page state shown WHILE a pod is updating (or resizing) — it REPLACES the cockpit,
@@ -15,7 +15,12 @@ import { parseNotes, type UpdateInfo } from "@/components/update-info-dialog";
 /** The real provider stages (packages/provider/src/incus/provider.ts), in order, with owner-
  * friendly labels. The backend emits the raw key as `update_stage`; we map it to this list. */
 const STAGES: { key: string; label: string; hint?: string }[] = [
-  { key: "stopping", label: "Stopping the pod" },
+  // The control plane emits "handoff" first (it asks the agent to save + pause before any stop). It
+  // had NO entry here, so it fell through to index 0 and rendered as "Stopping the pod" with a frozen
+  // bar — the "looks stuck" complaint. Naming it (and the bounded graceful-stop wait) makes the wait
+  // legible instead of a hang.
+  { key: "handoff", label: "Handing off to the agent", hint: "letting it save and pause — up to a minute" },
+  { key: "stopping", label: "Stopping the pod", hint: "waiting for a clean shutdown to protect your files — up to a minute" },
   { key: "recreating", label: "Recreating the machine", hint: "new image — your volume is kept" },
   { key: "starting", label: "Starting" },
   { key: "booting", label: "Booting the pod" },
@@ -38,7 +43,6 @@ export default function PodUpdating({
   kind,
   stage,
   elapsedSec,
-  updateInfo,
 }: {
   name: string | null;
   slug: string;
@@ -47,7 +51,6 @@ export default function PodUpdating({
   kind: "update" | "resize";
   stage: string | null;
   elapsedSec: number;
-  updateInfo: UpdateInfo | null;
 }) {
   const verb = kind === "resize" ? "Resizing" : "Updating";
   // Active stage = the emitted key; unknown/null → treat as the first (we've only just started).
@@ -62,20 +65,9 @@ export default function PodUpdating({
   }, []);
   void tick;
 
-  const notes = parseNotes(updateInfo?.target?.notes ?? updateInfo?.images?.[0]?.notes ?? null);
-
   return (
     <div className="mx-auto w-full max-w-xl px-4 py-8">
-      <div className="mb-1 flex items-center gap-2.5">
-        <span className="relative flex size-2.5">
-          <span className="absolute inline-flex size-full animate-ping rounded-full bg-warning/60" />
-          <span className="relative inline-flex size-2.5 rounded-full bg-warning" />
-        </span>
-        <h1 className="text-lg font-semibold tracking-tight">{name || slug}</h1>
-        <span className="rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-[10.5px] font-bold uppercase tracking-wider text-warning">
-          {verb}
-        </span>
-      </div>
+      <PhaseHeader title={name || slug} label={verb} tone="warning" />
       <p className="font-mono text-[12px] text-muted-foreground/70">
         {environmentName} · {agentsLabel}
       </p>
@@ -132,31 +124,6 @@ export default function PodUpdating({
           </ul>
         </CardContent>
       </Card>
-
-      {!notes.empty && notes.entries.length > 0 && (
-        <div className="mt-5">
-          <h3 className="mb-2 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground/70">
-            What&apos;s new in this update
-          </h3>
-          <ul className="ml-4 list-disc space-y-1 text-[12.5px] text-muted-foreground">
-            {notes.entries.slice(0, 6).map((e, i) => (
-              <li key={i}>
-                {e.area && <span className="font-medium text-foreground">{e.area}: </span>}
-                {e.text}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      <div className="mt-5 flex items-start gap-2.5 rounded-lg border border-border bg-muted/30 px-3 py-2.5 text-[12.5px] text-muted-foreground">
-        <span aria-hidden>🛟</span>
-        <span>
-          <span className="font-medium text-foreground">Nothing is lost.</span> Your files in{" "}
-          <code className="font-mono text-[11.5px]">~/work</code>, your git state and your settings are
-          on a volume that survives the update. Your agent restarts fresh when it finishes.
-        </span>
-      </div>
     </div>
   );
 }

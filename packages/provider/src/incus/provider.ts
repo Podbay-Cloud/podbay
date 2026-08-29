@@ -81,17 +81,47 @@ function mapStatus(incusStatus: string): PodStatus {
  * returned unchanged, because an image update must never fail over this.
  */
 export function refreshSpecPermissions(specJson: string, permissions: unknown): string {
-  if (permissions == null) return specJson;
   try {
     const spec = JSON.parse(specJson) as unknown;
     if (spec && typeof spec === "object" && !Array.isArray(spec)) {
-      (spec as Record<string, unknown>).permissions = permissions;
-      return JSON.stringify(spec);
+      const s = spec as Record<string, unknown>;
+      let changed = false;
+      if (permissions != null) {
+        s.permissions = permissions;
+        changed = true;
+      }
+      if (healCockpitUrl(s)) changed = true;
+      return changed ? JSON.stringify(spec) : specJson;
     }
   } catch {
     /* unparseable spec — push it unchanged rather than break the update */
   }
   return specJson;
+}
+
+/**
+ * Repair a `cockpitUrl` that points at the bare web TERMINAL (`<origin>/pods/<slug>`) instead of the
+ * COCKPIT (`<origin>/dashboard/pods/<slug>`). buildInitFiles wrote the terminal URL for every pod on
+ * every provider until 2026-08-27; agents hand this link to the owner, so those pods keep stranding
+ * them on the wrong page.
+ *
+ * Fixing the builder alone would never reach them: updateImage preserves the spec VERBATIM (that is
+ * exactly why refreshSpecPermissions above had to exist), so a corrected value only ever landed on
+ * newly-created pods. Healing it here means an existing pod picks up the right link on its next
+ * update — the same "shipped but never delivered" trap the permissions preset already fell into.
+ *
+ * Deliberately narrow: rewrites ONLY the `/pods/<slug>` → `/dashboard/pods/<slug>` shape and leaves
+ * anything else (already-correct, absent, or a URL we don't recognise) untouched, so it can't
+ * clobber a value some other code path set intentionally. Mutates in place; returns whether it did.
+ */
+function healCockpitUrl(spec: Record<string, unknown>): boolean {
+  const url = spec.cockpitUrl;
+  if (typeof url !== "string" || url === "") return false;
+  // Only the exact broken shape: an origin followed by /pods/<something>, never /dashboard/pods/.
+  const fixed = url.replace(/^(https?:\/\/[^/]+)\/pods\/(?=[^/]+\/?$)/, "$1/dashboard/pods/");
+  if (fixed === url) return false;
+  spec.cockpitUrl = fixed;
+  return true;
 }
 
 /**
@@ -142,6 +172,12 @@ export function sanitizePodHealth(h: PodHealth): PodHealth {
       : null,
     codexStatus: ["busy", "idle"].includes(h.codexStatus as string) ? (h.codexStatus as string) : null,
     agentWaitingFor: typeof h.agentWaitingFor === "string" ? cleanStr(h.agentWaitingFor) : null,
+    // Pod-controlled → bound it: a finite, non-negative number or null (unknown).
+    idleMs: typeof h.idleMs === "number" && Number.isFinite(h.idleMs) && h.idleMs >= 0 ? h.idleMs : null,
+    lastActivityMs:
+      typeof h.lastActivityMs === "number" && Number.isFinite(h.lastActivityMs) && h.lastActivityMs >= 0
+        ? h.lastActivityMs
+        : null,
     ...(typeof h.appListening === "boolean" ? { appListening: h.appListening } : {}),
   };
 }
@@ -733,6 +769,8 @@ export class IncusProvider implements SandboxProvider {
       agentStatus: h?.agentStatus ?? null,
       codexStatus: h?.codexStatus ?? null,
       agentWaitingFor: h?.agentWaitingFor ?? null,
+      idleMs: h?.idleMs ?? null,
+      lastActivityMs: h?.lastActivityMs ?? null,
       appListening: h?.appListening,
     });
   }
@@ -876,6 +914,25 @@ export class IncusProvider implements SandboxProvider {
     const snap = (await res.json().catch(() => null)) as MetricsSnapshot | null;
     if (!snap) return null;
     return narrow && windowMs ? narrowSnapshot(snap, windowMs) : snap;
+  }
+
+  async previewShot(id: string): Promise<Buffer | null> {
+    const ip = await this.instanceIp(id);
+    if (!ip) return null;
+    const ctrl = new AbortController();
+    // A capture can take ~1-3s (Chromium launch + load), so allow more than the /metrics budget.
+    const t = setTimeout(() => ctrl.abort(), 12_000);
+    try {
+      const res = await fetch(`http://${ip}:${this.config.agentPort}/preview-shot`, {
+        signal: ctrl.signal,
+      });
+      if (!res.ok) return null; // 204 (nothing serving) / 5xx → no thumbnail
+      return Buffer.from(await res.arrayBuffer());
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(t);
+    }
   }
 
 
@@ -1086,6 +1143,7 @@ export class IncusProvider implements SandboxProvider {
 
   private async fetchHealth(id: string): Promise<{
     idleMs?: number;
+    lastActivityMs?: number;
     sessionUrl?: string;
     agentStatus?: string;
     codexStatus?: string;
@@ -1099,7 +1157,12 @@ export class IncusProvider implements SandboxProvider {
         signal: ctrl.signal,
       }).finally(() => clearTimeout(t));
       if (!res.ok) return null;
-      return (await res.json()) as { idleMs?: number; sessionUrl?: string; agentStatus?: string };
+      return (await res.json()) as {
+        idleMs?: number;
+        lastActivityMs?: number;
+        sessionUrl?: string;
+        agentStatus?: string;
+      };
     } catch {
       return null;
     }

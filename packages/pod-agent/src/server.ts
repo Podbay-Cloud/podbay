@@ -20,19 +20,26 @@ import {
   credentialState,
   sessionStateFromDisk,
   codexActivityFromDisk,
+  lastAgentActivityMs,
   listWindows,
   selectWindow,
   newWindow,
   spawnAgentWindow,
 } from "./signals.js";
 import { runGreeter, driveLoginMenu, startResumeWatch, type GreeterOptions } from "./greeter.js";
+import { classifyGate, authFailureInPane, agentGone, type GateKind } from "@podbay/shared/pane";
+import type { RcState } from "@podbay/shared/protocol";
+import { classifyRcState, isOrphanedRcYield, shouldAttemptRcRestore } from "./rc-state.js";
 import { credentialsPathForAgent, sanitizeSessionName } from "./boot.js";
 import { shouldRepair, pruneHistory, isCapped, recoveryDue, type RepairAttempt } from "./repair-policy.js";
 import {
+  collectDescendants,
   devServerProcess,
   declaredStartupProcesses,
+  leadingCdPath,
   isSupervisionPaused,
   nextCacheDir,
+  parseListeningPids,
   pausePath,
   pidfileState,
   respawnStartupProcess,
@@ -43,6 +50,7 @@ import {
 import { computeIssues } from "./health-checks.js";
 import { parseMem } from "./metrics.js";
 import { MetricsSampler, realSamplerDeps } from "./metrics.js";
+import { PreviewShotter } from "./preview-shot.js";
 import { setGithubToken, githubStatus, clearGithubToken, listRepos, cloneRepo, ghDeviceStart, ghDevicePoll } from "./gh-auth.js";
 import { readRequests, addRequest, removeRequest, setKeysIn } from "./secret-requests.js";
 
@@ -50,12 +58,16 @@ import { readRequests, addRequest, removeRequest, setKeysIn } from "./secret-req
 const SESSION_URL_RE = /https:\/\/claude\.ai\/code\/session_[A-Za-z0-9]+/;
 /** Claude's OAuth sign-in URL (same shape the gateway matches on the links frame). */
 const AUTH_URL_RE = /https:\/\/(claude\.(com|ai)|[a-z.]*anthropic\.com)\/[^\s]*(oauth|login)/i;
-/** A captured OAuth URL is only usable once `redirect_uri` is present. The claude TUI hard-wraps
- * the sign-in URL across pane lines, so a health tick that samples MID-RENDER can grab just the
- * first line (`…client_id=…`, no redirect_uri) — which Claude rejects as "Missing redirect_uri".
- * Requiring it (only for oauth URLs) keeps us re-capturing until the whole URL has painted instead
- * of caching a truncated stub stickily. Non-oauth `/login` URLs pass through unchanged. */
-const isCompleteAuthUrl = (u: string): boolean => !/oauth/i.test(u) || /[?&]redirect_uri=/.test(u);
+/** A captured OAuth URL is only usable once the WHOLE thing has painted. The claude TUI hard-wraps
+ * the sign-in URL across ~6 pane lines, so a health tick that samples MID-RENDER can grab a partial —
+ * and the partial is CACHED STICKILY, so a truncated URL sticks forever. `redirect_uri` alone is not
+ * enough: it appears EARLY (line 2), so a 5-of-6-line capture ending at `…code_challenge_method=S256`
+ * still has it but is missing the trailing `&state=…`, which OAuth requires — Claude then rejects it
+ * as "Missing state parameter" (velsa hit this on afisha, 2026-08-22). `state` is the LAST param, so
+ * requiring BOTH redirect_uri AND state proves the URL painted end-to-end before we cache it. We keep
+ * re-capturing each tick until then. Non-oauth `/login` URLs pass through unchanged. */
+const isCompleteAuthUrl = (u: string): boolean =>
+  !/oauth/i.test(u) || (/[?&]redirect_uri=/.test(u) && /[?&]state=/.test(u));
 /** Strip ANSI so a device code isn't split by colour escapes. */
 const stripAnsiText = (s: string): string => s.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, "");
 
@@ -90,9 +102,30 @@ const CODEX_STANDALONE = "/home/dev/.codex/packages/standalone/current/codex";
  * volume so the choice survives restarts/updates — ensureCodexDaemon honors it
  * on every boot/wake instead of silently re-enabling. */
 const CODEX_RC_OFF = "/home/dev/.podbay/codex-rc-off";
+/** Podbay has YIELDED Claude's remote-control to an external harness (T3 Code):
+ * stop re-running the `/remote-control` greeter on boot/resume so Podbay and the
+ * harness don't fight for the tmux session. Symmetric to CODEX_RC_OFF; on the
+ * home volume so the yield survives restart/resume. Credentials are NOT touched —
+ * the agent stays signed in and the harness drives it with the same on-disk login.
+ * Cleared when control is handed back. */
+const CLAUDE_RC_OFF = "/home/dev/.podbay/claude-rc-off";
+const PODBAY_STARTUP_JSON = "/home/dev/.podbay/startup.json";
 /** The two CLIs a pod can host. A tmux window NAMED after one hosts that agent
  * (spawnAgentWindow names added-agent windows this way — the pod-side registry). */
 const AGENT_IDS = ["claude-code", "codex"] as const;
+
+/** Owner-facing label for a stuck gate the watchdog surfaces (3b). */
+function gateLabel(gate: GateKind): string {
+  switch (gate) {
+    case "login-menu": return "the sign-in menu";
+    case "api-key": return "the API-key prompt";
+    case "bypass": return "the permissions prompt";
+    case "trust": return "the folder-trust prompt";
+    case "proceed": return "a confirmation only you can answer";
+    case "login-continue": return "the post-login continue prompt";
+    case "oauth-retry": return "a rejected sign-in code — reconnect to try again";
+  }
+}
 
 /** Rolling, timestamped record of the terminal (on-change pane snapshots), so the
  * Claude CLI's transient states (a /login prompt, a billing-mode flip) are
@@ -363,6 +396,11 @@ export class AgentServer {
   private loginAssistantStarted = false;
   private stopResumeWatch?: () => void;
   private readonly metrics: MetricsSampler;
+  private readonly previewShotter: PreviewShotter;
+  /** Slugs with a startup stop/start/restart in flight — a second command for the same slug is refused
+   * rather than allowed to spawn a competing process (overlapping restarts spawned ~6 procs all
+   * crash-looping on the port; afisha-crawler, 2026-08-26). */
+  private readonly startupInFlight = new Set<string>();
 
   constructor(options: AgentServerOptions & { logger?: Logger }) {
     this.log = options.logger ?? createLogger("pod-agent");
@@ -395,6 +433,8 @@ export class AgentServer {
       }),
       { appPort: options.appPort ?? 3000 },
     );
+    // Self-screenshot of the preview app for the cockpit's lightweight thumbnail (vs. a live iframe).
+    this.previewShotter = new PreviewShotter({ port: options.appPort ?? 3000 });
 
     this.session.onData((data) => this.broadcast({ type: "output", data }));
     this.session.onExit((code) => {
@@ -432,6 +472,10 @@ export class AgentServer {
             ready: ok,
             sessionName: this.session.sessionName,
             idleMs: this.session.idleMs(),
+            // The HONEST "last active" signal: ms since the agent's newest transcript entry (message,
+            // tool call, or tool result), the same source the Claude app shows. Unlike idleMs (which
+            // is terminal-OUTPUT time and ticks on spinners), this reflects real turns/tool work.
+            lastActivityMs: lastAgentActivityMs(),
             sessionUrl: this.lastSessionUrl ?? null,
             agentStatus: sess.status ?? null,
             // Codex has no live state file; this is derived from how recently it wrote to
@@ -450,6 +494,7 @@ export class AgentServer {
             // cannot fix itself must SAY so, not sit in a state that reads as
             // "still starting" forever.
             repairGaveUp: [...this.cappedTargets],
+            startupMissingDir: this.startupMissingDirs(),
             repairs: [...this.recentRepairs],
             // OOM kills the pod-agent has observed — recorded as incidents by the plane.
             ooms: this.oomWatcher.list(),
@@ -466,6 +511,33 @@ export class AgentServer {
         const w = Number(q?.get("windowMs"));
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(this.metrics.snapshot(Number.isFinite(w) && w > 0 ? w : undefined)));
+        return;
+      }
+      if (req.url?.startsWith("/preview-shot")) {
+        // A PNG thumbnail of the pod's own preview app (localhost:3000), captured with the prebaked
+        // headless Chromium. 204 when nothing is serving the port, so the cockpit shows its status
+        // line instead of a stale/blank image. Cache-Control none — the freshness is managed by the
+        // shotter's own cache + the cockpit's poll cadence.
+        if (!this.metrics.appListening().listening) {
+          res.writeHead(204);
+          res.end();
+          return;
+        }
+        this.previewShotter
+          .get()
+          .then((buf) => {
+            if (!buf) {
+              res.writeHead(204);
+              res.end();
+              return;
+            }
+            res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "no-store" });
+            res.end(buf);
+          })
+          .catch(() => {
+            res.writeHead(500);
+            res.end();
+          });
         return;
       }
       // Codex remote-control pairing: mint a short-lived code the cockpit shows so
@@ -671,6 +743,28 @@ export class AgentServer {
         })();
         return;
       }
+      // Yield / resume ALL agent remote-control to an external harness (T3 Code).
+      // `{ yield: true }` stops Podbay driving BOTH Claude and Codex (writes the
+      // two RC-off sentinels + kills the live Codex daemon) so the harness owns the
+      // agents without a fight. `{ yield: false }` hands control back (clears the
+      // sentinels + restarts Podbay's own RC). Credentials are NEVER touched, so the
+      // agents stay signed in across the hand-off in both directions.
+      if (req.method === "POST" && req.url === "/agent/rc-yield") {
+        void (async () => {
+          try {
+            const body = await readBounded(req);
+            const doYield = Boolean(JSON.parse(body || "{}").yield);
+            if (doYield) await this.yieldAgentControl();
+            else this.resumeAgentControl();
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: true, yielded: doYield }));
+          } catch (e) {
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: e instanceof Error ? e.message : "rc-yield failed" }));
+          }
+        })();
+        return;
+      }
       // Send the sign-in code the user pasted in the cockpit to a SPECIFIC agent's
       // window. The cockpit previously typed it over the terminal WebSocket, which
       // follows the ACTIVE window — fine for a single-agent pod, wrong the moment a
@@ -745,6 +839,96 @@ export class AgentServer {
             res.end(JSON.stringify({ error: e instanceof Error ? e.message : "add failed" }));
           }
         })();
+        return;
+      }
+      // Relaunch a DEAD agent in its EXISTING window — the recovery path the PODBAY-AGENT-EXITED
+      // message points at (`podbay-agent-restart`), and the repair `podbay doctor` applies for a
+      // window whose agent process has exited to a bare shell. `respawn-pane -k` replaces the dead
+      // pane with a fresh supervised launch; the boot command's --continue path resumes the
+      // conversation (and now self-heals to fresh if the transcript won't resume). Optional `agent`
+      // in the body; defaults to the pod's primary agent.
+      if (req.method === "POST" && req.url === "/agent/restart") {
+        void (async () => {
+          try {
+            const body = await readBounded(req);
+            const requested = String(JSON.parse(body || "{}").agent ?? "");
+            const agent = requested || this.declaredAgents[0] || "claude-code";
+            const w = this.windowForAgent(agent);
+            if (w == null || !this.agentCommandFor) {
+              res.writeHead(w == null ? 404 : 503, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: w == null ? `no window for agent '${agent}'` : "restart not supported on this pod" }));
+              return;
+            }
+            const target = `${this.session.sessionName}:${w}`;
+            await new Promise<void>((resolve) =>
+              execFile(
+                "tmux",
+                ["respawn-pane", "-k", "-t", target, this.agentCommandFor!(agent)],
+                { uid: this.tmuxUid, gid: this.tmuxGid },
+                () => resolve(),
+              ),
+            );
+            if (agent === "codex") {
+              this.ensureCodexDaemon("agent_restart");
+            } else if (!existsSync(credentialsPathForAgent(agent))) {
+              // Reconnect wiped the dead credential, so this respawn took the `claude /login` branch
+              // and is now sitting at the "Select login method" menu. DRIVE it (pick the subscription
+              // method) so the sign-in URL actually prints and the cockpit captures it — otherwise
+              // Reconnect hangs forever on "Getting Claude's sign-in link…" with the terminal stuck on
+              // the menu (velsa, 2026-08-22). Clear the per-window guard so a repeat reconnect re-drives.
+              // The wipe also killed the OLD remote-control session, so its URL is dead: clear it (so
+              // rcActive stops falsely reading "on") and — for the PRIMARY claude — mark that we OWE an
+              // RC restore once the re-login completes. The failStateWatchdog only sets pendingRcRestore
+              // on a pane-detected auth failure, so a MANUAL reconnect would otherwise never restore RC
+              // (owner: makore.app dev lost RC after re-login, 2026-08-26).
+              this.lastSessionUrl = undefined;
+              this.agentSessionUrls.delete(agent);
+              if (agent === this.credential?.agent) {
+                this.pendingRcRestore = true;
+                this.rcRestore = { attempts: 0, lastAt: 0, surfaced: false };
+              }
+              this.loginDriven.delete(agent);
+              this.loginAssistantStarted = false;
+              void driveLoginMenu({
+                sessionName: `${this.session.sessionName}:${w}`,
+                uid: this.tmuxUid,
+                gid: this.tmuxGid,
+                logger: this.log,
+              }).catch((e) => this.log.warn("reconnect_login_menu_failed", { agent, err: String(e) }));
+            }
+            this.log.info("agent_restarted", { agent, window: w });
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: true, agent, window: w }));
+          } catch (e) {
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: e instanceof Error ? e.message : "restart failed" }));
+          }
+        })();
+        return;
+      }
+
+      // Doctor's lost-RC repair: the primary Claude is signed in but its remote-control session is dead
+      // (e.g. a manual reconnect that never restored it). Re-establish RC. reenableRemoteControl self-
+      // guards (no-ops when yielded to T3 or logged out); reset the auto-restore budget so a prior
+      // give-up doesn't block this manual fix.
+      if (req.method === "POST" && req.url === "/agent/rc-restore") {
+        // Check the CURRENT classification before touching any restore state: a login-required pod
+        // can never be fixed by this call (only the owner's own /login clears it), so the caller
+        // (doctor, or a future cockpit action) needs to be able to tell "this can't be fixed by
+        // restoring" apart from "an attempt was made" rather than both reading as ok:true.
+        const state = this.primaryRcState();
+        if (!shouldAttemptRcRestore(state)) {
+          this.log.info("rc_restore_skipped_login_required", { auto: false });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, reason: "login-required" }));
+          return;
+        }
+        this.pendingRcRestore = true;
+        this.rcRestore = { attempts: 0, lastAt: 0, surfaced: false };
+        this.reenableRemoteControl(0);
+        this.log.info("rc_restore_requested", {});
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, rcState: this.primaryRcState() }));
         return;
       }
       // The sanctioned dev-server lifecycle (`podbay dev restart|stop|start`) — restart without
@@ -1379,6 +1563,24 @@ export class AgentServer {
     } catch {
       /* pgrep exit 1 (no match) or unavailable — nothing to clear */
     }
+    // Port-anchored mop-up: pgrep matches the COMMAND string, but the real server is often a
+    // grandchild whose cmdline (`node …`) doesn't contain it. If a port is declared, SIGKILL whatever
+    // still listens on it so the fresh spawn can bind. Best-effort/immediate here; stopProcess owns
+    // the graceful TERM-then-wait path for a restart.
+    if (p.probePort) {
+      for (const pid of this.listeningPids(p.probePort)) {
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {
+            /* already gone */
+          }
+        }
+        killed++;
+      }
+    }
     return killed;
   }
 
@@ -1386,36 +1588,115 @@ export class AgentServer {
    * contract). respawnStartupProcess launches DETACHED (a new process-group leader), so signalling
    * the GROUP (`-pid`) takes down the command AND its children together; fall back to the bare pid
    * for a process not started as a leader. SIGTERM, then SIGKILL if it won't go within ~5s. */
+  /** Every descendant pid of `root` (children, grandchildren, …), by walking `pgrep -P`. Captured so a
+   * stop can reap a whole process TREE — the port-binding leaf is often a grandchild that escaped the
+   * tracked pid's process group, which a group-kill alone would miss. */
+  private descendantPids(root: number): number[] {
+    return collectDescendants(root, (pid) => {
+      try {
+        const out = execFileSync("pgrep", ["-P", String(pid)], { encoding: "utf8", timeout: 4000 }).trim();
+        if (!out) return [];
+        return out
+          .split("\n")
+          .map((l) => Number.parseInt(l.trim(), 10))
+          .filter((n) => Number.isFinite(n) && n !== process.pid);
+      } catch {
+        return []; // pgrep exit 1 = no children of this pid
+      }
+    });
+  }
+
   private async stopProcess(p: StartupProcess): Promise<void> {
     let pid = 0;
     try {
       pid = Number.parseInt(readFileSync(p.pidfile, "utf8").trim(), 10);
     } catch {
-      return;
+      pid = 0;
     }
-    if (!Number.isFinite(pid) || pid <= 1) return;
-    const alive = (): boolean => {
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    };
-    const signal = (sig: NodeJS.Signals): void => {
-      try {
-        process.kill(-pid, sig);
-      } catch {
+    if (Number.isFinite(pid) && pid > 1) {
+      // Capture the descendant TREE while the parent is still alive — once it dies its children
+      // reparent to init and the parent→child link is lost. The process that actually binds the port
+      // is often a grandchild that ESCAPED the tracked pid's process group (a wrapper or `next start`
+      // that starts its own session), so a group-kill alone misses it and leaves an EADDRINUSE orphan
+      // (afisha-crawler restart racing on :3000, 2026-08-26). Reaping the whole tree frees the port
+      // even with no `--port` declared. SIGTERM the lot, wait ~5s, SIGKILL survivors.
+      const all = [pid, ...this.descendantPids(pid)];
+      const alive1 = (x: number): boolean => {
         try {
-          process.kill(pid, sig);
+          process.kill(x, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      const anyAlive = (): boolean => all.some(alive1);
+      const sig = (x: number, s: NodeJS.Signals): void => {
+        // Signal the group (reaps same-group children) AND the bare pid (reaps an escaped leaf).
+        try {
+          process.kill(-x, s);
+        } catch {
+          /* not a group leader */
+        }
+        try {
+          process.kill(x, s);
         } catch {
           /* already gone */
         }
+      };
+      for (const x of all) sig(x, "SIGTERM");
+      for (let i = 0; i < 25 && anyAlive(); i++) await new Promise((r) => setTimeout(r, 200));
+      if (anyAlive()) for (const x of all) sig(x, "SIGKILL");
+    }
+    // Belt-and-suspenders when the port is declared: kill whatever STILL holds it and WAIT for it to
+    // free (a holder the tree walk couldn't reach — e.g. a fully daemonized double-fork).
+    if (p.probePort) await this.killPortHolders(p.probePort);
+  }
+
+  /** Pids currently LISTENING on a local TCP port (via `ss`), excluding ourselves. Empty when `ss`
+   * is unavailable or nothing is bound. */
+  private listeningPids(port: number): number[] {
+    try {
+      const out = execFileSync("ss", ["-H", "-ltnp", `sport = :${port}`], {
+        encoding: "utf8",
+        timeout: 3000,
+      });
+      return parseListeningPids(out).filter((pid) => pid !== process.pid);
+    } catch {
+      return [];
+    }
+  }
+
+  /** Free a TCP port: SIGTERM whoever listens on it (group + bare), wait ~5s, then SIGKILL any
+   * survivor, and wait briefly for the socket to release. Returns how many holders we signalled.
+   * Anchored to the PORT, not a pid — so it reaches an orphan the pidfile/command tracking lost. */
+  private async killPortHolders(port: number): Promise<number> {
+    const holders = this.listeningPids(port);
+    if (holders.length === 0) return 0;
+    const signalAll = (pids: number[], sig: NodeJS.Signals): void => {
+      for (const pid of pids) {
+        try {
+          process.kill(-pid, sig);
+        } catch {
+          try {
+            process.kill(pid, sig);
+          } catch {
+            /* already gone */
+          }
+        }
       }
     };
-    signal("SIGTERM");
-    for (let i = 0; i < 25 && alive(); i++) await new Promise((r) => setTimeout(r, 200));
-    if (alive()) signal("SIGKILL");
+    signalAll(holders, "SIGTERM");
+    for (let i = 0; i < 25 && this.listeningPids(port).length > 0; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    const survivors = this.listeningPids(port);
+    if (survivors.length > 0) {
+      signalAll(survivors, "SIGKILL");
+      for (let i = 0; i < 10 && this.listeningPids(port).length > 0; i++) {
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    }
+    return holders.length;
   }
 
   /**
@@ -1493,10 +1774,55 @@ export class AgentServer {
    * stays registered; the next boot relaunches it — use `podbay startup remove` to unregister). `start`
    * launches a registered proc that isn't running yet (e.g. right after `startup add`).
    */
+  /**
+   * Forget give-up state for startup commands that are no longer DECLARED.
+   *
+   * `podbay startup remove <slug>` edits `startup.json` directly and never tells this process, so a
+   * slug the watchdog had capped stayed in `cappedTargets` forever — and the cockpit kept showing
+   * "'<slug>' keeps failing to start" for a command that no longer exists, with fix advice
+   * (`startup restart`, `doctor --fix`) that cannot work because there is nothing left to restart.
+   * Observed on podbay `dev` 2026-08-29: `dashboard-concepts` removed, error still displayed.
+   *
+   * Same shape as the orphaned RC-off marker: durable state outliving the thing it describes, with
+   * nothing reconciling the two. Reconcile from the declaration, which is the source of truth.
+   */
+  /** `startup:<slug>` → the absolute directory its command `cd`s into that no longer exists. Lets
+   * health say "its folder is gone" (with a fix that works) instead of "it keeps failing" (with two
+   * that cannot). Only reports a directory it is SURE about — see `leadingCdPath`. */
+  private startupMissingDirs(): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const p of declaredStartupProcesses("/home/dev", "/home/dev/work")) {
+      const dir = leadingCdPath(p.command);
+      if (dir && !existsSync(dir)) out[`startup:${p.slug}`] = dir;
+    }
+    return out;
+  }
+
+  private pruneUndeclaredStartupTargets(): void {
+    const declared = new Set(
+      declaredStartupProcesses("/home/dev", "/home/dev/work").map((p) => `startup:${p.slug}`),
+    );
+    for (const target of [...this.cappedTargets]) {
+      // dev-server is supervised WITHOUT a startup.json entry — it is never "undeclared".
+      if (!target.startsWith("startup:") || target === "startup:dev-server") continue;
+      if (declared.has(target)) continue;
+      this.cappedTargets.delete(target);
+      this.repairs.delete(target);
+      this.failedServes.delete(target);
+      this.log.info("startup_target_undeclared_cleared", { target });
+    }
+  }
+
   async startupControl(
     slug: string,
     action: string,
   ): Promise<{ ok: boolean; action: string; slug: string; message: string }> {
+    // Serialize commands per slug: an overlapping stop/start/restart is what let ~6 competing procs
+    // spawn and crash-loop on the port (afisha-crawler, 2026-08-26). Refuse the second rather than race.
+    if (this.startupInFlight.has(slug))
+      return { ok: false, action, slug, message: `another '${slug}' startup command is still running — wait for it, then retry` };
+    this.startupInFlight.add(slug);
+    try {
     const home = "/home/dev";
     const work = "/home/dev/work";
     const procs = declaredStartupProcesses(home, work);
@@ -1541,6 +1867,9 @@ export class AgentServer {
         if (pidfileState(p.pidfile) === "alive")
           return { ok: true, action, slug, message: `'${slug}' is already running (nothing to do)` };
         this.pauseSupervision(pause, 60_000);
+        // A dead pidfile can still leave an orphan holding the declared port — free it (with the
+        // graceful wait) before spawning so the new instance can bind.
+        if (p.probePort) await this.killPortHolders(p.probePort);
         const pid = spawn();
         clearState();
         this.resumeSupervision(pause);
@@ -1549,7 +1878,7 @@ export class AgentServer {
       }
       case "restart": {
         this.pauseSupervision(pause, 60_000);
-        await this.stopProcess(p);
+        await this.stopProcess(p); // stops the tracked pid AND frees the declared port (waits for it)
         const pid = spawn();
         clearState();
         this.resumeSupervision(pause);
@@ -1558,6 +1887,9 @@ export class AgentServer {
       }
       default:
         return { ok: false, action, slug, message: "unknown action — use restart | stop | start" };
+    }
+    } finally {
+      this.startupInFlight.delete(slug);
     }
   }
 
@@ -1631,6 +1963,31 @@ export class AgentServer {
     return true;
   }
 
+  /** Classify the CURRENT `rcState` for the primary Claude agent — the SAME input assembly
+   * `agentStates()` builds for its `isPrimaryClaude` branch (live gate/auth-failure/recovery-budget
+   * signals cached from `failStateWatchdog`'s last tick), extracted so `reenableRemoteControl` and the
+   * `/agent/rc-restore` handler can gate on the identical classification `/healthz` reports, rather
+   * than a second hand-assembled opinion drifting from it. Returns `"unknown"` when there is no
+   * primary credential or the primary is codex (codex's RC never goes through this pane-based
+   * classifier — see agentStates()'s own comment on that split) since those callers only ever care
+   * about the greeter-driven Claude RC path this classification exists for. */
+  private primaryRcState(): RcState {
+    if (!this.credential || this.credential.agent === "codex") return "unknown";
+    const id = this.credential.agent;
+    const cred = credentialState(id, credentialsPathForAgent(id));
+    const hasSessionUrl = Boolean(this.agentSessionUrls.get(id) ?? this.lastSessionUrl);
+    return classifyRcState({
+      authed: cred.authed,
+      loginExpired: cred.expired,
+      liveAuthFailure: this.primaryNeedsReauth,
+      gate: this.primaryGate,
+      hasSessionUrl,
+      recovering: this.pendingRcRestore && !this.rcRestore.surfaced && this.rcRestore.attempts < 3,
+      recoveryGaveUp: this.rcRestore.surfaced,
+      rcYielded: existsSync(CLAUDE_RC_OFF),
+    });
+  }
+
   /** Per-agent truth for /healthz — what the cockpit's agent cards render from.
    * authed = that CLI's credentials file exists; rcActive = codex daemon up /
    * Claude session URL captured. No guessing from pod-level singletons. */
@@ -1638,24 +1995,83 @@ export class AgentServer {
     id: string;
     window: number | null;
     authed: boolean;
+    loginExpired: boolean;
+    needsReauth: boolean;
+    expiresAt: number | null;
+    rcState: RcState;
     rcActive: boolean;
     authUrl: string | null;
     sessionUrl: string | null;
   }[] {
-    return this.agentsOnPod().map((id) => ({
+    return this.agentsOnPod().map((id) => {
+      // authed is now TOKEN-AWARE (false when the login has hard-expired), not mere file-presence —
+      // the blind spot that hid a dead claude login for weeks (2026-08-22). loginExpired distinguishes
+      // "was signed in, token died → reconnect" from "never signed in → first-time login".
+      const cred = credentialState(id, credentialsPathForAgent(id));
+      // Live auth-failure/gate/bounded-restore tracking (failStateWatchdog) is PRIMARY-CLAUDE ONLY —
+      // sessionStateFromDisk/the bridge signal is per-pid and codex has its own daemon self-heal (see
+      // failStateWatchdog's own doc comment). An added (non-primary) Claude degrades to the file-only
+      // signals below, same limitation `needsReauth` already had before this change.
+      const isPrimaryClaude = id === this.credential?.agent && id !== "codex";
+      const hasSessionUrl = Boolean(this.agentSessionUrls.get(id) ?? this.lastSessionUrl);
+      // Codex has no TUI to pane-classify — its RC is a headless daemon (refreshCodexRc's own
+      // comment) — so it does NOT go through the pane-based classifyRcState below. A pgrep-confirmed
+      // "the daemon isn't running" is a CONFIRMED-NEGATIVE signal, not merely absent evidence, so a
+      // non-active authed Codex reads as `down` directly — classifyRcState's generic `unknown`
+      // fallback models "we genuinely can't tell" (Claude's captured-URL-or-not ambiguity), which
+      // isn't Codex's situation. This is the documented, task-brief-flagged deviation for the one
+      // agent that lacks pane-classification signals.
+      // The primary Claude's classification is delegated to primaryRcState() — the SAME assembly
+      // this branch used to inline, now shared with reenableRemoteControl/rc-restore's gating (task
+      // 3.3) so there is exactly one place that wires the live signals together. A non-primary
+      // (added) Claude agent has no live signals of its own (failStateWatchdog is primary-only) and
+      // keeps the prior degraded inline assembly unchanged.
+      const rcState: RcState =
+        id === "codex"
+          ? !cred.authed || cred.expired
+            ? "login-required"
+            : this.codexRcActive
+              ? "active"
+              : "down"
+          : isPrimaryClaude
+            ? this.primaryRcState()
+            : classifyRcState({
+                authed: cred.authed,
+                loginExpired: cred.expired,
+                liveAuthFailure: false,
+                gate: null,
+                hasSessionUrl,
+                recovering: false,
+                recoveryGaveUp: false,
+                // CLAUDE_RC_OFF is not agent-scoped, but only Claude RC is ever yielded to T3 (Codex
+                // has its own pairing/daemon model) — applying it pod-wide to every non-codex agent is
+                // the conservative, no-worse-than-before choice.
+                rcYielded: existsSync(CLAUDE_RC_OFF),
+              });
+      return {
+      // Live auth-failure (the primary claude): a mid-session logout the FILE misses. Only the primary
+      // has the live signal (failStateWatchdog); others fall back to the file-expiry via loginExpired.
+      needsReauth: isPrimaryClaude ? this.primaryNeedsReauth : false,
       id,
       window: this.windowForAgent(id),
-      authed: existsSync(credentialsPathForAgent(id)),
-      rcActive:
-        id === "codex"
-          ? this.codexRcActive
-          : Boolean(this.agentSessionUrls.get(id) ?? this.lastSessionUrl),
+      authed: cred.authed,
+      loginExpired: cred.expired,
+      expiresAt: cred.expiresAt,
+      rcState,
+      // rcActive is the backward-compatible projection of rcState: true if and only if active.
+      // `recovering`/`down`/`login-required`/`unknown` must never be promoted to true. This REPLACES
+      // the prior ad-hoc boolean expression (Boolean(url) && !primaryNeedsReauth for Claude,
+      // codexRcActive alone for Codex) — see the task's commit message for the one behavior change
+      // this introduces (an unauthenticated Codex now reads inactive even if a stale codexRcActive
+      // flag were still true, which the pgrep tick keeps in sync in practice anyway).
+      rcActive: rcState === "active",
       sessionUrl: this.agentSessionUrls.get(id) ?? this.lastSessionUrl ?? null,
       // Claude: its sign-in URL. Codex: its one-time device CODE. Both scraped
       // from THAT agent's own window, so an added agent gets the cockpit's
       // link-and-paste sign-in instead of being sent to the terminal.
       authUrl: this.agentAuthValues.get(id) ?? null,
-    }));
+      };
+    });
   }
 
   /** tmux window index hosting an agent (primary by position, added by name). */
@@ -1725,8 +2141,9 @@ export class AgentServer {
     }
     return computeIssues({
       sessionAlive: this.session.isAlive,
-      agents: this.agentStates().map((a) => ({ id: a.id, window: a.window, authed: a.authed })),
+      agents: this.agentStates().map((a) => ({ id: a.id, window: a.window, authed: a.authed, loginExpired: a.loginExpired, needsReauth: a.needsReauth, expiresAt: a.expiresAt, stuckGate: this.menuStuck.get(a.id) })),
       repairGaveUp: [...this.cappedTargets],
+      startupMissingDir: this.startupMissingDirs(),
       disk: { usedMb: m.disk.usedMb, totalMb: m.disk.totalMb },
       memory,
       app: m.app.port != null ? { port: m.app.port, listening: m.app.listening } : null,
@@ -1828,6 +2245,7 @@ export class AgentServer {
   private async onTick(): Promise<void> {
     const exec = { uid: this.tmuxUid, gid: this.tmuxGid };
     this.oomWatcher.scan(); // cheap: reads dmesg, records any new OOM kills
+    this.pruneUndeclaredStartupTargets(); // a removed startup command must stop being reported
     this.maybeRespawnAuthed();
     if (this.codexOnPod()) this.refreshCodexRc(); // primary OR added codex
     await this.refreshWindows(); // caches agentWindowIndex before agentTarget() below
@@ -1860,6 +2278,225 @@ export class AgentServer {
     // advanceAddedAgents have run this tick, or it would "repair" a window that
     // is mid-spawn and fight its own boot sequence.
     await this.watchdog();
+    // Menu watchdog: catch an agent window wedged at a known menu that no one-shot
+    // driver is clearing (any respawn site — reconnect, resume, update, window-repair)
+    // and drive/surface it. Same "after advanceAddedAgents" rationale.
+    await this.menuWatchdog();
+    // Fail-state watchdog: detect a live auth failure (that the credential FILE misses) and
+    // auto-restore remote control once the login recovers — the two gaps behind the 2026-08-23
+    // mid-session-logout incident.
+    await this.failStateWatchdog();
+  }
+
+  /** Primary-agent fail-state tracking. `authFailTicks` debounces the live auth-failure signal;
+   * `needsReauth` is the surfaced state; `pendingRcRestore` remembers that we owe an RC restore once
+   * the login recovers; `rcRestore` bounds the restore attempts with backoff. Primary claude only —
+   * `sessionStateFromDisk`/the bridge signal is per-pid, and codex has its own daemon self-heal. */
+  private primaryAuthFailTicks = 0;
+  private primaryNeedsReauth = false;
+  private pendingRcRestore = false;
+  private rcRestore = { attempts: 0, lastAt: 0, surfaced: false };
+  /** Last-classified gate for the primary agent's pane, cached from failStateWatchdog's async tick
+   * so the synchronous agentStates()/rcState computation can read it without its own pane capture
+   * (agentStates() is called from /healthz and must stay sync — see its own doc comment). Same
+   * pattern as primaryNeedsReauth: an async watchdog tick feeds a field a sync reader consumes. */
+  private primaryGate: GateKind | null = null;
+
+  /**
+   * Detect a LIVE agent auth failure and auto-restore remote control after the login recovers.
+   *
+   * The credential FILE only flips `expired` at hard-expiry; a mid-session refresh FAILURE (the CLI
+   * prints "Login expired · Please run /login") happens while the file's expiry is still in the
+   * future — so file-based health reports the pod fine while the owner is locked out (velsa,
+   * 2026-08-23). We read the live pane instead. And because the remote-control worker dies with that
+   * login but the pod can't see the server-side bridge state directly, we key the auto-restore on the
+   * reliable observable TRANSITION: auth-failure seen → login valid again → RC is stale → re-run it.
+   * Bounded (cap + backoff), and surfaced if it can't recover — never silent, never infinite.
+   */
+  private async failStateWatchdog(): Promise<void> {
+    if (!this.credential || this.credential.agent === "codex") return;
+    const w = this.windowForAgent(this.credential.agent);
+    if (w == null) return;
+    const target = `${this.session.sessionName}:${w}`;
+    const pane = await capturePane(target, { uid: this.tmuxUid, gid: this.tmuxGid }).catch(() => "");
+    if (!pane) return;
+    // At a menu the menu-watchdog is in charge — never touch auth/RC mid-menu (e.g. the /login menu
+    // after a reconnect is progress, not a failure). "oauth-retry" is the one gate that IS a failure
+    // (a rejected sign-in code, not progress toward one) — it must still reach the check below so
+    // needsReauth gets set instead of silently waiting on the menu-watchdog, which only surfaces a
+    // human-readable label and never flips the cockpit's Reconnect state (test:1, 2026-08-26/27).
+    const gate = classifyGate(pane);
+    this.primaryGate = gate; // cache for agentStates()'s sync rcState computation, see the field's doc
+    if (gate != null && gate !== "oauth-retry") return;
+
+    // 1. Live auth-failure, debounced so a 1-tick transient isn't flagged.
+    const authBad = authFailureInPane(pane);
+    this.primaryAuthFailTicks = authBad ? this.primaryAuthFailTicks + 1 : 0;
+    const needs = this.primaryAuthFailTicks >= 2;
+    if (needs && !this.primaryNeedsReauth) this.log.warn("agent_auth_failure_detected", { agent: this.credential.agent });
+    if (needs) this.pendingRcRestore = true; // we now owe an RC restore once the login recovers
+    this.primaryNeedsReauth = needs;
+    if (needs) return; // logged out — nothing to restore until the owner re-logs-in (surfaced on healthz)
+
+    // 2. Recovery transition: we saw an auth failure, and the login is valid again → the RC bridge is
+    // stale, re-establish it (this is the manual `/remote-control` velsa had to run).
+    if (!this.pendingRcRestore) return;
+    if (existsSync(CLAUDE_RC_OFF)) return; // yielded to T3 — its job, not ours
+    if (!credentialState(this.credential.agent, this.credential.path).authed) return; // not recovered yet
+    // The only remaining way to reach here still login-blocked: gate === "oauth-retry" is the one
+    // gate the early check above (line ~2245) lets fall through (every other blocking gate already
+    // returned before pendingRcRestore is even checked, and a live auth-failure already returned at
+    // "if (needs) return"). Check BEFORE the attempts counter below so a live blocking OAuth-retry
+    // dialog never burns a slot from the bounded restore budget — the exact gap this task closes.
+    if (!shouldAttemptRcRestore(this.primaryRcState())) {
+      this.log.info("rc_restore_skipped_login_required", { auto: true });
+      return;
+    }
+    if (sessionStateFromDisk().url) {
+      // RC is back (a fresh bridge session id appeared) → done, reset the budget.
+      this.log.info("rc_autorestore_ok", { attempts: this.rcRestore.attempts });
+      this.pendingRcRestore = false;
+      this.rcRestore = { attempts: 0, lastAt: 0, surfaced: false };
+      return;
+    }
+    if (this.rcRestore.attempts >= 3) {
+      if (!this.rcRestore.surfaced) {
+        this.log.warn("rc_autorestore_gave_up", { agent: this.credential.agent });
+        this.rcRestore.surfaced = true; // surfaced on healthz (rcActive stays false)
+      }
+      return;
+    }
+    if (Date.now() - this.rcRestore.lastAt < 30_000) return; // backoff — a greeter run takes time
+    this.rcRestore.attempts += 1;
+    this.rcRestore.lastAt = Date.now();
+    this.log.warn("rc_autorestore", { agent: this.credential.agent, attempt: this.rcRestore.attempts });
+    this.reenableRemoteControl(0); // RC-only greeter; its own guards skip a logged-out/yielded agent
+  }
+
+  /** Per-window state for the menu watchdog: the last pane hash, how many ticks it has
+   * been static, how many times we've driven this gate, and whether we've surfaced it. */
+  private readonly menuGateState = new Map<
+    string,
+    { hash: string; staticTicks: number; drives: number; surfaced: boolean }
+  >();
+  /** 3b: an agent stuck at a gate the watchdog can't safely auto-answer (the owner-decision "proceed",
+   * or a gate that survived the drive cap) → surfaced to the cockpit as a health issue, cleared when
+   * the gate clears. 3c: a static selection-menu the classifier doesn't recognize → the early-warning
+   * (logged once per pane) that the CLI changed its menu wording, the way tonight's reconnect hang
+   * rode a version bump. Both read from the pane already captured in menuWatchdog. */
+  private readonly menuStuck = new Map<string, string>();
+  private readonly menuUnknown = new Map<string, { hash: string; ticks: number; warned: boolean }>();
+
+  /**
+   * Self-healing backstop for stuck menus. Every tick, for each Claude window, if it shows a KNOWN
+   * blocking gate that has been byte-static for a couple ticks (a one-shot driver actively clearing it
+   * would change the pane, so static ⇒ genuinely wedged with no driver acting), drive the safe answer
+   * or surface the owner-decision ones. Bounded per gate; past the cap it becomes a "needs you" state
+   * rather than looping. Codex is excluded — its TUI can't be reliably pane-scraped (signals.ts).
+   */
+  private async menuWatchdog(): Promise<void> {
+    const STATIC_TICKS = 2; // ~6s at the default 3s tick — long enough that a live driver has moved on
+    const MAX_DRIVES = 3;
+    for (const id of this.agentsOnPod()) {
+      if (id === "codex") continue;
+      const w = this.windowForAgent(id);
+      if (w == null) continue;
+      const target = `${this.session.sessionName}:${w}`;
+      const pane = await capturePane(target, { uid: this.tmuxUid, gid: this.tmuxGid }).catch(() => "");
+      const gate = pane ? classifyGate(pane) : null;
+      const prev = this.menuGateState.get(id) ?? { hash: "", staticTicks: 0, drives: 0, surfaced: false };
+      if (!gate) {
+        this.menuStuck.delete(id); // no known gate up → not stuck on our account
+        // 3c tripwire: a numbered selection menu (❯ 1.) the classifier does NOT recognize, sitting
+        // static → warn once. This is the "the CLI changed its menu and we didn't notice" alarm.
+        const looksMenu = pane ? /❯\s*\d/.test(pane) && !agentGone(pane) : false;
+        if (looksMenu) {
+          const uh = paneHash(pane);
+          const u = this.menuUnknown.get(id);
+          const uticks = u && u.hash === uh ? u.ticks + 1 : 0;
+          const warned = u?.warned === true && u.hash === uh;
+          if (uticks >= 5 && !warned) {
+            this.log.warn("menu_watchdog_unknown_gate", { agent: id, window: w, sample: pane.slice(-160) });
+            this.menuUnknown.set(id, { hash: uh, ticks: uticks, warned: true });
+            this.menuStuck.set(id, "an unrecognized prompt"); // surface — better than a silent hang
+          } else {
+            this.menuUnknown.set(id, { hash: uh, ticks: uticks, warned });
+          }
+        } else {
+          this.menuUnknown.delete(id);
+        }
+        // Cleared — reset so a future gate starts fresh.
+        if (prev.hash || prev.drives || prev.surfaced) this.menuGateState.set(id, { hash: "", staticTicks: 0, drives: 0, surfaced: false });
+        continue;
+      }
+      this.menuUnknown.delete(id); // a known gate → not "unknown"
+      const h = paneHash(pane);
+      const staticTicks = h === prev.hash ? prev.staticTicks + 1 : 0;
+      const drives = h === prev.hash ? prev.drives : 0; // a changed pane = progress; reset the drive count
+      const st = { hash: h, staticTicks, drives, surfaced: prev.surfaced && h === prev.hash };
+      if (staticTicks < STATIC_TICKS) {
+        this.menuGateState.set(id, st);
+        continue;
+      }
+      // "Do you want to proceed" is an owner decision we must NOT answer — surface it straight away
+      // instead of burning the drive budget on a no-op. A rejected OAuth code is the same shape: Enter
+      // RESUBMITS the dead code (making it worse, not progress), so it gets the same immediate
+      // surface rather than cycling through the drive-then-give-up path (test:1, 2026-08-26/27).
+      if (gate === "proceed" || gate === "oauth-retry") {
+        if (!st.surfaced) this.log.warn("menu_watchdog_needs_owner", { agent: id, gate, window: w });
+        this.menuStuck.set(id, gateLabel(gate));
+        this.menuGateState.set(id, { ...st, surfaced: true });
+        continue;
+      }
+      if (st.drives >= MAX_DRIVES) {
+        // Gave up driving — surface it as a "needs you" (health issue) rather than looping forever.
+        if (!st.surfaced) {
+          this.log.warn("menu_watchdog_gave_up", { agent: id, gate, window: w });
+          st.surfaced = true;
+        }
+        this.menuStuck.set(id, gateLabel(gate));
+        this.menuGateState.set(id, st);
+        continue;
+      }
+      this.menuStuck.delete(id); // we're actively driving it — not stuck
+      st.drives += 1;
+      this.menuGateState.set(id, st);
+      this.log.warn("menu_watchdog_drove", { agent: id, gate, drive: st.drives, window: w });
+      void this.driveGate(gate, target, id);
+    }
+  }
+
+  /** Drive one classified gate in a specific window. Reuses the proven login-menu driver; sends the
+   * exact keystrokes the greeter uses for the others; deliberately does NOT auto-answer `proceed`
+   * (owner decision — the surfaced "needs you" via menuWatchdog is the handling). */
+  private async driveGate(gate: GateKind, target: string, agentId: string): Promise<void> {
+    const send = (args: string[]) =>
+      new Promise<void>((resolve) =>
+        execFile("tmux", args, { uid: this.tmuxUid, gid: this.tmuxGid }, () => resolve()),
+      );
+    try {
+      if (gate === "login-menu" || gate === "api-key") {
+        // driveLoginMenu handles BOTH: it dismisses the api-key prompt then accepts the subscription
+        // method. Re-arm the one-shot guards so a re-spawned primary is drivable again.
+        this.loginDriven.delete(agentId);
+        if (agentId === this.credential?.agent) this.loginAssistantStarted = false;
+        await driveLoginMenu({ sessionName: target, uid: this.tmuxUid, gid: this.tmuxGid, logger: this.log });
+      } else if (gate === "bypass") {
+        // The bypass-permissions gate: answer "2" (Yes, accept) then Enter — same as the greeter.
+        await send(["send-keys", "-t", target, "-l", "2"]);
+        await send(["send-keys", "-t", target, "Enter"]);
+      } else if (gate === "trust") {
+        // Folder-trust prompt for the owner's own ~/work — accept (Enter takes the default).
+        await send(["send-keys", "-t", target, "Enter"]);
+      } else if (gate === "login-continue") {
+        // "Login successful. Press Enter to continue…" — a dismiss-with-Enter confirmation, so the agent
+        // reaches its prompt instead of sitting at a dialog the card reads as "Needs you".
+        await send(["send-keys", "-t", target, "Enter"]);
+      }
+      // gate === "proceed": intentionally not answered — surfaced as "needs you" instead.
+    } catch (e) {
+      this.log.warn("menu_watchdog_drive_failed", { agent: agentId, gate, err: String(e) });
+    }
   }
 
   /** Append a timestamped snapshot whenever the terminal screen changes, capped so
@@ -2014,6 +2651,10 @@ export class AgentServer {
       // the bash prompt its corpse left behind (same protection as the primary).
       respawnCommand,
       greetedMarkerPath: `/home/dev/.podbay-greeted-${id}`,
+      // Per-agent RC-session-identity state: an added agent runs on its own tmux window
+      // with its own RC session, so it must not share the primary's hash file (that would
+      // make each agent's rename decision leak into the other's).
+      rcSessionHashPath: `/home/dev/.podbay-rc-session-hash-${id}`,
     }).catch((e) => {
       this.rcEnabled.delete(id); // allow a retry on a later tick
       this.log.warn("added_agent_rc_failed", { agent: id, err: String(e) });
@@ -2022,8 +2663,58 @@ export class AgentServer {
 
   /** Run the greeter once per process against an authed session (fire-and-forget;
    * it does its own waiting, verification, and give-up logging). */
+  /** The primary agent's login has hit its HARD expiry (refresh token dead). Driving `/remote-control`
+   * into a logged-out agent can never succeed — it's refused — so the greeter would burn its bounded
+   * 3×/30s retry budget and re-arm on every resume (the afisha loop). Skip it; the cockpit's
+   * loginExpired detection + Reconnect own recovery. Fail OPEN (unreadable creds → not expired) so a
+   * transient read error never silently disables RC for a healthy login. */
+  private primaryLoginExpired(): boolean {
+    if (!this.credential) return false;
+    try {
+      return credentialState(this.credential.agent, this.credential.path).expired;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Is the `t3-code` startup command registered? That declaration is what makes a T3 handover
+   * durable across restarts, so it — not a live process — is the honest witness for "an external
+   * harness owns Claude here". Unreadable/malformed file ⇒ treat as NOT registered only when the
+   * file is genuinely absent; a read error means we cannot prove the orphan, so we assume it IS
+   * registered and leave the marker alone (never clear on ambiguity). */
+  private t3StartupRegistered(): boolean {
+    try {
+      const raw = readFileSync(PODBAY_STARTUP_JSON, "utf8");
+      return /"slug"\s*:\s*"t3-code"/.test(raw);
+    } catch (e) {
+      // ENOENT is a real answer: `startup add` creates the file, so no file ⇒ nothing registered.
+      return (e as NodeJS.ErrnoException)?.code !== "ENOENT";
+    }
+  }
+
+  /** Clear an RC-off sentinel that no external harness justifies (see `isOrphanedRcYield`). Runs at
+   * boot, BEFORE the greeter reads the marker, so a pod stranded by a failed T3 enable heals itself
+   * on its next restart instead of silently never greeting again. */
+  private healOrphanedRcYield(): void {
+    if (!isOrphanedRcYield({
+      markerExists: existsSync(CLAUDE_RC_OFF),
+      t3StartupRegistered: this.t3StartupRegistered(),
+    })) return;
+    try {
+      rmSync(CLAUDE_RC_OFF, { force: true });
+      this.log.info("rc_yield_orphan_cleared", { marker: CLAUDE_RC_OFF });
+    } catch (e) {
+      this.log.error("rc_yield_orphan_clear_failed", { err: e });
+    }
+  }
+
   private startGreeter(): void {
     if (!this.greeter || this.greeterStarted) return;
+    if (existsSync(CLAUDE_RC_OFF)) return; // control yielded to an external harness — don't drive Claude RC
+    if (this.primaryLoginExpired()) {
+      this.log.info("greeter_skip_login_expired", {});
+      return; // logged-out agent — don't loop /remote-control into a refusal
+    }
     this.greeterStarted = true;
     void runGreeter({
       ...this.greeter,
@@ -2035,6 +2726,10 @@ export class AgentServer {
       // Lets the greeter restart a DEAD agent instead of typing into the bash
       // prompt its corpse left behind (see AGENT_EXITED_MARKER in boot.ts).
       respawnCommand: this.authedRespawn?.command,
+      // No coldStart flag: whether /rename runs is now decided by RC session identity
+      // (rc-session-identity.ts), not by "did the pod-agent process restart" — see runGreeter's
+      // rename block. A genuinely fresh/replacement RC session (first boot, image update, crash)
+      // still gets renamed; a pod-agent-only restart whose RC session survived does not.
     }).catch((e) => this.log.error("greeter_failed", { err: e }));
   }
 
@@ -2043,15 +2738,44 @@ export class AgentServer {
    * reconnect until `/remote-control` runs again. RC only — never the kickoff. */
   private reenableRemoteControl(gapMs: number): void {
     if (!this.greeter || !this.credential || !existsSync(this.credential.path)) return;
+    if (existsSync(CLAUDE_RC_OFF)) return; // control yielded to an external harness — don't re-drive Claude RC
+    if (this.primaryLoginExpired()) {
+      this.log.info("rc_reenable_skip_login_expired", { gapMs });
+      return; // logged-out agent — don't re-arm the RC loop on every resume
+    }
+    // Broader than the file-based hard-expiry check above: also catches a LIVE blocking gate
+    // (login-menu/oauth-retry) or a live auth failure the credential file hasn't caught up to yet —
+    // the exact gap this task closes (a manual /agent/rc-restore or an automatic retry landing while
+    // the pane shows a blocking OAuth-retry dialog). The greeter's own pane-safety checks would likely
+    // no-op safely anyway, but skipping here means the call is diagnosable as "this is a login
+    // problem, not RC-down" instead of a silently-wasted attempt (and every caller of
+    // reenableRemoteControl gets this for free through the one choke point).
+    if (!shouldAttemptRcRestore(this.primaryRcState())) {
+      this.log.info("rc_restore_skipped_login_required", { gapMs });
+      return;
+    }
     this.log.info("resume_detected_reenabling_rc", { gapMs });
     void runGreeter({
       ...this.greeter,
-      // RC only. Suspend/resume THAWS this same process — the conversation is
-      // still on screen and the agent is exactly where it was — so neither the
-      // kickoff nor the resume nudge belongs here (that's for a COLD restart,
-      // where claude relaunched into a fresh/--continue'd session).
+      // RC only. This fires from startResumeWatch's wall-clock-jump detector, which only
+      // observes a gap on a provider whose "suspend" genuinely freezes THIS process in place
+      // (Fly's Machines suspend) — the conversation is still on screen and the agent is
+      // exactly where it was, so neither the kickoff nor the resume nudge belongs here (that's
+      // for a COLD restart, where claude relaunched into a fresh/--continue'd session). Incus's
+      // "suspend" is a plain VM stop/start (see incus/provider.ts sleep()) — a full cold boot
+      // where this process doesn't survive, so the wall-clock detector never fires there; an
+      // Incus wake instead goes through the normal boot()/startGreeter() path like any other
+      // cold restart, and the RC-session-identity comparison (rc-session-identity.ts) decides
+      // /rename correctly either way from what it actually observes, not from an assumption
+      // about which provider preserves the process.
       kickoffTrigger: undefined,
       resumeTrigger: undefined,
+      // No explicit rcSessionHashPath: this targets the SAME agentTarget() (and therefore
+      // the same RC session) as startGreeter, so it must compare against the SAME identity
+      // state — both fall through to the shared DEFAULT_RC_SESSION_HASH_PATH. Suspend/resume
+      // thaws the same session, so this naturally reads as "same id" and skips /rename —
+      // one mechanism (rc-session-identity.ts) now covers this call site too, rather than a
+      // separate coldStart:false special case.
       sessionName: this.agentTarget(),
       uid: this.tmuxUid,
       gid: this.tmuxGid,
@@ -2061,6 +2785,39 @@ export class AgentServer {
       // prompt its corpse left behind (see AGENT_EXITED_MARKER in boot.ts).
       respawnCommand: this.authedRespawn?.command,
     }).catch((e) => this.log.error("rc_reenable_failed", { err: e }));
+  }
+
+  /** Yield BOTH agents' remote-control to an external harness (T3 Code): drop the
+   * two RC-off sentinels so boot/resume hooks stop re-driving Claude + Codex, and
+   * kill the live Codex daemon. Credentials are untouched — the agents stay signed
+   * in and the harness drives them with the same on-disk logins. Durable across
+   * restart/resume (the sentinels live on the home volume). */
+  private async yieldAgentControl(): Promise<void> {
+    mkdirSync("/home/dev/.podbay", { recursive: true });
+    const stamp = `${new Date().toISOString()}\n`;
+    writeFileSync(CLAUDE_RC_OFF, stamp);
+    writeFileSync(CODEX_RC_OFF, stamp);
+    // Codex RC is a detached daemon — stop it so it isn't fighting the harness.
+    // Claude RC is a slash-command state inside the TUI (no separate process to
+    // kill); the sentinel stops us RE-establishing it on the next boot/resume.
+    await new Promise<void>((resolve) =>
+      execFile("pkill", ["-f", "app-server --remote-control"], () => resolve()),
+    );
+    this.codexRcActive = false;
+    this.log.info("agent_rc_yielded", {});
+  }
+
+  /** Hand control back from the external harness: clear the sentinels and restart
+   * Podbay's own remote-control for both agents. Idempotent — safe if control was
+   * never yielded. */
+  private resumeAgentControl(): void {
+    rmSync(CLAUDE_RC_OFF, { force: true });
+    rmSync(CODEX_RC_OFF, { force: true });
+    // Re-drive Claude RC (the greeter's one-shot may have already run this process,
+    // so use the resume path, which re-runs RC-only) and restart the Codex daemon.
+    this.reenableRemoteControl(0);
+    this.ensureCodexDaemon("rc-resume");
+    this.log.info("agent_rc_resumed", {});
   }
 
   /** Codex's remote-control analog of the greeter: start the app-server DAEMON so
@@ -2079,6 +2836,17 @@ export class AgentServer {
     // codex-added-to-a-Claude-pod with no RC daemon, ever).
     if (!this.codexOnPod() || !existsSync(credentialsPathForAgent("codex"))) return;
     if (existsSync(CODEX_RC_OFF)) return; // the owner switched RC off — stay off
+    // Codex login hit its hard expiry — the daemon would spawn into a logged-out account and fail on
+    // every boot/resume/toggle. Skip; loginExpired detection + Reconnect own recovery. Fail open on an
+    // unreadable/absent expiry field (credentialExpired only flags a KNOWN expiry in the past).
+    try {
+      if (credentialState("codex", credentialsPathForAgent("codex")).expired) {
+        this.log.info("codex_rc_skip_login_expired", { reason });
+        return;
+      }
+    } catch {
+      /* unreadable → treat as not-expired (fail open) */
+    }
     if (!existsSync(CODEX_STANDALONE)) {
       this.log.warn("codex_rc_no_standalone", { path: CODEX_STANDALONE });
       return;
@@ -2215,6 +2983,9 @@ export class AgentServer {
     // Cache the agent's window index before the first greet, so agentTarget()
     // resolves to the agent window (not the bare session) from the very start.
     await this.refreshWindows();
+    // Before ANY RC path reads the marker: drop it if no harness justifies it. A failed T3 enable
+    // can strand it on disk, and every RC path (greeter included) then returns early forever.
+    this.healOrphanedRcYield();
     // Already authed at boot (login lives on the pod's volume) → the session
     // starts straight into the agent; greet it. Otherwise the boot ran
     // `claude /login`: drive the method menu so the sign-in URL actually prints

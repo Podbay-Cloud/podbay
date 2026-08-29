@@ -144,6 +144,7 @@ async function seed(id: string, ownerId: string, over: Partial<PodRecord> = {}) 
     region: "fra",
     keepAwake: false,
     previewPublic: false,
+    previewAppAuth: false,
     authedAt: null,
     sessionUrl: null,
     provisionAttempts: 0,
@@ -285,6 +286,15 @@ describe("preview proxy", () => {
   it("allows anonymous access when the pod is public", async () => {
     await seed("brave-otter-4f2a", "u1", { previewPublic: true });
     const res = await previewGet("brave-otter-4f2a");
+    expect(res.status).toBe(200);
+    expect(res.body).toContain("PREVIEW_OK");
+  });
+
+  it("delegated-auth (previewAppAuth): forwards without a podbay cookie so a third-party app can reach it", async () => {
+    // The pod runs an agent-harness backend (e.g. T3 Code) that guards its own endpoint with a
+    // pairing token; a podbay cookie would block the app, which only carries its own token. Not public.
+    await seed("brave-otter-4f2a", "u1", { previewPublic: false, previewAppAuth: true });
+    const res = await previewGet("brave-otter-4f2a"); // no user/cookie
     expect(res.status).toBe(200);
     expect(res.body).toContain("PREVIEW_OK");
   });

@@ -44,7 +44,7 @@ describe("updatableIdlePods — bulk idle-update eligibility", () => {
     owner: string,
     over: { imageDigest?: string; status?: string; autoUpdate?: "inherit" | "off"; lastActiveAt?: string } = {},
   ): Promise<string> {
-    const p = await svc.launchPod(owner, "plain", { size: "s" });
+    const p = await svc.launchPod(owner, "plain", { size: "s", slotCap: Infinity });
     await store.update(p.id, {
       status: (over.status ?? "running") as never,
       // Non-null sessionUrl so listPods doesn't reconcile a running+session-less pod against the
@@ -125,5 +125,61 @@ describe("updatableIdlePods — bulk idle-update eligibility", () => {
     const image = `pod-base@${PIN}`;
     const { started } = await svc.updateIdlePods("u1", PIN, DWELL, image);
     expect(started).toEqual([eligible]);
+  });
+
+  it("excludes a pod stale on lastActiveAt but recently active per the agent's transcript", async () => {
+    // lastActiveAt is 30 min ago (no client proxied it) BUT the agent's last transcript entry (a tool
+    // result) was 1 min ago (recent RC/background work) → NOT eligible: effectively just used.
+    await makePod("u1", { lastActiveAt: longAgo() });
+    provider.lastActivityMsResult = 60_000; // agent active 1 min ago
+    expect(await svc.updatableIdlePods("u1", PIN, DWELL)).toEqual([]);
+  });
+
+  it("includes a pod whose agent activity is genuinely past the dwell", async () => {
+    const id = await makePod("u1", { lastActiveAt: longAgo() });
+    provider.lastActivityMsResult = 30 * 60 * 1000; // last transcript entry 30 min ago → past the dwell
+    expect(await svc.updatableIdlePods("u1", PIN, DWELL)).toEqual([id]);
+  });
+
+  it("falls back to lastActiveAt when the image doesn't report the transcript signal", async () => {
+    const id = await makePod("u1", { lastActiveAt: longAgo() }); // 30 min ago, past the dwell
+    provider.lastActivityMsResult = null; // older image: no lastActivityMs
+    expect(await svc.updatableIdlePods("u1", PIN, DWELL)).toEqual([id]);
+  });
+
+  it("caps concurrent recreates (never a thundering herd) and still updates them all", async () => {
+    // 5 eligible pods; make the provider aware of each so its updateImage can run (eligibility is
+    // read from the store — makePod already set it — so no provisionPending, which would disturb it).
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) ids.push(await makePod("u1"));
+    for (const id of ids) {
+      provider.pods.set(id, {
+        id,
+        status: "running",
+        region: "fra",
+        endpoint: "http://x",
+        keepAwake: false,
+        machineId: `m-${id}`,
+        imageDigest: "olddigest",
+      });
+    }
+    // Gate updateImage so recreates pile up on the barrier where we can count them.
+    let release!: () => void;
+    provider.updateImageGate = new Promise<void>((r) => (release = r));
+
+    const { started } = await svc.updateIdlePods("u1", PIN, DWELL, `pod-base@${PIN}`, 3);
+    expect(started.length).toBe(5); // all eligible are queued immediately
+
+    const waitFor = async (cond: () => boolean): Promise<void> => {
+      for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 10));
+      if (!cond()) throw new Error("condition not met in time");
+    };
+    // The 3 lanes saturate on the gate; the other 2 wait their turn.
+    await waitFor(() => provider.updatesInFlight === 3);
+    expect(provider.maxUpdatesInFlight).toBe(3);
+
+    release();
+    await waitFor(() => provider.updatedImages.length === 5); // the remaining 2 flow through
+    expect(provider.maxUpdatesInFlight).toBe(3); // never exceeded the cap
   });
 });

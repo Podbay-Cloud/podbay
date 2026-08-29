@@ -61,10 +61,20 @@ Starting fresh instead has two costs, both observed live (2026-07-29): the agent
 the work it was doing, and the user's agent app accumulates one identical session per restart (12 on
 one pod) with no way to tell them apart.
 
+On a restart the resumed agent SHALL be given a turn ("Resuming — where are we?") so it orients and
+speaks instead of sitting silent in a session the owner sees as empty. This nudge SHALL be delivered
+regardless of whether the environment declares a kickoff — a pod with NO kickoff MUST still receive it
+on restart (it previously got the handoff note but no resume turn, and resumed silently).
+
 #### Scenario: Restart with prior work
 
 - **WHEN** a pod restarts and the agent has a recorded prior session
 - **THEN** the agent SHALL resume that session and the kickoff SHALL NOT be re-run
+
+#### Scenario: A pod with no kickoff still gets the resume nudge
+
+- **WHEN** a pod that declares no kickoff restarts after having been greeted before
+- **THEN** it SHALL still receive the "Resuming — where are we?" turn, not resume silently
 
 #### Scenario: Genuine first boot
 
@@ -103,6 +113,84 @@ and set the session title so the session is controllable from, and findable by n
 Claude apps. Codex sessions are unaffected (no equivalent). The session title SHALL derive from the
 pod's environment name and slug, and SHALL be sanitized so it can never break the `bash -lc '…'`
 boot wrapper.
+
+Because current Claude Code does not surface the `--remote-control` title in the app's session list,
+the pod SHALL additionally `/rename` the session to the pod name — but ownership of that rename is
+decided by RC SESSION IDENTITY, not by whether the pod-agent process restarted (a `coldStart` boolean
+derived from process-restart cannot tell "the same RC session survived" from "a fresh one opened",
+since the tmux-hosted Claude process — and the RC session it owns — can outlive a pod-agent-only
+restart). Podbay persists a hash (never the raw session id/URL) of the last RC session identity it
+observed, in a mode-0600 state file. On each greet it compares the currently observed identity
+(Claude Code's own bridge session id) against that persisted hash:
+
+- the SAME identity as last time (e.g. the tmux-hosted Claude process survived a pod-agent-only
+  restart, or a provider suspend that genuinely freezes the process in place — Fly's Machines
+  suspend, not Incus's, whose suspend is a plain VM stop/start and therefore a cold boot like any
+  other) → the pod SHALL NOT re-apply `/rename`, so a name Podbay or the owner set is preserved;
+- a DIFFERENT identity, or no persisted hash yet (first-ever observation, or a genuinely fresh/
+  replacement session from an image update or crash restart) → the pod SHALL `/rename` to the pod
+  name, and persist the new identity's hash;
+- NO observable identity, but a persisted hash EXISTS → the pod SHALL NOT send `/rename` (it has
+  recorded a session for this pod before and nothing proves the current one differs, so a rename
+  could clobber a title the owner set) and SHALL leave the persisted hash untouched; the
+  `--remote-control`/`/remote-control <title>` argument already sent is the best-effort path;
+- NO observable identity AND no persisted hash → the pod SHALL `/rename` as best effort, persisting
+  nothing (there is no identity to record). Nothing has ever been recorded for this pod, so no owner
+  title can be clobbered, and the pod only reaches this step once remote control is confirmed
+  ACTIVE — a confirmation it accepts from the terminal pane as well as from the session file. That
+  asymmetry is a real window (the pane can report an active session before the session file exists
+  to be read), and treating it as "unprovable, skip" would silently forfeit the naming behavior this
+  requirement exists for.
+
+#### Scenario: A restart's fresh RC session is named to the pod, not "Resume session context"
+
+- **WHEN** a Claude pod's greeter observes an RC session identity that differs from the last one it
+  persisted (e.g. an image update or crash restart opened a new remote-control session), or has no
+  persisted identity yet
+- **THEN** the pod SHALL rename it to the pod name so the owner recognizes it in their Claude app,
+  rather than leaving it under an auto-generated content title, and SHALL persist the new identity's
+  hash
+
+#### Scenario: A suspend/resume does not clobber the owner's session name
+
+- **WHEN** a pod is suspended and resumed on a provider whose suspend freezes the process in place
+  (Fly), and the same RC session identity is observed as before
+- **THEN** the pod SHALL NOT re-apply its pod-name rename, so a name the owner set themselves is kept
+
+#### Scenario: An Incus suspend/resume is a cold boot, not a thaw
+
+- **WHEN** an Incus pod is suspended (a plain VM stop) and resumed (a plain VM start) — the pod-agent
+  process does not survive, unlike Fly's in-place Machines suspend
+- **THEN** the pod resumes through the normal boot path (the same one an image update or crash uses),
+  and the RC-session-identity comparison decides `/rename` from what it actually observes rather than
+  from an assumption that suspend implies the same session survived
+
+#### Scenario: A pod-agent-only restart does not imply a fresh Claude session
+
+- **GIVEN** the pod-agent service restarts while the tmux-hosted Claude process and its RC session
+  remain alive
+- **WHEN** the greeter observes the same RC session identity it persisted before the restart
+- **THEN** it SHALL NOT re-apply `/rename`, even though the pod-agent process itself just started
+
+#### Scenario: An unobservable RC session identity does not clobber an already-recorded title
+
+- **GIVEN** the greeter cannot read a current RC session identity from disk, AND it has a persisted
+  identity hash from an earlier observation
+- **WHEN** it enables remote control
+- **THEN** it SHALL pass the pod title through the `--remote-control`/`/remote-control` argument as
+  best effort, SHALL NOT send a separate `/rename`, and SHALL leave the persisted identity hash
+  untouched
+
+#### Scenario: An unobservable identity with nothing recorded is still named
+
+- **GIVEN** the greeter cannot read a current RC session identity from disk, AND no identity hash has
+  ever been persisted for this pod, AND remote control has been confirmed active (which the greeter
+  accepts from the terminal pane as well as from the session file)
+- **WHEN** it reaches the naming step
+- **THEN** it SHALL send `/rename` as best effort — no owner title can exist to clobber — and SHALL
+  persist nothing, since there is still no identity to record. Skipping here would forfeit the
+  pod-naming behavior in the real window where the pane confirms an active session before the
+  session file exists to be read.
 
 #### Scenario: Claude pod boots remote-controllable and named
 
@@ -146,6 +234,38 @@ seeded layer SHALL be reported, and a spec that lists `claudeFiles` without a co
 
 - **WHEN** the pod-spec lists `claudeFiles` but `/etc/podbay/claude` does not exist
 - **THEN** the init script logs an error stating the env's skills and rules will not be active
+
+### Requirement: The pod-spec's cockpit link points at the cockpit, and deep-links to a tab
+
+`/etc/podbay/pod-spec.json`'s `cockpitUrl` SHALL be the pod's COCKPIT — `<appOrigin>/dashboard/pods/<slug>`
+— never the bare web terminal at `<appOrigin>/pods/<slug>`, which is a different page. In-pod tooling
+and agents hand this link to the owner, so pointing it at the terminal strands them on a page with
+none of the controls they were sent for. One shared builder writes this spec for every provider, so
+the value is wrong on every pod when it is wrong at all.
+
+The cockpit SHALL accept `?tab=<control|settings|secrets|stats|activity|details>` so a link can open
+directly on the surface the owner needs, and in-pod tooling SHALL use that rather than emitting a
+bare link plus written navigation directions.
+
+An image update SHALL repair a `cockpitUrl` already written in the terminal form, because the update
+path otherwise preserves the pod-spec verbatim — so a pod created before the builder was corrected
+would keep handing its owner the wrong link forever, however many times it updated. The repair SHALL
+be narrow: only the exact `<origin>/pods/<slug>` → `<origin>/dashboard/pods/<slug>` rewrite, leaving an
+already-correct, absent, or unrecognised value untouched so it cannot clobber a deliberate one.
+
+#### Scenario: An existing pod's wrong cockpit link is healed by an update
+
+- **GIVEN** a pod whose spec carries the terminal-form `cockpitUrl` from before the builder was fixed
+- **WHEN** it takes an image update
+- **THEN** its spec is re-pushed with the cockpit-form URL, so in-pod tooling starts handing the owner
+  the right link — rather than the fix reaching only newly-created pods
+
+#### Scenario: A secret request links straight to Secrets
+
+- **WHEN** the agent runs `podbay secrets request <KEY>` and hands the owner the printed link
+- **THEN** the link is the cockpit's Secrets tab (`…/dashboard/pods/<slug>?tab=secrets`), which opens
+  there directly — not a terminal URL, and not a bare cockpit link with "go to Settings → Secrets"
+  (secrets is its own tab, not a child of Settings)
 
 ### Requirement: The pod-spec stays current when the owner changes a spec-backed field
 
@@ -289,12 +409,55 @@ the pod's secrets re-sourced. A `stop` SHALL be session-only — the declaration
 the next boot relaunches it; `remove` remains the way to unregister. Hand-killing a supervised process
 is NOT the sanctioned path (the watchdog races it).
 
+A declared command MAY record the TCP port it binds (`podbay startup add --port`). When a port is
+declared, `stop` and `restart` SHALL free that port reliably: after signalling the tracked pid, the
+pod SHALL identify whatever process still listens on the port — even one the pidfile never tracked
+(e.g. a grandchild whose command line does not match the declared command) — terminate it
+(escalating from SIGTERM to SIGKILL), and WAIT for the port to actually clear before a `restart`
+launches the replacement. Without this, a slow-to-exit or untracked prior instance leaves the new one
+crash-looping on "address already in use", and a `stop`/`restart` that only touched the registry
+would falsely report success while stale code kept serving.
+
+Independently of a declared port, a `stop`/`restart` SHALL reap the tracked process's whole descendant
+TREE, not merely its process group. The process that actually binds the port is frequently a grandchild
+that has ESCAPED the tracked pid's group (a wrapper or framework that starts its own session), which a
+group-kill alone leaves alive holding the port. The pod SHALL capture the descendant tree while the
+parent is still alive (once it dies, children reparent to init and the link is lost) and terminate every
+member (SIGTERM then SIGKILL) — so a restart frees the port even when no `--port` was declared.
+
+Per-slug commands SHALL be serialized: while a `stop`/`start`/`restart` for a slug is in flight, another
+command for the SAME slug SHALL be refused rather than run concurrently. Overlapping commands otherwise
+spawn multiple replacements that all crash-loop on the port until the supervisor backs off.
+
+#### Scenario: Restart frees the port even with no declared port
+
+- **GIVEN** a running startup command with NO declared port whose real listener is a grandchild that
+  escaped the tracked pid's process group
+- **WHEN** the agent runs `podbay startup restart <slug>`
+- **THEN** the pod SHALL reap the whole descendant tree and free the port before relaunching, so the
+  replacement binds instead of crash-looping on "address already in use"
+
+#### Scenario: An overlapping command for the same slug is refused, not raced
+
+- **GIVEN** a `podbay startup restart <slug>` already in flight
+- **WHEN** a second `restart`/`start`/`stop` for the SAME slug arrives before it finishes
+- **THEN** the pod SHALL refuse the second command rather than spawn a competing process
+
 #### Scenario: Restart reloads a declared command on the latest code
 
 - **GIVEN** a declared, running startup command whose on-disk code changed
 - **WHEN** the agent runs `podbay startup restart <slug>`
 - **THEN** the pod SHALL stop the process without the watchdog racing the swap and relaunch it via a
   fresh login shell, so it runs the new code with re-sourced secrets
+
+#### Scenario: Restart of a port-declared command frees the port before relaunch
+
+- **GIVEN** a declared command with a declared port whose real listener is a process the pidfile did
+  not track (an untracked child/orphan still bound to the port)
+- **WHEN** the agent runs `podbay startup restart <slug>`
+- **THEN** the pod SHALL terminate whatever holds the declared port (SIGTERM then SIGKILL) and wait
+  for the port to be free before launching the replacement, so the new instance binds instead of
+  crash-looping on "address already in use"
 
 #### Scenario: Stop is session-only, start launches a not-yet-running command
 

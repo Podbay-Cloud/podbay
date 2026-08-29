@@ -43,6 +43,16 @@ describe("boot commands", () => {
     expect(kickoffCommandForAgent("codex")).toContain(`"$(cat ${KICKOFF_PATH})"`);
   });
 
+  it("claude --continue self-heals to a fresh session on fast-fail (no crash-loop)", () => {
+    // A stale/foreign transcript makes `--continue` exit fast → without the fallback the pod
+    // crash-loops to a dead shell (live 2026-08-20). The __cl wrapper retries fresh once.
+    const claude = bootCommandForAgent("claude-code");
+    expect(claude).toContain("__cl()");
+    expect(claude).toContain("could not resume; starting a fresh session");
+    // codex has its OWN resume path (`resume --last` with a file-test guard); no __cl wrapper.
+    expect(bootCommandForAgent("codex")).not.toContain("__cl()");
+  });
+
   it("sanitizeSessionName strips single quotes/newlines and caps length", () => {
     expect(sanitizeSessionName("bob's pod\nline")).toBe("bob s pod line");
     expect(sanitizeSessionName("")).toBe("podbay pod");

@@ -5,16 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { destroyPod, retryPod } from "@/lib/actions";
 import { Button } from "@/components/ui/button";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { useConfirm } from "@/components/ui/use-confirm";
 
 /**
  * Actions for a pod stuck in `error` (provisioning failed). A failed pod never
@@ -33,8 +24,8 @@ export default function PodErrorActions({
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { confirm, dialog } = useConfirm();
 
   function retry() {
     setError(null);
@@ -45,7 +36,17 @@ export default function PodErrorActions({
     });
   }
 
-  function remove() {
+  async function remove() {
+    if (
+      !(await confirm({
+        title: "Delete this pod?",
+        message:
+          "It never finished building, so there’s no work to lose. This removes it from your dashboard.",
+        confirmLabel: "Delete",
+        destructive: true,
+      }))
+    )
+      return;
     setError(null);
     start(async () => {
       const r = await destroyPod(slug);
@@ -62,12 +63,7 @@ export default function PodErrorActions({
             {pending ? "Working…" : "Try again"}
           </Button>
         )}
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={pending}
-          onClick={() => setConfirmDelete(true)}
-        >
+        <Button variant="outline" size="sm" disabled={pending} onClick={() => void remove()}>
           Delete pod
         </Button>
         <Button asChild variant="ghost" size="sm">
@@ -75,22 +71,7 @@ export default function PodErrorActions({
         </Button>
       </div>
       {error && <p className="text-sm text-destructive">{error}</p>}
-
-      <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete this pod?</AlertDialogTitle>
-            <AlertDialogDescription>
-              It never finished building, so there&rsquo;s no work to lose. This removes it from
-              your dashboard.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={remove}>Delete</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {dialog}
     </div>
   );
 }
