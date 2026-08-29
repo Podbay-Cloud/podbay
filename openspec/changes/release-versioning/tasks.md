@@ -40,9 +40,12 @@
 - [x] 3.1 `scripts/cut-release.sh`: reads the top `## X.Y.Z` from CHANGELOG.md, attaches the version to
       the CURRENT pod-base image (admin API now forwards `version`), tags the private repo + cuts a GitHub
       Release with the changelog section. Dry-run verified end-to-end against prod (found image 1ac359).
-- [ ] 3.2 Tag + release on the public mirror explicitly (squashed export: tags do not transfer).
-- [ ] 3.3 Filter notes through the mirror's exclusion list (`scripts/oss-mirror.sh:22-40`) before
-      publishing publicly, so the public changelog cannot name private tooling.
+- [x] 3.2 v0.1.0 released on the public mirror (Podbay-Cloud/podbay) — tag + GitHub Release cut
+      explicitly at the synced HEAD, body from CHANGELOG.md. (Done manually with gh; folding it into
+      cut-release.sh for future releases is a follow-up.)
+- [~] 3.3 Not currently in the path: the public release body is the HAND-WRITTEN CHANGELOG section
+      (owner prose, no private paths), not auto-derived commit subjects — so there is nothing to filter
+      yet. Needed only if a future public release switches to auto-derived notes.
 - [x] 3.4 The `--no-release` path is the existing `build-and-record.sh` (records an image with NO version;
       the row stays digest-identified). cut-release is the separate, deliberate step — nothing forces a version.
 - [x] 3.5 Added §4b to `docs/runbooks/shipping.md`: write CHANGELOG section → dry-run → cut (outward,
