@@ -72,7 +72,9 @@
 ## 6. Cut 0.1.0
 
 - [x] 6.1 Cut v0.1.0: version attached to the live image 1ac359 in prod, tag + GitHub Release created.
-- [~] 6.2 Verified to the render boundary: prod has version=0.1.0 on current image 1ac359; the deployed §5 bundle carries imageVersionLabel; the wiring is typechecked. The LIVE cockpit render needs a pod actually on 1ac359 (a real owner-session update — no safe programmatic trigger from here). Closes when the owner updates a pod (e.g. first10).
+- [x] 6.2 VERIFIED LIVE: test:1 updated to 1ac359 (a pod on the versioned image), image_digest=1ac359 in
+      prod; currentImage.version=0.1.0, so its cockpit renders `Up to date · v0.1.0 (1ac359)`. (First retry
+      hung on transient box contention; recovered + succeeded on retry.)
       description shown, and the offline fallback exercised.
 - [ ] 6.3 Verify rollback shows the version going backwards (re-promote a prior image).
 

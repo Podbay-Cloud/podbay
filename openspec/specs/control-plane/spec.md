@@ -274,6 +274,17 @@ fail the image update — the pod simply keeps its existing layer.
 - **THEN** the image update SHALL proceed without a layer, and the failure SHALL be logged, not
   surfaced as an update error
 
+#### Scenario: A hung image update recovers instead of stranding the pod
+
+- **WHEN** an image update has been in flight past a stale window (the detached recreate hung on an
+  infrastructure operation, or a gateway restart killed it mid-recreate, so it neither completed nor
+  threw)
+- **THEN** a maintenance sweep SHALL treat it as hung: bring the pod back up on its EXISTING image
+  (best-effort) and fail the update so the cockpit shows an error the owner can retry, rather than
+  leaving the pod stopped and the cockpit wedged on "Updating" indefinitely
+- **AND** an update still within the stale window SHALL NOT be disturbed, so a legitimately slow
+  recreate is never interrupted
+
 ### Requirement: Encrypted app-secret management
 
 The control plane SHALL manage per-pod app secrets through an encrypted secret vault, owner-scoped.

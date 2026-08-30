@@ -954,7 +954,12 @@ export class GatewayServer {
     // Unstick any T3 enable orphaned by a gateway restart mid-provision (so it fails + is retryable
     // instead of spinning forever). Best-effort; never let it break the sweep.
     const unstuck = await this.config.control.reconcileStuckT3Enables?.().catch(() => [] as string[]) ?? [];
-    return [...woken, ...refreshed, ...unstuck];
+    // Unstick a HUNG image update — the detached recreate has no timeout, so a wedged incus op (or a
+    // gateway restart mid-recreate) strands the pod STOPPED and the cockpit on "Updating" forever
+    // (test:1, 2026-08-29). Wake the pod on its prior image + fail the update so it's retryable.
+    const unstuckUpdates =
+      (await this.config.control.reconcileStuckUpdates?.().catch(() => [] as string[])) ?? [];
+    return [...woken, ...refreshed, ...unstuck, ...unstuckUpdates];
   }
 
   /** Reap relay connection rows that have been disconnected for a long time (a relay paired once and

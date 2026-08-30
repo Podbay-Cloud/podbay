@@ -184,6 +184,11 @@ const T3_RUNTIME_BYTES = 700 * 1024 * 1024;
  * restart mid-enable), not in-flight — so a re-enable is allowed to recover it. Comfortably beyond the
  * ~300s `:port` poll budget. */
 const T3_ENABLE_STALE_MS = 8 * 60 * 1000;
+/** How long an image update may be "in flight" before it's treated as HUNG. A live update completes
+ * in ~1-2 min; `runPodImageUpdate` is a detached task with no timeout, so a hung incus operation (or a
+ * gateway restart mid-recreate) strands the pod STOPPED with the row flagged forever. 8 min is
+ * comfortably past any real update, so waking + failing a pod past it never interrupts a live one. */
+const UPDATE_STALE_MS = 8 * 60 * 1000;
 const RESERVED_SECRET_KEYS = new Set([
   GH_CLONE_TOKEN_KEY,
   CLAUDE_OAUTH_TOKEN_SECRET,
@@ -2036,6 +2041,49 @@ export class PodService {
       await this.clearT3Failure(rec, rec.id, new Error("T3 enable orphaned (gateway restarted mid-enable)")).catch(
         () => undefined,
       );
+      stuck.push(rec.id);
+    }
+    return stuck;
+  }
+
+  /** Unstick a HUNG image update. `runPodImageUpdate` is a detached task with no timeout, so an incus
+   * operation that hangs after the stop — or a gateway restart mid-recreate — leaves the pod STOPPED
+   * and the row flagged `updatingSince`/`updateStage` forever, with the cockpit stuck on "Updating".
+   * The task hung (never threw), so `clearUpdateFailure` never fired and there was no reconciler
+   * (observed live: test:1 stranded 16+ min, 2026-08-29). Any pod whose update has been in flight past
+   * the stale window is treated as hung → wake it back onto its CURRENT image (best-effort) and fail
+   * the update so the cockpit shows an error and the owner can retry. Idempotent; safe every sweep. */
+  async reconcileStuckUpdates(): Promise<string[]> {
+    const now = Date.now();
+    const stuck: string[] = [];
+    let pods: PodRecord[];
+    try {
+      pods = await this.store.list();
+    } catch {
+      return stuck;
+    }
+    for (const rec of pods) {
+      if (!rec.updatingSince) continue;
+      if (now - Date.parse(rec.updatingSince) < UPDATE_STALE_MS) continue;
+      this.log.warn("update_hung_reconciling", {
+        podId: rec.id,
+        since: rec.updatingSince,
+        stage: rec.updateStage,
+      });
+      // Bring the stranded (stopped) pod back up on its EXISTING image — the update failed, so we
+      // recover the pod rather than retry. Best-effort: a wake failure must not stop us clearing the
+      // flags, or the cockpit stays wedged on "Updating".
+      try {
+        await this.providerFor(rec.provider).wake(rec.id);
+        await this.store.update(rec.id, { status: "running" }).catch(() => undefined);
+      } catch (e) {
+        this.log.warn("update_hung_wake_failed", { podId: rec.id, err: e });
+      }
+      await this.clearUpdateFailure(
+        rec,
+        rec.id,
+        new Error("image update hung (no progress past the stale window) — pod recovered on its prior image"),
+      ).catch(() => undefined);
       stuck.push(rec.id);
     }
     return stuck;

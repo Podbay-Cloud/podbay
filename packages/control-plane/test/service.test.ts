@@ -295,6 +295,47 @@ describe("provisioner worker (durable provisioning)", () => {
   });
 });
 
+describe("reconcileStuckUpdates — a hung image update is recovered, not left stranded", () => {
+  it("wakes a pod whose update stalled past the stale window and clears the flags", async () => {
+    const rec = await svc.launchPod("u", "nextjs-starter");
+    await svc.provisionPending();
+    // Simulate a HUNG update: stopped mid-recreate, flagged updating 10 min ago (past UPDATE_STALE_MS).
+    const old = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    await store.update(rec.id, { status: "suspended", updatingSince: old, updateStage: "stopping" });
+    const wake = vi.spyOn(provider, "wake");
+
+    const stuck = await svc.reconcileStuckUpdates();
+
+    expect(stuck).toContain(rec.id);
+    expect(wake).toHaveBeenCalledWith(rec.id);
+    const after = await store.get(rec.id);
+    expect(after?.updatingSince).toBeNull();
+    expect(after?.updateStage).toBeNull();
+    expect(after?.status).toBe("running"); // woken back onto its prior image
+  });
+
+  it("does NOT touch a RECENT update — no false-positive on a live recreate", async () => {
+    const rec = await svc.launchPod("u", "nextjs-starter");
+    await svc.provisionPending();
+    const recent = new Date(Date.now() - 30 * 1000).toISOString(); // 30s in — still live
+    await store.update(rec.id, { status: "suspended", updatingSince: recent, updateStage: "stopping" });
+    const wake = vi.spyOn(provider, "wake");
+
+    const stuck = await svc.reconcileStuckUpdates();
+
+    expect(stuck).not.toContain(rec.id);
+    expect(wake).not.toHaveBeenCalled();
+    expect((await store.get(rec.id))?.updatingSince).toBe(recent); // untouched
+  });
+
+  it("ignores pods that are not updating at all", async () => {
+    const rec = await svc.launchPod("u", "nextjs-starter");
+    await svc.provisionPending();
+    const stuck = await svc.reconcileStuckUpdates();
+    expect(stuck).not.toContain(rec.id);
+  });
+});
+
 describe("ownership isolation (4.2)", () => {
   it("list returns only the owner's pods", async () => {
     await svc.launchPod("owner-a", ENV);
