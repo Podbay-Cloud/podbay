@@ -50,9 +50,14 @@
 
 ## 3. Native-first recovery and doctor
 
-- [ ] 3.1 Add failing greeter tests for waiting on Claude's native `--continue` RC outcome before
-  opening `/remote-control`; implement the candidate-version outcome classifier and prove an active
-  native reattach receives no redundant recovery command.
+- [ ] 3.1 BLOCKED on the matrix (1.2-1.4). Investigated 2026-08-30: decision-4's core — skip
+  `/remote-control` when native `--continue` reattach is ALREADY active — requires reliably detecting
+  "native reattach active", which greeter.ts:505-511 explicitly documents it CANNOT do today (the RC
+  bridge id persists across a suspend whether or not the connection survived, so it is not liveness).
+  The real-CLI matrix is what supplies the pane patterns to tell active-reattach from a dead bridge.
+  Building the classifier against guessed patterns would regress the deliberate "send on every wake"
+  fix (stuck-session bug, 2026-07-17). Needs a valid Claude credential + safely driving a pod through
+  the RC states first.
 - [ ] 3.2 Add failing tests for the matrix-selected documented recovery sequence, attempt cap, backoff,
   pre-attempt pane reclassification, refusal to type through blocking auth/menu UI, post-attempt
   reclassification, and replacement-session local-history preservation; implement one recovery
