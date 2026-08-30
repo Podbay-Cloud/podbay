@@ -116,11 +116,19 @@ image shows its OWN earlier version rather than the newest ever recorded.
 - **WHEN** a manifest row has no version
 - **THEN** it SHALL remain valid and SHALL render with the existing digest-and-date presentation
 
-#### Scenario: Recording accepts an optional version
+#### Scenario: Recording accepts a version, or inherits the current one
 
 - **WHEN** an image is recorded (or re-recorded) with a version supplied
-- **THEN** the version SHALL be stored on that row; when no version is supplied the row SHALL keep a
-  null version rather than being assigned one
+- **THEN** the version SHALL be stored on that row (the release-cutting path)
+
+#### Scenario: A build with no version inherits the current version
+
+- **WHEN** a promoting build is recorded with NO version and a current image already carries one
+- **THEN** the new row SHALL inherit that current version and SHALL NOT advance it — an ad-hoc rebuild
+  (a CLI-pin bump, a hotfix build) shows the live version, not a bare digest (release-versioning);
+  advancing the version is the deliberate, separate release-cutting step
+- **WHEN** no version is supplied and there is no current version to inherit (a pre-versioning fleet)
+- **THEN** the row SHALL keep a null version and render with the existing digest-and-date presentation
 
 #### Scenario: A partial re-record preserves fields it does not supply
 

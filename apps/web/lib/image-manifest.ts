@@ -70,7 +70,11 @@ export function mergeReRecord(
     alias: pick("alias", input.alias !== undefined),
     toSha: pick("toSha", input.toSha !== undefined),
     summary: pick("summary", input.summary !== undefined),
-    version: pick("version", input.version !== undefined),
+    // null AND undefined both mean "not provided" for version — no caller ever means "clear the
+    // stored version" (cut-release always sends a real one; a plain record sends none, which the
+    // admin route coerces to null). So a re-record without an explicit version PRESERVES the stored
+    // one instead of wiping it — the bug that would let an ad-hoc re-record blank a released version.
+    version: pick("version", input.version != null),
     sizeBytes: pick("sizeBytes", input.sizeBytes !== undefined),
     builtAt: pick("builtAt", input.builtAt !== undefined),
     builtBy: pick("builtBy", input.builtBy !== undefined),
@@ -172,7 +176,13 @@ export async function recordImage(input: RecordImageInput): Promise<ImageRow> {
     toSha: input.toSha ?? null,
     notes: input.notes ?? null,
     summary: input.summary ?? null,
-    version: input.version ?? null,
+    // A build that is not itself a release INHERITS the current version (release-versioning spec:
+    // "a build that is not a release inherits the current version"). Without this, an ad-hoc rebuild
+    // — the CLI-pin bumps, a hotfix build — recorded a NULL version and the cockpit fell back to a
+    // bare digest even though a version was live (velsa, 2026-08-30). An explicit version (cut-release)
+    // advances it; a null PRIOR version (pre-versioning) stays null → the digest fallback, as specified.
+    // Re-records don't hit this branch when they'd override a stored version — mergeReRecord guards that.
+    version: input.version ?? (promote ? (prior?.version ?? null) : null),
     sizeBytes: input.sizeBytes ?? null,
     status: (promote ? "current" : "superseded") as ImageStatus,
     builtAt: input.builtAt ?? null,

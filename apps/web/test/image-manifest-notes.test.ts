@@ -90,4 +90,16 @@ describe("mergeReRecord — a partial re-record preserves fields the caller didn
     const m = mergeReRecord({ digest: "1ac359", version: "0.1.0" }, prev, incomingVersionOnly);
     expect(m.notes).toBe("- fix: real thing");
   });
+
+  it("a re-record with version=null (the admin-route coercion) PRESERVES the stored version", () => {
+    // The admin route coerces a missing `version` to null, so a plain re-record arrives as
+    // version:null — which must NOT wipe a released version. Guards the ad-hoc-rebuild case.
+    const released = { ...prev, version: "0.2.0" };
+    const m = mergeReRecord(
+      { digest: "1ac359", version: null },
+      released,
+      { ...incomingVersionOnly, version: null },
+    );
+    expect(m.version).toBe("0.2.0");
+  });
 });
