@@ -10,6 +10,7 @@ import { DisconnectGithubButton } from "@/components/disconnect-github-button";
 import {
   githubAccountStatus,
   startGithubAccountConnect,
+  startGithubAccountWebConnect,
   completeGithubAccountConnect,
   githubAccountRepos,
   disconnectGithubAccount,
@@ -25,6 +26,7 @@ import type { Repo } from "@/lib/github-connect";
  */
 export function GithubRepoField({ onSelect }: { onSelect: (repo: string | null) => void }) {
   const [configured, setConfigured] = useState<boolean | null>(null);
+  const [webFlow, setWebFlow] = useState(false);
   const [login, setLogin] = useState<string | null>(null);
   const [repos, setRepos] = useState<Repo[] | null>(null);
   const [selected, setSelected] = useState("");
@@ -37,10 +39,16 @@ export function GithubRepoField({ onSelect }: { onSelect: (repo: string | null) 
     githubAccountStatus()
       .then((s) => {
         setConfigured(s.configured);
+        setWebFlow(s.webFlow);
         setLogin(s.login);
         if (s.connected) void loadRepos();
       })
       .catch(() => setConfigured(false));
+    // If we just came back from the GitHub authorize round-trip, surface a denial/error (the
+    // connected case is already reflected by the status read above).
+    const outcome = new URLSearchParams(window.location.search).get("github");
+    if (outcome === "denied") setError("GitHub authorization was cancelled.");
+    else if (outcome === "error") setError("Couldn't connect GitHub — please try again.");
     return () => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
     };
@@ -55,6 +63,19 @@ export function GithubRepoField({ onSelect }: { onSelect: (repo: string | null) 
   function pick(repo: string) {
     setSelected(repo);
     onSelect(repo || null);
+  }
+
+  // One-click web OAuth: navigate to GitHub's authorize page (returning to THIS wizard step, so the
+  // saved draft restores). The device flow below is the fallback when the web flow isn't configured.
+  async function connectWeb() {
+    setError(null);
+    setBusy(true);
+    const r = await startGithubAccountWebConnect(window.location.pathname + window.location.search);
+    if ("url" in r) window.location.href = r.url;
+    else {
+      setError(r.error);
+      setBusy(false);
+    }
   }
 
   async function connect() {
@@ -148,7 +169,12 @@ export function GithubRepoField({ onSelect }: { onSelect: (repo: string | null) 
             </>
           ) : (
             <div>
-              <Button variant="outline" size="sm" onClick={connect} disabled={busy}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={webFlow ? connectWeb : connect}
+                disabled={busy}
+              >
                 {busy ? "Connecting…" : "Connect GitHub"}
               </Button>
             </div>

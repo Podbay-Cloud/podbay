@@ -113,6 +113,15 @@ unchanged.
 - **THEN** a GitHub step SHALL appear, and Next SHALL be disabled until a repository is chosen
 - **AND** the Review step SHALL show the chosen repository before launch
 
+#### Scenario: Connecting the GitHub account
+
+- **WHEN** the user connects GitHub on the GitHub step and the web OAuth flow is configured (client id
+  + secret)
+- **THEN** the browser SHALL be sent to GitHub's authorization page for a single Authorize click and
+  returned via a callback that stores the token — no device-code copy/paste
+- **AND** WHEN the web flow is NOT configured (or on self-host), the connect SHALL fall back to the
+  device-code flow, so the step always works
+
 #### Scenario: Launch is unchanged downstream
 
 - **WHEN** the user confirms launch from the Review step
