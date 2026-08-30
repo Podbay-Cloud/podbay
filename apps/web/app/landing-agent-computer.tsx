@@ -2,35 +2,30 @@ import Image from "next/image";
 import Link from "next/link";
 import {
   ArrowUpRight,
-  Clock3,
+  Boxes,
+  Eye,
+  Globe2,
   KeyRound,
-  Laptop,
   ShieldCheck,
-  Smartphone,
-  UserRound,
   Wrench,
 } from "lucide-react";
+import dashboardImage from "../../../docs/images/dashboard.png";
 import { TrackedLink } from "./landing-examples";
 import { getCurrentUser } from "@/lib/session";
-import { listEnvironments } from "@/lib/environments";
 import styles from "./landing-agent.module.css";
 import GithubMark from "@/components/github-mark";
 import LandingAccountLink from "@/components/landing-account-link";
 import LandingFooter from "@/components/landing-footer";
-import { LANDING_PLAYBOOKS, type LandingPlaybookId } from "@/lib/landing-playbooks";
+import LandingPodNetwork from "./landing-pod-network";
 
 export default async function AgentComputerLanding({
   user: suppliedUser,
 }: {
   user?: Awaited<ReturnType<typeof getCurrentUser>>;
 }) {
-  const [user, catalog] = await Promise.all([
-    suppliedUser === undefined ? getCurrentUser() : suppliedUser,
-    listEnvironments(),
-  ]);
-  const available = new Map(catalog.map((entry) => [entry.name, entry]));
+  const user = suppliedUser === undefined ? await getCurrentUser() : suppliedUser;
   const primaryHref = user ? "/dashboard" : "/signin";
-  const primaryLabel = user ? "Open dashboard" : "Give Claude a real home";
+  const primaryLabel = user ? "Open dashboard" : "Start with Podbay";
 
   return (
     <main className={styles.landing}>
@@ -42,8 +37,8 @@ export default async function AgentComputerLanding({
         </Link>
         <nav className={styles.nav} aria-label="Primary navigation">
           <a href="#why">Why Podbay</a>
-          <a href="#starting-points">Starting points</a>
-          <a href="#trust">Trust</a>
+          <a href="#workspace">How it works</a>
+          <a href="#trust">Safety</a>
           <Link href="/docs">Docs</Link>
           {user ? <LandingAccountLink user={user} /> : <Link href="/signin">Sign in</Link>}
         </nav>
@@ -52,10 +47,10 @@ export default async function AgentComputerLanding({
       <section className={`${styles.shell} ${styles.hero}`}>
         <div className={styles.heroCopy}>
           <p className={styles.eyebrow}>Claude is the interface. Podbay is its computer.</p>
-          <h1>The always-on computer for your coding agent.</h1>
+          <h1>Give <span className={styles.noWrap}>Claude Code</span> a computer that keeps working.</h1>
           <p className={styles.heroText}>
-            Close the lid &mdash; it keeps working. Files, servers, and running jobs stay put,
-            reachable from any device.
+            Podbay gives Claude Code a pod (cloud computer) with your project, tools, services,
+            and data. It keeps working when your laptop closes.
           </p>
           <div className={styles.heroActions}>
             <TrackedLink
@@ -72,18 +67,35 @@ export default async function AgentComputerLanding({
               target="_blank"
               rel="noopener"
             >
-              <GithubMark /> Self-host it <ArrowUpRight aria-hidden />
+              <GithubMark /> Self-host Podbay <ArrowUpRight aria-hidden />
             </a>
           </div>
           <div className={styles.subscriptionLine}>
             <KeyRound aria-hidden />
             <span className={styles.subscriptionCopy}>
-              <strong>Use your existing Claude subscription.</strong>
-              <span>Official CLI · No token markup · Self-host it (BSL 1.1)</span>
-              <span className={styles.pilotNote}>Codex support is in pilot.</span>
+              <strong>Continue in the official Claude apps with your Pro or Max subscription.</strong>
             </span>
           </div>
         </div>
+
+        <figure className={styles.heroVisual}>
+          <div className={styles.dashboardFrame}>
+            <div className={styles.dashboardBar} aria-hidden>
+              <i /><i /><i />
+              <span>podbay dashboard</span>
+            </div>
+            <Image
+              className={styles.dashboardImage}
+              src={dashboardImage}
+              alt="Podbay dashboard showing pods that are working, idle, or waiting for a reply, with app previews"
+              priority
+              sizes="(max-width: 1050px) 100vw, 58vw"
+            />
+          </div>
+          <figcaption>
+            <strong>See every pod at a glance.</strong>
+          </figcaption>
+        </figure>
       </section>
 
       <section
@@ -93,184 +105,85 @@ export default async function AgentComputerLanding({
       >
         <div className={styles.sectionHeading}>
           <div>
-            <p className={styles.eyebrow}>Remote control &ne; always-on</p>
-            <h2>Podbay runs the machine your session lives on.</h2>
+            <p className={styles.eyebrow}>Desktop, phone, or web</p>
+            <h2>Close the laptop. The pod keeps working.</h2>
           </div>
-          <p>Remote control gives you access. Podbay gives you uptime.</p>
+          <p>The same Claude session, files, tools, and running services stay in one Podbay workspace. Continue from desktop, mobile, or web without moving the project.</p>
         </div>
-        <div className={styles.continuityFlow}>
-          <div className={styles.continuityMoment}>
-            <div className={styles.momentLabel}>
-              <strong>01</strong><span>Start on desktop</span>
-            </div>
-            <article className={styles.desktopSurface}>
-              <div className={styles.surfaceTitle}>
-                <Laptop aria-hidden />
-                <span>Claude Desktop</span>
-                <i />
-              </div>
-              <div className={styles.desktopChat}>
-                <span className={styles.appContext}>Claude Code · project-aurora</span>
-                <p>Investigate why invited users lose their team role after signup.</p>
-                <p>I&rsquo;ll trace the flow. I won&rsquo;t change existing records without you.</p>
-              </div>
-              <span className={styles.surfaceFoot}>Native Claude app · desktop</span>
-            </article>
+        <div className={styles.continuityVisual}>
+          <div className={styles.continuityArtwork}>
+            <Image
+              src="/landing/session-continuity-v10.png"
+              alt="One Claude session moving from a desktop app through an always-on Podbay virtual workspace to a phone"
+              width={1825}
+              height={862}
+              sizes="(max-width: 700px) 100vw, 770px"
+            />
           </div>
-
-          <div className={`${styles.continuityMoment} ${styles.continuityMomentActive}`}>
-            <div className={styles.momentLabel}>
-              <strong>02</strong><span>Laptop closes</span>
-            </div>
-            <article className={styles.podbaySurface}>
-              <h2>Your pod keeps working.</h2>
-              <p>
-                Claude can install packages, run services, schedule jobs, and put your project on a live URL.
-              </p>
-              <div className={styles.podLive}>
-                <i /><strong>project-aurora pod</strong><span>Running</span>
-              </div>
-            </article>
-          </div>
-
-          <div className={styles.continuityMoment}>
-            <div className={styles.momentLabel}>
-              <strong>03</strong><span>Continue on phone</span>
-            </div>
-            <article className={styles.mobileSurface}>
-              <div className={styles.surfaceTitle}>
-                <Smartphone aria-hidden />
-                <span>Claude Mobile</span>
-                <i />
-              </div>
-              <div className={styles.mobileChat}>
-                <span className={styles.appContext}>Claude Remote Control</span>
-                <p>
-                  I found the issue. Should I backfill existing pending invites too?
-                </p>
-                <p>Yes—pending invites only.</p>
-              </div>
-              <span className={styles.surfaceFoot}>Native Claude app · mobile</span>
-            </article>
+          <div className={styles.continuitySteps} aria-hidden>
+            <span><strong>01</strong> Start on desktop</span>
+            <span><strong>02</strong> Pod runs 24/7</span>
+            <span><strong>03</strong> Continue on phone</span>
           </div>
         </div>
-        <p className={styles.simulated}>Simulated Claude conversation · Pod status reflects shipped UI</p>
       </section>
 
       <section className={styles.reasonsBand} id="why">
         <div className={styles.shell}>
           <div className={styles.sectionHeading}>
             <div>
-              <p className={styles.eyebrow}>Close the lid</p>
-              <h2>Your project keeps its momentum.</h2>
+              <p className={styles.eyebrow}>More than remote access</p>
+              <h2>Run the whole project. See the result.</h2>
             </div>
-            <p>Move the agent runtime off the computer that holds your personal life and needs to stay useful to you.</p>
+            <p>A pod gives Claude a complete environment to build, run, and test your project.</p>
           </div>
           <div className={styles.reasons}>
             <article>
-              <Clock3 aria-hidden />
-              <h3>Available when you are</h3>
-              <p>The workspace stays up between devices and visits. Long tasks do not depend on your laptop remaining awake.</p>
+              <Boxes aria-hidden />
+              <h3>Run more than code</h3>
+              <p>Development servers, databases, workers, scheduled jobs, monitors, and project skills stay together and keep running.</p>
             </article>
             <article>
-              <Laptop aria-hidden />
-              <h3>A full cloud computer</h3>
-              <p>Each pod gets CPU, memory, disk, and a persistent filesystem. Claude can install packages, run Postgres, start dev servers, and expose a private or public URL.</p>
+              <Eye aria-hidden />
+              <h3>Verify the real app</h3>
+              <p>Claude can open the live application, click through real flows, use its database, and verify behavior where it made the change.</p>
             </article>
             <article>
-              <ShieldCheck aria-hidden />
-              <h3>A smaller blast radius</h3>
-              <p>Skills run against a project-scoped cloud machine, not your home directory, browser sessions, or local network.</p>
+              <Globe2 aria-hidden />
+              <h3>Develop or run in production</h3>
+              <p>Use the pod for development with a live preview, or run your production server directly from the pod.</p>
             </article>
           </div>
-        </div>
-      </section>
-
-      <section className={`${styles.shell} ${styles.playbookSection}`} id="starting-points">
-        <div className={styles.sectionHeading}>
-          <div>
-            <p className={styles.eyebrow}>Prepared ways of working</p>
-            <h2>Start with a capable agent, not a blank chat.</h2>
-          </div>
-          <p>Each workspace combines a working foundation, job-specific guidance, and vetted, pinned skills. Inspect it, change it, make it yours.</p>
-        </div>
-        <div className={styles.playbookGrid}>
-          {(Object.keys(LANDING_PLAYBOOKS) as LandingPlaybookId[]).map((id) => {
-            const playbook = LANDING_PLAYBOOKS[id];
-            const entry = available.get(id);
-            const launchable = playbook.readiness === "Ready" && Boolean(entry);
-            const launchLabel = playbook.kind === "workspace"
-              ? "Launch this workspace"
-              : "Launch this playbook";
-            const content = (
-              <>
-                <span className={styles.playbookMedia}>
-                  <Image
-                    src={playbook.image}
-                    alt={playbook.imageAlt}
-                    fill
-                    loading="lazy"
-                    sizes="(max-width: 760px) 100vw, 50vw"
-                  />
-                  <span className={styles.conceptTag}>Concept preview</span>
-                  <span className={launchable ? styles.readyTag : styles.pilotTag}>{playbook.readiness}</span>
-                </span>
-                <span className={styles.playbookBody}>
-                  <strong>{entry?.title ?? playbook.title}</strong>
-                  <span>{playbook.computerDescription}</span>
-                  <small>{playbook.proof}</small>
-                  <b>{launchable ? launchLabel : "Pilot in progress"} {launchable && <ArrowUpRight aria-hidden />}</b>
-                </span>
-              </>
-            );
-            return launchable ? (
-              <TrackedLink
-                className={styles.playbookCard}
-                href={user ? `/new?env=${id}` : "/signin"}
-                eventName="landing_playbook_select"
-                item={id}
-                key={id}
-              >
-                {content}
-              </TrackedLink>
-            ) : (
-              <article className={`${styles.playbookCard} ${styles.playbookUnavailable}`} key={id}>
-                {content}
-              </article>
-            );
-          })}
+          <LandingPodNetwork />
         </div>
       </section>
 
       <section className={styles.trustBand} id="trust">
         <div className={`${styles.shell} ${styles.trust}`}>
           <div>
-            <p className={styles.eyebrow}>Full workspace, clear boundary</p>
-            <h2>Off your laptop. Still under your control.</h2>
-            <p className={styles.trustIntro}>
-              Claude gets what it needs inside the pod. Your personal machine stays outside the boundary.
-            </p>
+            <p className={styles.eyebrow}>A boundary for agent work</p>
+            <h2>Powerful inside the pod. Guarded at the edges.</h2>
           </div>
           <div className={styles.trustGrid}>
             <article>
-              <UserRound aria-hidden />
-              <h3>Your Claude account</h3>
-              <p>Official Claude Code CLI, signed in to the subscription you already use.</p>
+              <ShieldCheck aria-hidden />
+              <h3>Project-scoped machine</h3>
+              <p>The pod gets this project&rsquo;s code and services, not your personal files, browser sessions, or local network.</p>
             </article>
             <article>
               <KeyRound aria-hidden />
-              <h3>Project access only</h3>
-              <p>Give the pod this project&rsquo;s files and secrets—not your entire machine.</p>
-            </article>
-            <article>
-              <Wrench aria-hidden />
-              <h3>Admin access when needed</h3>
-              <p>Inspect, debug, or recover the pod from the terminal. It&rsquo;s the escape hatch, not the workflow.</p>
+              <h3>Project secrets, outside chat</h3>
+              <p>Add project credentials in the dashboard instead of pasting secret values into a conversation.</p>
             </article>
             <article>
               <ShieldCheck aria-hidden />
-              <h3>No path back to your laptop</h3>
-              <p>Your home directory, browser sessions, and local network stay out of reach.</p>
+              <h3>Official CLI, your account</h3>
+              <p>Claude runs through the official CLI with your subscription. Podbay does not proxy model authentication or add token markup.</p>
+            </article>
+            <article>
+              <Wrench aria-hidden />
+              <h3>You keep full access</h3>
+              <p>Open the browser terminal whenever you want to inspect, debug, or recover the workspace.</p>
             </article>
           </div>
         </div>
@@ -278,7 +191,7 @@ export default async function AgentComputerLanding({
 
       <section className={`${styles.shell} ${styles.finalCta}`}>
         <p className={styles.eyebrow}>Private alpha</p>
-        <h2>Give your agent a computer of its own.</h2>
+        <h2>Give your <span className={styles.noWrap}>Claude Code</span> a permanent home</h2>
         <TrackedLink
           className={styles.primaryCta}
           href={primaryHref}

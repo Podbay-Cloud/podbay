@@ -16,13 +16,13 @@ export const metadata: Metadata = {
   // default (marketing title) stands only where a page sets none (e.g. the landing,
   // which also sets its own).
   title: {
-    default: "Podbay — a persistent home for your coding agents",
+    default: "Podbay: a persistent home for your coding agents",
     template: "%s · Podbay",
   },
   description:
-    "Give Claude Code a persistent cloud workspace with your project, tools, services, and automation — available from the official Claude apps.",
+    "Give Claude Code a persistent cloud workspace with your project, tools, services, and automation. It is available from the official Claude apps.",
   openGraph: {
-    title: "Podbay — a persistent home for your coding agents",
+    title: "Podbay: a persistent home for your coding agents",
     description:
       "A persistent cloud workspace for Claude Code, available from the official Claude apps on desktop and mobile.",
     url: "https://podbay.cloud",
@@ -67,7 +67,7 @@ export default function RootLayout({
     ],
   };
 
-  // A self-host (OSS) install is a private single-tenant box, not the podbay.cloud product — it must
+  // A self-host (OSS) install is a private single-tenant box, not the podbay.cloud product, so it must
   // not emit podbay.cloud marketing structured data, cookie consent, or analytics.
   const oss = editionOss();
   return (
@@ -80,11 +80,11 @@ export default function RootLayout({
           />
         )}
         {/* React Query lives at the ROOT so EVERY route tree that renders a react-query component has
-            a client — not just /dashboard. The cockpit at /pods/[slug] has no layout of its own and
+            a client, not just /dashboard. The cockpit at /pods/[slug] has no layout of its own and
             inherits only this root, so scoping the provider to the dashboard layout crashed the cockpit
             with "No QueryClient set" (2026-08-23). App-wide is the correct scope. */}
         <QueryProvider>{children}</QueryProvider>
-        {/* Cookie consent + analytics are cloud-only — a single-tenant self-host install sets no
+        {/* Cookie consent + analytics are cloud-only. A single-tenant self-host install sets no
             third-party cookies and ships no analytics, so there's nothing to consent to. */}
         {!oss && (
           <>

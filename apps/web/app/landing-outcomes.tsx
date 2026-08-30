@@ -57,7 +57,7 @@ export default async function OutcomesLanding({
           <h1>Build the idea. <span>Skip the setup.</span></h1>
           <p className={styles.heroText}>
             Choose a starting point, describe the outcome, and start with a working project at a
-            live URL—with the infrastructure setup handled.
+            live URL, with the infrastructure setup handled.
           </p>
           <div className={styles.heroActions}>
             <TrackedLink
@@ -148,7 +148,7 @@ export default async function OutcomesLanding({
             <p className={styles.eyebrow}>Beyond the first prompt</p>
             <h2 id="prepared-title">The project has somewhere to keep going.</h2>
           </div>
-          <p>A starting point becomes a workspace your agent can operate, inspect, and return to—not a generated demo you have to move elsewhere.</p>
+          <p>A starting point becomes a workspace your agent can operate, inspect, and return to, not a generated demo you have to move elsewhere.</p>
         </div>
         <div className={styles.preparedList}>
           <article><span className={styles.preparedIcon}><FolderGit2 aria-hidden /></span><h3>The agent knows the project</h3><p>Your repo, project guidance, tools, and durable working notes stay together for the next session.</p></article>

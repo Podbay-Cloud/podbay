@@ -74,8 +74,10 @@ malicious-skill prevention, egress protection, or starter availability.
 #### Scenario: Conceptual outcome is displayed
 - **GIVEN** an illustrative mockup rather than captured product output is used
 - **WHEN** a visitor views the visual
-- **THEN** the visual SHALL include a persistent readable cue that it is conceptual and SHALL NOT
-  attribute the outcome to a customer
+- **THEN** a visual containing invented application, project, or customer output SHALL include a
+  persistent readable cue that it is conceptual and SHALL NOT attribute the outcome to a customer;
+  a clearly abstract relationship diagram without such data MAY omit the cue; transparent visual
+  assets MAY sit directly in the content flow without a simulated product frame around the asset
 
 #### Scenario: Real treatment proof is displayed
 - **GIVEN** the treatment shows continuity, remote control, browser terminal, live preview, or a
@@ -83,6 +85,14 @@ malicious-skill prevention, egress protection, or starter availability.
 - **WHEN** the visual is published
 - **THEN** it SHALL be captured from production-ready Podbay behavior and SHALL identify simulated
   data when the depicted content is not a real user's project
+
+#### Scenario: Abstract pod fleet communicates
+- **GIVEN** the treatment presents separate research, development, scheduled-work, and production
+  pods in an abstract relationship diagram
+- **WHEN** the visitor scans the pod roles and their connections
+- **THEN** moving packets SHALL represent durable owner-scoped messages rather than direct network
+  or filesystem access, every role SHALL remain understandable without motion, and reduced-motion
+  preferences SHALL hide the moving packets
 
 #### Scenario: A named capability is unavailable
 - **GIVEN** Codex parity, native-client reach, arbitrary terminal access, always-on behavior, or a
@@ -92,10 +102,11 @@ malicious-skill prevention, egress protection, or starter availability.
   SHALL remain blocked
 
 ### Requirement: Subscription positioning
-Both variants SHALL state that users bring their own supported Claude or Codex subscription and
-that Podbay adds no token markup. The `agent-computer` treatment SHALL make this distinction visible
-in the first viewport. Neither variant SHALL imply pooled subscriptions, modified official CLIs,
-model-auth proxying, or control over vendor billing.
+Both variants SHALL state that users bring their own supported agent subscription and that Podbay
+adds no token markup. The `agent-computer` treatment SHALL make the existing-subscription behavior
+visible in the first viewport and MAY explain the no-token-markup distinction later in the page.
+Neither variant SHALL imply pooled subscriptions, modified official CLIs, model-auth proxying, or
+control over vendor billing.
 
 #### Scenario: Treatment visitor reads the first viewport
 - **GIVEN** the `agent-computer` variant is rendered
@@ -113,7 +124,7 @@ model-auth proxying, or control over vendor billing.
 ### Requirement: Landing metadata
 The canonical landing page SHALL publish one stable, truthful metadata description independent of
 random experiment assignment. Forced-preview routes SHALL not compete with the canonical landing
-page in search indexes.
+page in search indexes. Public-facing landing copy and metadata SHALL NOT use em dash punctuation.
 
 #### Scenario: Canonical landing metadata is rendered
 - **GIVEN** a crawler or link preview requests `/`

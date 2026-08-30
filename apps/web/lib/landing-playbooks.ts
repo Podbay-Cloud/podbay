@@ -26,7 +26,7 @@ export const LANDING_PLAYBOOKS = {
     accent: "violet",
     proof: "Public assistant · owner console · grounded citations",
     outcomeDescription:
-      "Turn your documents into a public chatbot that answers from them—with citations. The app uses a separate Anthropic API key you provide.",
+      "Turn your documents into a public chatbot that answers from them, with citations. The app uses a separate Anthropic API key you provide.",
     computerDescription:
       "Upload documents and shape a public assistant that answers from them with citations. The app uses a separate Anthropic API key you provide.",
   },

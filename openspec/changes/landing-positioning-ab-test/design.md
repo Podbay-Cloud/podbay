@@ -89,7 +89,7 @@ The treatment uses this sequence:
 
 1. **Hero:** "An always-on computer for your coding agent," continuity after the laptop closes, a
    primary CTA, and an above-fold line that Podbay hosts the workspace while the visitor uses their
-   supported existing subscription with no token markup.
+   supported existing subscription. The no-token-markup distinction can appear later in the page.
 2. **Continuity proof:** one real visual story showing the same pod through supported native remote
    control, Podbay's browser terminal, and a live project/preview. The visual uses production
    captures or clearly labeled simulated data, not a generic conceptual SaaS screen.

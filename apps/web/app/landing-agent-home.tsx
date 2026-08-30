@@ -227,7 +227,7 @@ export default async function AgentHomeLanding({
             <h2>Reach for another service when the project needs one.</h2>
             <p>
               Early projects often need a database, a process, a schedule, and somewhere to open
-              the result—not four new vendor decisions. Start with what is already in the
+              the result, not four new vendor decisions. Start with what is already in the
               workspace. Add external infrastructure when scale, compliance, or independence calls
               for it.
             </p>

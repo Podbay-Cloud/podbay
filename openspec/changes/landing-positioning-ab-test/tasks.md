@@ -37,7 +37,7 @@
 
 ## 6. Agent-Computer Treatment Slice
 
-- [x] 6.1 Implement the treatment's unframed, product-led hero with the "always-on computer for your coding agent" narrative, session-aware CTA, and above-fold supported-subscription/no-token-markup distinction.
+- [x] 6.1 Implement the treatment's unframed, product-led hero with the "always-on computer for your coding agent" narrative, session-aware CTA, and above-fold supported-subscription distinction, with the no-token-markup distinction stated later on the page.
 - [x] 6.2 Build product-authentic continuity proof showing production-ready native remote control, browser terminal, and live preview behavior with explicitly simulated project data; complete an asset privacy review.
 - [x] 6.3 Implement the off-device benefits band covering 24/7 continuity, remote CPU/RAM/disk, and project-scoped isolation without claiming complete malicious-skill or egress protection.
 - [x] 6.4 Implement the readiness-gated real playbook section for Bring Your Project, Ask Your Docs, First 10 Customers, and Morning Ops Robot, including what is prebuilt, included vetted skills, customization, and separate API-key disclosure where applicable.

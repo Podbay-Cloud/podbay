@@ -20,9 +20,9 @@ import { selfhostLandingMetadata } from "@/lib/selfhost-landing-metadata";
 
 export const dynamic = "force-dynamic";
 
-const landingTitle = "Podbay — Give Claude a real home in the cloud";
+const landingTitle = "Podbay: Give Claude a real home in the cloud";
 const landingDescription =
-  "A Podbay pod is a private cloud VM with Claude Code, your project, and tools inside—always on, reachable anywhere, using your existing Claude subscription.";
+  "A Podbay pod is a private cloud VM with Claude Code, your project, and tools inside. It is always on, reachable anywhere, and uses your existing Claude subscription.";
 
 const acquisitionMetadata: Metadata = {
   title: landingTitle,
@@ -63,7 +63,7 @@ async function assignedVariant(): Promise<LandingVariant> {
 }
 
 export default async function Home() {
-  // Self-host is single-tenant with no marketing surface — the root IS the app.
+  // Self-host is single-tenant with no marketing surface, so the root IS the app.
   if (editionOss()) redirect("/dashboard");
   const [selfhostHomepage, variant, user] = await Promise.all([
     isSelfhostHomepageEnabled(),

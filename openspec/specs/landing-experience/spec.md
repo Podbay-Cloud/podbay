@@ -119,19 +119,25 @@ the first viewport.
 #### Scenario: Continuity sequence remains legible across viewports
 - **GIVEN** the `agent-computer` continuity walkthrough is displayed
 - **WHEN** the visitor follows the desktop, pod, and phone sequence
-- **THEN** “Start on desktop”, “Laptop closes”, and “Continue on phone” SHALL appear as external
-  narrative steps rather than simulated window titles, the pod SHALL be the visually emphasized
-  center stage without obscuring either Claude surface, wide three-column layouts SHALL angle both
-  Claude surfaces subtly inward and mute only their descendant text rather than dimming the entire
-  surface, the center stage SHALL explain capabilities the agent can use instead of repeating the
-  hero's cloud-VM definition, and narrow viewports SHALL keep each label attached to its flat surface
-  in the same order
+- **THEN** “Start on desktop”, “Pod runs 24/7”, and “Continue on phone” SHALL appear as external
+  narrative steps, the always-on Podbay virtual workspace SHALL be the visually emphasized center
+  stage rather than a closed laptop, one project line SHALL connect the desktop, pod, and phone, and
+  the diagram SHALL use transparent outer space without a surrounding card or frame and SHALL
+  remain a compact supporting proof rather than filling the wide content area;
+  narrow viewports SHALL preserve the same labeled order without horizontal overflow
 
-#### Scenario: Simulated Claude work crosses devices
-- **GIVEN** the Agent Computer hero uses an invented conversation
-- **WHEN** Claude investigates work on desktop and later asks for a decision on mobile
-- **THEN** the conversation SHALL be labeled as simulated, the center substrate SHALL be named a
-  pod, and Podbay SHALL NOT claim to observe tests, task completion, or preview changes
+#### Scenario: Abstract Claude continuity diagram crosses devices
+- **GIVEN** the Agent Computer continuity visual uses abstract conversation shapes without invented
+  customer, project, or outcome data
+- **WHEN** the visitor follows the session from desktop to phone
+- **THEN** the center substrate SHALL be visibly identified as a Podbay workspace and the diagram
+  MAY omit a conceptual-data disclaimer because it does not present customer activity or output
+
+#### Scenario: Continuity substrate stays visually quiet
+- **GIVEN** the Agent Computer continuity diagram is displayed
+- **WHEN** the visitor scans the center workspace
+- **THEN** decorative top telemetry SHALL be omitted and the status line SHALL use the Podbay mark
+  beside the always-on state
 
 #### Scenario: Visitor reads the agent-home first viewport
 - **GIVEN** the `agent-home` variant is rendered
@@ -145,11 +151,34 @@ The landing page SHALL use a lean narrative in which the hero, starter catalog, 
 proof, differentiation, and closing CTA each add new information rather than restating the hero
 promise.
 
+Public-facing landing prose, labels, alternative text, and metadata SHALL NOT use em dash
+punctuation.
+
 #### Scenario: Visitor scans the full page
 - **GIVEN** the landing page is rendered
 - **WHEN** the visitor moves from one section to the next
 - **THEN** each section SHALL answer a distinct question about relevance, product substance,
   differentiation, or next action
+
+#### Scenario: Landing copy is rendered
+- **GIVEN** any landing variant or its metadata is rendered
+- **WHEN** a visitor reads its public-facing copy
+- **THEN** the copy SHALL express pauses and contrasts without the em dash character
+
+#### Scenario: Visitor sees the whole-project capability
+- **GIVEN** the `agent-computer` capability section is displayed
+- **WHEN** the visitor scans the runtime, application, and delivery states
+- **THEN** the page SHALL explain that a pod can run development servers, databases, background
+  workers, scheduled jobs, monitors, and project-specific skills; SHALL explain that a pod can be
+  used for development with a live preview or can run the production server directly; and SHALL
+  depict separate pods for research, development, scheduled work, and production
+
+#### Scenario: Visitor interprets the pod fleet
+- **GIVEN** the whole-project pod network is displayed
+- **WHEN** the visitor scans the separate pod roles and their connections
+- **THEN** the diagram SHALL keep every pod role legible without animation, SHALL depict moving
+  packets as durable owner-scoped messages rather than direct network or filesystem access, and
+  SHALL hide the moving packets when the visitor requests reduced motion
 
 ### Requirement: Rotating build examples
 The `outcomes` control hero SHALL preserve its deterministic sequence of useful-app, automation,
@@ -204,8 +233,9 @@ support, session retention, malicious-skill prevention, egress protection, or st
 #### Scenario: Conceptual outcome is displayed
 - **GIVEN** an illustrative mockup rather than captured product output is used
 - **WHEN** a visitor views the visual
-- **THEN** the visual SHALL include a persistent readable cue that it is conceptual and SHALL NOT
-  attribute the outcome to a customer
+- **THEN** a visual containing invented application, project, or customer output SHALL include a
+  persistent readable cue that it is conceptual and SHALL NOT attribute the outcome to a customer;
+  a clearly abstract relationship diagram without such data MAY omit the cue
 
 #### Scenario: Simulated workspace walkthrough is displayed
 - **GIVEN** a landing shows continuity, local services, recurring work, or live-preview behavior
@@ -224,16 +254,17 @@ support, session retention, malicious-skill prevention, egress protection, or st
 ### Requirement: Subscription positioning
 All three variants SHALL state that users bring their own supported agent subscription and that
 Podbay uses the official CLI without token markup. The `agent-computer` and `agent-home` bundles
-SHALL make this distinction visible in the first viewport. No variant SHALL imply pooled
-subscriptions, modified official CLIs, model-auth proxying, or control over vendor billing.
+SHALL make the existing-subscription behavior visible in the first viewport, while the official-CLI
+and no-token-markup distinctions MAY appear later in the `agent-computer` page. No variant SHALL
+imply pooled subscriptions, modified official CLIs, model-auth proxying, or control over vendor
+billing.
 
 #### Scenario: Agent-computer or agent-home visitor reads the first viewport
 - **GIVEN** the `agent-computer` or `agent-home` variant is rendered
 - **WHEN** the first viewport is displayed
 - **THEN** it SHALL state that Podbay hosts the workspace while the visitor uses the supported
-  subscription they already pay for; the `agent-computer` reassurance SHALL visually group that
-  message with official-CLI, no-token-markup, and any qualified agent-support status without making
-  the qualification look like a competing action
+  subscription they already pay for; the `agent-computer` first-viewport reassurance MAY present
+  that message without secondary API-key, usage-markup, or qualified agent-support lines
 
 #### Scenario: Runtime application requires separate model credentials
 - **GIVEN** a playbook's deployed application requires an API key in addition to the coding-agent

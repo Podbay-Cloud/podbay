@@ -4,8 +4,17 @@ import { LANDING_PLAYBOOKS } from "../lib/landing-playbooks";
 
 const outcomes = readFileSync(new URL("../app/landing-outcomes.tsx", import.meta.url), "utf8");
 const computer = readFileSync(new URL("../app/landing-agent-computer.tsx", import.meta.url), "utf8");
+const podNetwork = readFileSync(
+  new URL("../app/landing-pod-network.tsx", import.meta.url),
+  "utf8",
+);
 const home = readFileSync(new URL("../app/landing-agent-home.tsx", import.meta.url), "utf8");
 const homePage = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+const rootLayout = readFileSync(new URL("../app/layout.tsx", import.meta.url), "utf8");
+const landingPlaybooks = readFileSync(
+  new URL("../lib/landing-playbooks.ts", import.meta.url),
+  "utf8",
+);
 const agentStyles = readFileSync(
   new URL("../app/landing-agent.module.css", import.meta.url),
   "utf8",
@@ -24,117 +33,126 @@ describe("revised landing bundles", () => {
     expect(outcomes).not.toContain("Community creators will be able to publish");
   });
 
-  it("uses one shared readiness model for both catalog-bearing bundles", () => {
+  it("keeps catalog playbooks in the outcomes bundle, not the computer pitch", () => {
     expect(outcomes).toContain("LANDING_PLAYBOOKS");
-    expect(computer).toContain("LANDING_PLAYBOOKS");
+    expect(computer).not.toContain("LANDING_PLAYBOOKS");
     expect(LANDING_PLAYBOOKS["byo-project"].readiness).toBe("Ready");
     expect(LANDING_PLAYBOOKS["doc-qa"].readiness).toBe("Ready");
     expect(LANDING_PLAYBOOKS["first-10-customers"].readiness).toBe("Ready");
     expect(LANDING_PLAYBOOKS["morning-ops-robot"].readiness).toBe("Ready");
   });
 
-  it("leads Agent Computer with the laptop benefit and lazy-loads playbook proof", () => {
-    expect(computer).toContain("The always-on computer for your coding agent.");
-    expect(computer).toContain("Close the lid &mdash; it keeps working.");
+  it("leads Agent Computer with the lasting-computer benefit and dashboard proof", () => {
+    expect(computer).toContain('Give <span className={styles.noWrap}>Claude Code</span> a computer that keeps working.');
+    expect(computer).toContain("a pod (cloud computer) with your project, tools, services");
+    expect(computer).toContain("It keeps working when your laptop closes.");
+    expect(computer).not.toContain("a persistent computer with your project");
     expect(computer).toContain("Claude is the interface. Podbay is its computer.");
-    expect(computer).not.toContain("Claude is the interface. Your pod is the computer.");
-    expect(computer).toContain("Podbay runs the machine your session lives on.");
-    expect(computer).toContain("Remote control gives you access. Podbay gives you uptime.");
-    expect(computer).not.toContain("Podbay hosts that computer as a private VM");
-    expect(computer).not.toContain("Your private pod keeps the project");
-    expect(computer).toContain("Claude Desktop");
-    expect(computer).toContain("Claude Mobile");
+    expect(computer).toContain('import dashboardImage from "../../../docs/images/dashboard.png"');
+    expect(computer).toContain("See every pod at a glance.");
+    expect(computer).not.toContain("Open running apps and know when Claude is working or needs you.");
+    expect(computer).toContain('/landing/session-continuity-v10.png');
+    expect(computer).toContain("Close the laptop. The pod keeps working.");
+    expect(computer).toContain("The same Claude session, files, tools, and running services stay in one Podbay workspace.");
     expect(computer).toContain("Start on desktop");
-    expect(computer).toContain("Laptop closes");
+    expect(computer).toContain("Pod runs 24/7");
     expect(computer).toContain("Continue on phone");
-    expect(computer).toContain("Your pod keeps working.");
-    expect(computer).toContain("className={styles.continuityMoment}");
-    expect(computer).toContain("styles.continuityMomentActive");
-    expect(computer).not.toContain("1 · Start");
-    expect(computer).not.toContain("2 · Laptop closes");
-    expect(computer).not.toContain("3 · Continue");
-    expect(computer).toContain("Investigate why invited users lose their team role after signup.");
-    expect(computer).toContain("I won&rsquo;t change existing records without you.");
-    expect(computer).toContain("Should I backfill existing pending invites too?");
-    expect(computer).toContain("Yes—pending invites only.");
-    expect(computer).toContain("project-aurora pod");
-    expect(computer).toContain(
-      "Claude can install packages, run services, schedule jobs, and put your project on a live URL.",
-    );
-    expect(computer).not.toContain("A private cloud VM hosted by Podbay");
-    expect(computer).not.toContain("The pod stays available while your laptop is closed.");
-    expect(computer).toContain("Claude Remote Control");
-    expect(computer).not.toContain("Podbay computer");
-    expect(computer).not.toContain("Tests passed");
-    expect(computer).not.toContain("Preview updated");
-    expect(computer).toContain("Self-host it");
-    expect(computer).toContain("Give Claude a real home");
-    expect(computer).not.toContain("Give Claude a computer");
-    expect(computer).toContain("Use your existing Claude subscription.");
-    expect(computer).toContain("Official CLI · No token markup");
-    expect(computer).toContain("Codex support is in pilot.");
+    expect(computer).not.toContain("Conceptual walkthrough · example session shown for illustration.");
+    expect(computer).not.toContain('/landing/pod-computer-v1.jpg');
+    expect(computer).toContain("Self-host Podbay");
+    expect(computer).toContain("Start with Podbay");
+    expect(computer).toContain("Continue in the official Claude apps with your Pro or Max subscription.");
+    expect(computer).not.toContain("No Anthropic API key or usage markup.");
+    expect(computer).not.toContain("Codex support is in pilot.");
     expect(computer).toContain("className={styles.subscriptionCopy}");
-    expect(computer).toContain("className={styles.pilotNote}");
+    expect(computer).not.toContain("className={styles.pilotNote}");
     expect(computer).not.toContain("className={styles.pilotBadge}");
     expect(computer).not.toContain("Codex support · Pilot");
-    expect(computer).toContain("A full cloud computer");
+    expect(computer).toContain("Run the whole project. See the result.");
+    expect(computer).toContain("A pod gives Claude a complete environment to build, run, and test your project.");
+    expect(computer).not.toContain("the system around your code");
+    expect(computer).not.toContain("It can run the project, use the application, and keep the result available.");
+    expect(computer).toContain("Run more than code");
+    expect(computer).toContain("Development servers, databases, workers, scheduled jobs, monitors, and project skills");
+    expect(computer).toContain("Verify the real app");
+    expect(computer).not.toContain("Use and verify the real app");
     expect(computer).toContain(
-      "Each pod gets CPU, memory, disk, and a persistent filesystem. Claude can install packages, run Postgres, start dev servers, and expose a private or public URL.",
+      "Claude can open the live application, click through real flows, use its database, and verify behavior where it made the change.",
     );
-    expect(computer).not.toContain("Your resources stay yours");
-    expect(computer).not.toContain("Browser terminal");
-    expect(computer).not.toContain("TerminalSquare");
-    expect(computer).toContain('loading="lazy"');
-    expect(computer).toContain("Claude gets what it needs inside the pod. Your personal machine stays outside the boundary.");
-    expect(computer).toContain("Your Claude account");
-    expect(computer).toContain("Project access only");
-    expect(computer).toContain("Admin access when needed");
-    expect(computer).toContain("No path back to your laptop");
+    expect(computer).toContain("Develop or run in production");
+    expect(computer).toContain("development with a live preview");
+    expect(computer).toContain("run your production server directly from the pod");
+    expect(computer).toContain("<LandingPodNetwork />");
+    expect(computer).not.toContain('/landing/pod-cutaway-v1.jpg');
+    expect(computer).toContain("A boundary for agent work");
+    expect(computer).toContain("Powerful inside the pod. Guarded at the edges.");
+    expect(computer).not.toContain("On Podbay Cloud, Claude works in a project-specific machine");
+    expect(computer).toContain("Project-scoped machine");
+    expect(computer).toContain("Project secrets, outside chat");
+    expect(computer).toContain("Official CLI, your account");
+    expect(computer).toContain("You keep full access");
     expect(computer).toContain("className={styles.trustGrid}");
-    expect(computer).not.toContain("Official Claude Code CLI</strong>");
-    expect(computer).not.toContain("Isolated workspace boundary");
-    expect(computer).not.toContain("Disposable workspace boundary");
+    expect(computer).not.toContain("Live-pod dogfood");
+    expect(computer).not.toContain("Start with a capable agent, not a blank chat.");
+    expect(computer).toContain('Give your <span className={styles.noWrap}>Claude Code</span> a permanent home');
   });
 
   it("carries the real-home and private-cloud definition into search and social metadata", () => {
-    expect(homePage).toContain("Podbay — Give Claude a real home in the cloud");
+    expect(homePage).toContain("Podbay: Give Claude a real home in the cloud");
     expect(homePage).toContain(
-      "A Podbay pod is a private cloud VM with Claude Code, your project, and tools inside—always on, reachable anywhere, using your existing Claude subscription.",
+      "A Podbay pod is a private cloud VM with Claude Code, your project, and tools inside. It is always on, reachable anywhere, and uses your existing Claude subscription.",
     );
-    expect(homePage).not.toContain("Podbay — An always-on workspace for your coding agent");
+    expect(homePage).not.toContain("Podbay: An always-on workspace for your coding agent");
   });
 
-  it("keeps continuity labels and Claude surfaces at full opacity", () => {
-    expect(agentStyles).not.toMatch(/\.continuityMoment\s*\{[^}]*opacity/);
-    expect(agentStyles).not.toMatch(/\.continuityMoment\s*\{[^}]*filter/);
+  it("does not use em dashes in public landing copy or metadata", () => {
+    expect([outcomes, computer, podNetwork, home, homePage, rootLayout, landingPlaybooks].join("\n")).not.toContain("—");
   });
 
-  it("pivots the two side screens inward only in the three-column layout", () => {
-    expect(agentStyles).toContain(
-      ".continuityMoment:first-child article { transform: perspective(1100px) rotateY(4deg); transform-origin: right center; }",
-    );
-    expect(agentStyles).toContain(
-      ".continuityMoment:last-child article { transform: perspective(1100px) rotateY(-4deg); transform-origin: left center; }",
-    );
-    expect(agentStyles).toContain(
-      ".continuityMoment:first-child article,\n  .continuityMoment:last-child article { transform: none; }",
-    );
+  it("uses one continuous responsive illustration for session continuity", () => {
+    expect(computer).not.toContain("className={styles.continuityAlwaysOnMark}");
+    expect(computer).toContain('/landing/session-continuity-v10.png');
+    expect(agentStyles).toContain(".continuityVisual { width: min(770px, 100%);");
+    expect(agentStyles).toContain("font-size: 10px; font-weight: 700;");
+    expect(agentStyles).toContain(".continuitySteps strong { color: var(--blue-soft); font-size: 12px;");
+    expect(agentStyles).toContain(".noWrap { white-space: nowrap; }");
+    expect(agentStyles).not.toContain(".continuityAlwaysOnMark");
+    expect(agentStyles).not.toContain(".capabilityVisual img");
+    expect(agentStyles).toContain(".continuityArtwork { position: relative; aspect-ratio: 1825 / 560; overflow: hidden; }");
+    expect(agentStyles).toContain("object-position: center 18%; mix-blend-mode: screen;");
+    expect(agentStyles).toContain(".continuitySteps { display: grid; grid-template-columns: repeat(3, 1fr)");
+    expect(agentStyles).not.toContain(".continuitySteps { grid-template-columns: 1fr;");
   });
 
-  it("mutes side-screen copy without dimming the whole surfaces", () => {
-    expect(agentStyles).toContain(
-      ".continuityMoment:not(.continuityMomentActive) .surfaceTitle { color: #a5b0b4; }",
-    );
-    expect(agentStyles).toContain(
-      ".continuityMoment:not(.continuityMomentActive) .desktopChat p,\n.continuityMoment:not(.continuityMomentActive) .mobileChat p { color: #aeb8bc; }",
-    );
-    expect(agentStyles).not.toContain(".continuityMoment:not(.continuityMomentActive) { opacity:");
+  it("shows separate pods exchanging owner-scoped durable messages", () => {
+    expect(podNetwork).not.toContain('"use client"');
+    expect(podNetwork).toContain("Research & PMF");
+    expect(podNetwork).toContain("Development");
+    expect(podNetwork).toContain("Scheduled work");
+    expect(podNetwork).toContain("Production");
+    expect(podNetwork).toContain("podbay msg");
+    expect(podNetwork).toContain("durable · owner-scoped");
+    expect(podNetwork).toContain("<animateMotion");
+    expect(podNetwork).toContain("styles.mobileNetworkRail");
+    expect(podNetwork).toContain("not shared filesystem access or authorization");
+    expect(agentStyles).toContain(".podNetworkCanvas { position: relative; display: grid;");
+    expect(agentStyles).toContain(".podNetworkHeading { display: flex; align-items: flex-start;");
+    expect(agentStyles).toContain(".podNetworkHeading > p { max-width: 52ch; margin-top: 29px;");
+    expect(agentStyles).toContain(".sectionHeading > p { max-width: 46ch; margin-top: 29px;");
+    expect(agentStyles).toContain("--section-title-size: 34px;");
+    expect(agentStyles).toContain(".podNetworkHeading h3,");
+    expect(agentStyles).toContain("font-size: var(--section-title-size);");
+    expect(agentStyles).toContain(".landing { --section-title-size: 31px; }");
+    expect(agentStyles).not.toContain(".podNetworkHeading h3 { margin-top: 9px; font-size: 24px;");
+    expect(agentStyles).toContain(".networkPacket { display: none; }");
+    expect(agentStyles).toContain("@keyframes mobileMessageRoute");
+    expect(agentStyles).toContain(".mobileNetworkRail i { display: none; }");
   });
 
-  it("centers the subscription reassurance and keeps pilot status as quiet copy", () => {
+  it("centers the subscription reassurance without a competing support-status line", () => {
     expect(agentStyles).toMatch(/\.subscriptionLine\s*\{[^}]*align-items: center/);
     expect(agentStyles).toMatch(/\.subscriptionCopy\s*\{[^}]*display: grid/);
-    expect(agentStyles).toMatch(/\.pilotNote\s*\{[^}]*color:[^}]*font-size: 11px/);
+    expect(agentStyles).not.toContain(".pilotNote");
     expect(agentStyles).not.toContain(".pilotBadge");
     expect(agentStyles).not.toMatch(/\.subscriptionLine svg\s*\{[^}]*margin-top/);
   });
