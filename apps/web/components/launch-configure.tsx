@@ -353,9 +353,10 @@ export default function LaunchConfigure({
     <div className="flex flex-col gap-5">
       <WizardProgress current="configure" />
 
-      <p className="text-[13px] font-medium text-muted-foreground">
-        Step {idx + 1} of {steps.length} — {STEP_LABELS[step]}
-      </p>
+      <div className="flex items-baseline justify-between gap-3">
+        <p className="text-sm font-semibold text-foreground">{STEP_LABELS[step]}</p>
+        <p className="text-[12px] tabular-nums text-muted-foreground">{idx + 1} / {steps.length}</p>
+      </div>
 
       <Card>
         <CardContent className="flex flex-col gap-5">
@@ -417,7 +418,6 @@ export default function LaunchConfigure({
 
           {step === "github" && (
             <div className="flex flex-col gap-2">
-              <Label>Repository</Label>
               {oss ? (
                 // Self-host connects GitHub from INSIDE the pod (gh device login), which needs the
                 // pod running — so the clone happens after boot, not here.
@@ -427,12 +427,7 @@ export default function LaunchConfigure({
                   <code className="rounded bg-muted px-1 py-0.5 text-[11px]">~/work</code> once you&apos;re signed in.
                 </div>
               ) : (
-                <>
-                  <GithubRepoField onSelect={setGithubRepo} />
-                  <p className="text-[13px] text-muted-foreground">
-                    The repo to work on — cloned into <code className="rounded bg-muted px-1 py-0.5 text-[11px]">~/work</code> when the pod boots.
-                  </p>
-                </>
+                <GithubRepoField onSelect={setGithubRepo} />
               )}
             </div>
           )}

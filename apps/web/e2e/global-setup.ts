@@ -120,6 +120,11 @@ export default async function globalSetup(): Promise<void> {
       // A dummy GitHub OAuth client id so the add-GitHub wizard PAGE renders (its
       // device flow won't actually authorize — that's fine for layout checks).
       PODBAY_GITHUB_OAUTH_CLIENT_ID: "e2e-github-client",
+      // Keep the connected-account launch flow hermetic: listRepos returns these only while
+      // PODBAY_TEST_LOGIN is also set, so no browser test reaches the real GitHub API.
+      PODBAY_FAKE_GITHUB_REPOS: JSON.stringify([
+        { fullName: "octocat/hello-world", private: false, updatedAt: "2026-01-01T00:00:00.000Z" },
+      ]),
       NEXT_PUBLIC_GATEWAY_URL: stack.gatewayUrl,
       ADMIN_EMAILS,
       PREAPPROVE_EMAILS,

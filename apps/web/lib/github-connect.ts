@@ -95,6 +95,10 @@ export async function disconnect(userId: string): Promise<void> {
 export async function listRepos(userId: string): Promise<Repo[]> {
   const token = await getConnectionToken(userId);
   if (!token) return [];
+  // Hermetic browser tests need the connected-account path without calling GitHub. Keep the seam
+  // double-gated so production can never substitute scripted repository data accidentally.
+  const fakeRepos = process.env.PODBAY_TEST_LOGIN === "1" ? process.env.PODBAY_FAKE_GITHUB_REPOS : undefined;
+  if (fakeRepos) return JSON.parse(fakeRepos) as Repo[];
   const res = await fetch(
     "https://api.github.com/user/repos?sort=updated&per_page=100&affiliation=owner,collaborator,organization_member",
     {

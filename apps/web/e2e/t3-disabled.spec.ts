@@ -18,7 +18,8 @@ test.describe("T3 harness disabled", () => {
   test("the launch screen shows no T3 Control picker", async ({ page }) => {
     await login(page, "approved");
     await page.goto("/dashboard/pods/new?env=nextjs-starter");
-    await expect(page.getByText(/Step 1 of/i)).toBeVisible();
+    // Compact wizard header renders "Basics · 1 / N".
+    await expect(page.getByText(/^1 \/ \d+$/)).toBeVisible();
     // No Control picker, no T3 marketing anywhere in the wizard.
     await expect(page.getByRole("radiogroup", { name: "Control" })).toHaveCount(0);
     await expect(page.getByText("T3 Code")).toHaveCount(0);

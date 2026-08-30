@@ -15,11 +15,15 @@ export function RepoPicker({
   value,
   onChange,
   placeholder = "Search your repositories…",
+  triggerId,
+  labelledBy,
 }: {
   repos: Repo[];
   value: string;
   onChange: (repo: string) => void;
   placeholder?: string;
+  triggerId?: string;
+  labelledBy?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -27,6 +31,7 @@ export function RepoPicker({
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const valueId = triggerId ? `${triggerId}-value` : undefined;
 
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -82,13 +87,16 @@ export function RepoPicker({
   return (
     <div ref={rootRef} className="relative">
       <button
+        id={triggerId}
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-labelledby={labelledBy}
+        aria-describedby={valueId}
         className="flex w-full items-center justify-between gap-2 rounded-md border border-border/60 bg-transparent px-3 py-2 text-sm hover:bg-white/[0.06]"
       >
-        <span className={value ? "truncate font-medium" : "truncate text-muted-foreground"}>
+        <span id={valueId} className={value ? "truncate font-medium" : "truncate text-muted-foreground"}>
           {value || placeholder}
         </span>
         <ChevronDown className="h-4 w-4 shrink-0 opacity-60" />

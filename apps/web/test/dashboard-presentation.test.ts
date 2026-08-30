@@ -79,4 +79,31 @@ describe("dashboard presentation contract", () => {
     expect(meter).toContain("Request more slots");
     expect(meter).not.toContain("Need more?");
   });
+
+  it("keeps the BYO repository step compact and free of repeated guidance", () => {
+    const launch = source("components/launch-configure.tsx");
+    const repository = source("components/github-repo-field.tsx");
+    const picker = source("components/repo-picker.tsx");
+
+    expect(launch).toContain("{STEP_LABELS[step]}");
+    expect(launch).toContain("{idx + 1} / {steps.length}");
+    expect(launch).not.toContain("Step {idx + 1} of {steps.length} — {STEP_LABELS[step]}");
+    expect(launch).not.toContain("<Label>Repository</Label>");
+    expect(launch).not.toContain("The repo to work on");
+
+    expect(repository).toContain("Repository");
+    expect(repository).toContain('placeholder="Choose a repository…"');
+    expect(repository).not.toContain("Your repository");
+    expect(repository).not.toContain("— required");
+    expect(repository).not.toContain("Connected as");
+    expect(repository).not.toContain("Cloned into ~/work. Your agent starts by orienting in it.");
+    expect(repository).not.toContain('className="flex flex-col gap-2 rounded-lg border p-3.5"');
+    expect(repository).toContain('id="github-repository-label"');
+    expect(repository).toContain('htmlFor="github-repository-picker"');
+    expect(repository).toContain('<span className="sr-only"> required</span>');
+    expect(repository).toContain('<span aria-hidden className="text-destructive">*</span>');
+    expect(picker).toContain("id={triggerId}");
+    expect(picker).toContain("aria-labelledby={labelledBy}");
+    expect(picker).toContain("aria-describedby={valueId}");
+  });
 });

@@ -135,7 +135,8 @@ test("VISUAL launch wizard — name required, secret persists, review size", asy
   await page.getByRole("button", { name: /^next$/i }).click();
 
   // Settings: type a secret, reload → the value is still there (persisted draft).
-  await expect(page.getByText(/Step 2 of/i)).toBeVisible();
+  // Header is now the compact "Settings · 2 / 3" (not "Step 2 of 3 — Settings").
+  await expect(page.getByText("2 / 3", { exact: true })).toBeVisible();
   await page.locator("#secret-ANTHROPIC_API_KEY").fill("sk-persist-check-123");
   await page.reload();
   await page.waitForLoadState("networkidle");

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Check, GitBranch } from "lucide-react";
+import { Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { GithubDevicePanel } from "@/components/github-device-panel";
@@ -26,7 +26,7 @@ import type { Repo } from "@/lib/github-connect";
 export function GithubRepoField({ onSelect }: { onSelect: (repo: string | null) => void }) {
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [login, setLogin] = useState<string | null>(null);
-  const [repos, setRepos] = useState<Repo[]>([]);
+  const [repos, setRepos] = useState<Repo[] | null>(null);
   const [selected, setSelected] = useState("");
   const [device, setDevice] = useState<{ userCode: string; url: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -48,6 +48,7 @@ export function GithubRepoField({ onSelect }: { onSelect: (repo: string | null) 
   }, []);
 
   async function loadRepos() {
+    setRepos(null);
     setRepos(await githubAccountRepos().catch(() => []));
   }
 
@@ -104,7 +105,7 @@ export function GithubRepoField({ onSelect }: { onSelect: (repo: string | null) 
   async function disconnect() {
     await disconnectGithubAccount().catch(() => {});
     setLogin(null);
-    setRepos([]);
+    setRepos(null);
     pick("");
   }
 
@@ -113,28 +114,28 @@ export function GithubRepoField({ onSelect }: { onSelect: (repo: string | null) 
   // silently hiding the field left "Create pod" disabled with nothing to act on.
   if (!configured)
     return (
-      <div className="flex flex-col gap-1 rounded-lg border p-3.5">
-        <Label className="flex items-center gap-1.5">
-          <GitBranch className="h-3.5 w-3.5" /> Your repository
+      <div className="flex flex-col gap-2">
+        <Label id="github-repository-label" htmlFor="github-repository-picker">
+          Repository <span aria-hidden className="text-destructive">*</span>
+          <span className="sr-only"> required</span>
         </Label>
         <p className="text-[13px] text-muted-foreground">
-          GitHub connect isn&apos;t configured on this deployment, so this environment can&apos;t
-          clone your repo yet.
+          GitHub isn&apos;t configured on this deployment.
         </p>
       </div>
     );
 
   return (
-    <div className="flex flex-col gap-2 rounded-lg border p-3.5">
-      <Label className="flex items-center gap-1.5">
-        <GitBranch className="h-3.5 w-3.5" /> Your repository
-        <span className="text-[13px] font-normal text-muted-foreground">— required</span>
+    <div className="flex flex-col gap-3">
+      <Label id="github-repository-label" htmlFor="github-repository-picker">
+        Repository <span aria-hidden className="text-destructive">*</span>
+        <span className="sr-only"> required</span>
       </Label>
 
       {!login ? (
         <>
           <p className="text-[13px] text-muted-foreground">
-            Connect GitHub to clone one of your repos into the pod (private repos included).
+            Connect GitHub to choose a repository.
           </p>
           {device ? (
             <>
@@ -156,18 +157,33 @@ export function GithubRepoField({ onSelect }: { onSelect: (repo: string | null) 
       ) : (
         <>
           <div className="flex items-center justify-between gap-2">
-            <span className="inline-flex items-center gap-1 text-[13px] text-muted-foreground">
-              <Check className="h-3 w-3 text-success" /> Connected as{" "}
-              <span className="font-medium text-foreground">@{login}</span>
+            <span
+              aria-label={`GitHub connected as @${login}`}
+              className="inline-flex items-center gap-1.5 text-[13px] font-medium text-foreground"
+            >
+              <Check className="h-3.5 w-3.5 text-success" aria-hidden /> @{login}
             </span>
-            <DisconnectGithubButton onConfirm={disconnect} variant="link" />
+            <DisconnectGithubButton onConfirm={disconnect} variant="link" login={login} />
           </div>
-          <RepoPicker repos={repos} value={selected} onChange={pick} />
-          <p className="text-[13px] text-muted-foreground">
-            {repos.length === 0
-              ? "No repos loaded yet — reconnect if this persists."
-              : "Cloned into ~/work. Your agent starts by orienting in it."}
-          </p>
+          {repos === null ? (
+            <p className="text-[13px] text-muted-foreground" role="status">
+              Loading repositories…
+            </p>
+          ) : (
+            <RepoPicker
+              repos={repos}
+              value={selected}
+              onChange={pick}
+              placeholder="Choose a repository…"
+              triggerId="github-repository-picker"
+              labelledBy="github-repository-label"
+            />
+          )}
+          {repos !== null && repos.length === 0 && (
+            <p className="text-[13px] text-muted-foreground">
+              No repositories found. Reconnect and try again.
+            </p>
+          )}
         </>
       )}
 
