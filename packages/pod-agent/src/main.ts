@@ -13,6 +13,7 @@ import {
   KICKOFF_TRIGGER,
   RESUME_TRIGGER,
   DEFAULT_PERMISSION_MODE,
+  normalizeAgentAuth,
   type AgentAuth,
 } from "./boot.js";
 import { parseOomKills } from "./oom.js";
@@ -194,10 +195,10 @@ function readPermissionMode(): string {
   return perms?.mode ?? DEFAULT_PERMISSION_MODE;
 }
 
-/** How this pod authenticates its agent: "api-key" (BYO key, no /login) or the
- * default "subscription". From the pod-spec; unknown/absent → subscription. */
+/** How this pod authenticates its agent — from the pod-spec (see normalizeAgentAuth for why
+ * every non-subscription mode must be recognized, or a token pod boots into `claude /login`). */
 function readAgentAuth(): AgentAuth {
-  return readSpec().agentAuth === "api-key" ? "api-key" : "subscription";
+  return normalizeAgentAuth(readSpec().agentAuth);
 }
 
 function readAgent(): string {

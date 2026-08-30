@@ -9,6 +9,8 @@ import {
   DEFAULT_PERMISSION_MODE,
   RESERVED_ANTHROPIC_KEY,
   RESERVED_OPENAI_KEY,
+  RESERVED_CLAUDE_OAUTH_TOKEN,
+  normalizeAgentAuth,
 } from "../src/boot.js";
 
 /** The commands run inside tmux via bash — they must PARSE, not just contain
@@ -216,6 +218,34 @@ describe("boot commands", () => {
       expect(boot).toContain("env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN claude");
       expect(boot).toContain("claude /login");
       expect(boot).not.toContain(RESERVED_ANTHROPIC_KEY);
+    });
+  });
+
+  describe("setup-token mode (1-year OAuth token, no /login)", () => {
+    // The regression that stranded test:2: readAgentAuth only recognized "api-key", so a
+    // setup-token spec collapsed to "subscription" and the pod booted into `claude /login`,
+    // sitting at a sign-in screen while its valid token went unused (2026-08-30).
+    it("normalizeAgentAuth keeps setup-token (and api-key); everything else → subscription", () => {
+      expect(normalizeAgentAuth("setup-token")).toBe("setup-token");
+      expect(normalizeAgentAuth("api-key")).toBe("api-key");
+      expect(normalizeAgentAuth("subscription")).toBe("subscription");
+      expect(normalizeAgentAuth("nonsense")).toBe("subscription");
+      expect(normalizeAgentAuth(undefined)).toBe("subscription");
+      expect(normalizeAgentAuth(null)).toBe("subscription");
+    });
+
+    it("every setup-token command is valid shell", () => {
+      expectValidShell(bootCommandForAgent("claude-code", DEFAULT_PERMISSION_MODE, "setup-token"));
+      expectValidShell(kickoffCommandForAgent("claude-code", DEFAULT_PERMISSION_MODE, "setup-token"));
+    });
+
+    it("claude runs ON the 1-year OAuth token and NEVER logs in or gates on a creds file", () => {
+      const boot = bootCommandForAgent("claude-code", DEFAULT_PERMISSION_MODE, "setup-token");
+      expect(boot).toContain(`env CLAUDE_CODE_OAUTH_TOKEN="$${RESERVED_CLAUDE_OAUTH_TOKEN}" claude`);
+      expect(boot).not.toContain("/login");
+      // The subscription greeter gates on the creds file (`if [ -f …credentials.json ]`); a
+      // setup-token pod must NOT — that gate is exactly what dropped it into /login.
+      expect(boot).not.toContain(credentialsPathForAgent("claude-code"));
     });
   });
 

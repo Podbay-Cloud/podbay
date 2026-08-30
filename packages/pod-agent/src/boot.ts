@@ -83,6 +83,14 @@ const CODEX = "env -u OPENAI_API_KEY -u OPENAI_BASE_URL codex";
  *    See docs/strategy/agent-auth-lifecycle.md. */
 export type AgentAuth = "subscription" | "api-key" | "setup-token";
 
+/** Normalize a pod-spec's `agentAuth` field to a known mode; unknown/absent → "subscription".
+ * The ONE place the spec value is trusted — every non-subscription mode MUST be listed here or it
+ * silently degrades to subscription, and a token/key pod then boots down the `claude /login` path
+ * and never launches on its token (the test:2 setup-token regression, 2026-08-30). */
+export function normalizeAgentAuth(value: unknown): AgentAuth {
+  return value === "api-key" || value === "setup-token" ? value : "subscription";
+}
+
 // Reserved secret names that carry the BYO API key past the ToS env denylist (which
 // forbids a user-declared ANTHROPIC_API_KEY/OPENAI_API_KEY). The control plane stores
 // the key under these names and injects them like any secret; boot maps them onto the

@@ -870,7 +870,15 @@ export class AgentServer {
             );
             if (agent === "codex") {
               this.ensureCodexDaemon("agent_restart");
-            } else if (!existsSync(credentialsPathForAgent(agent))) {
+            } else if (
+              !existsSync(credentialsPathForAgent(agent)) &&
+              this.greeter?.agentAuth !== "setup-token" &&
+              this.greeter?.agentAuth !== "api-key"
+            ) {
+              // Only a SUBSCRIPTION pod goes through /login on a missing credential. A setup-token /
+              // api-key pod launches the agent directly on its token/key (no creds file, no /login) —
+              // driving a "Select login method" menu at it would fight a session that is actually up
+              // (test:2, 2026-08-30). Guard so the menu-driving stays subscription-only.
               // Reconnect wiped the dead credential, so this respawn took the `claude /login` branch
               // and is now sitting at the "Select login method" menu. DRIVE it (pick the subscription
               // method) so the sign-in URL actually prints and the cockpit captures it — otherwise
@@ -2990,7 +2998,14 @@ export class AgentServer {
     // starts straight into the agent; greet it. Otherwise the boot ran
     // `claude /login`: drive the method menu so the sign-in URL actually prints
     // (the greeter runs later, after the login→kickoff respawn).
-    if (this.credential && existsSync(this.credential.path)) this.startGreeter();
+    //
+    // A setup-token / api-key pod has NO creds file yet still boots straight into the running agent
+    // (the token/key IS the auth — no /login) — so it takes the greet path, not the login-assistant
+    // path, or the pod would drive a "Select login method" menu at a session that never shows one
+    // (test:2 sat at /login forever, 2026-08-30). The greeter self-guards when RC is yielded to T3.
+    const tokenMode =
+      this.greeter?.agentAuth === "setup-token" || this.greeter?.agentAuth === "api-key";
+    if (this.credential && (existsSync(this.credential.path) || tokenMode)) this.startGreeter();
     else if (this.greeter && this.credential) this.startLoginAssistant();
     // Codex has no greeter/tmux RC — start its app-server daemon so the pod is
     // pairable from the Codex app. No-ops unless codex + authed + standalone present;

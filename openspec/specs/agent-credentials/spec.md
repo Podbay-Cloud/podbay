@@ -56,6 +56,30 @@ pods (docs/plans/api-key-pod-mode.md). `agentAuth` defaults to `subscription`.
 - **THEN** the agent SHALL authenticate via the login flow with the app's API key stripped,
   exactly as before
 
+### Requirement: A pod may run Claude on a 1-year setup-token
+
+When a pod's `agentAuth` is `setup-token`, the pod SHALL launch Claude authenticated with a
+~1-year `claude setup-token` (carried as `CLAUDE_CODE_OAUTH_TOKEN`, set for the agent PROCESS
+ONLY from a reserved secret): the `/login` flow SHALL be skipped entirely and the agent SHALL
+NOT gate on a credentials file (setup-token mode never writes one). The pod-agent SHALL
+recognize `setup-token` on EVERY path that reads `agentAuth` — first boot, in-place respawn
+(restart/reconnect), and the boot-time login assistant — so a setup-token pod never falls
+through to the subscription `claude /login` path. A mode value the pod-agent does not
+recognize SHALL default to `subscription`.
+
+#### Scenario: setup-token pod launches on the token, never logs in
+
+- **WHEN** a `setup-token`-mode pod boots (or its agent window is respawned by a restart or
+  reconnect)
+- **THEN** Claude SHALL launch with `CLAUDE_CODE_OAUTH_TOKEN` set for its process, no `/login`
+  step SHALL run, and the pod SHALL NOT drive a "Select login method" menu at the session
+
+#### Scenario: An unrecognized auth mode is never stranded at /login
+
+- **WHEN** the pod-agent reads an `agentAuth` value it does not recognize
+- **THEN** it SHALL treat the pod as `subscription` (a working default), never leaving a pod
+  that carries a valid token sitting at a sign-in screen
+
 ### Requirement: Agent logins are never shared across pods
 
 The platform SHALL NOT capture, store, or inject agent credentials between pods.
