@@ -226,7 +226,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 # Claude Code is PINNED (like openspec/pnpm) so "version X did Y" stays a
 # sentence we can say; updates ride a reviewed image bump, not build timing.
 # Bump the pin deliberately when cutting a new image (npm view … version).
-RUN npm install -g @anthropic-ai/claude-code@2.1.215 @openai/codex@0.146.0 pnpm@10 \
+RUN npm install -g @anthropic-ai/claude-code@2.1.251 @openai/codex@0.151.0 pnpm@10 \
     @fission-ai/openspec@1.6.0 \
     && rm -rf /home/dev/.npm /root/.npm \
     && openspec --version   # fail the build if the openspec bin isn't on PATH
@@ -238,7 +238,7 @@ RUN npm install -g @anthropic-ai/claude-code@2.1.215 @openai/codex@0.146.0 pnpm@
 # first boot. ~189MB. HOME/CODEX_HOME are pointed at the staging dir so the installer's
 # PATH edits don't touch the real /home/dev. Pin to match the npm codex.
 RUN mkdir -p /opt/podbay/codex-standalone \
-    && CODEX_HOME=/opt/podbay/codex-standalone HOME=/opt/podbay/codex-standalone CODEX_VERSION=0.146.0 \
+    && CODEX_HOME=/opt/podbay/codex-standalone HOME=/opt/podbay/codex-standalone CODEX_VERSION=0.151.0 \
        sh -c 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' \
     && test -x /opt/podbay/codex-standalone/packages/standalone/current/codex \
     && rm -f /opt/podbay/codex-standalone/.bashrc /opt/podbay/codex-standalone/.profile \
