@@ -6,10 +6,15 @@ import { createAppDb, user as userTable } from "@podbay/db";
 import { sendApprovalEmail } from "@podbay/auth";
 import { requireAdmin } from "./access";
 import {
+  clearExperimentPin,
   pinExperimentVariant,
   stopExperiment,
 } from "./landing-experiment-store";
-import { ACTIVE_LANDING_EXPERIMENT } from "./landing-experiment-config";
+import {
+  ACTIVE_LANDING_EXPERIMENT,
+  SELFHOST_HOMEPAGE_CONTROL,
+  isMutableLandingDefinition,
+} from "./landing-experiment-config";
 
 export async function approveUser(userId: string): Promise<void> {
   await requireAdmin();
@@ -61,12 +66,20 @@ export async function stopLandingExperiment(experimentId: string): Promise<void>
   revalidatePath("/");
 }
 
+export async function clearLandingHomepageOverride(): Promise<void> {
+  const admin = await requireAdmin();
+  await clearExperimentPin(admin.id, SELFHOST_HOMEPAGE_CONTROL.id);
+  revalidatePath("/admin/experiments");
+  revalidatePath(`/admin/experiments/${SELFHOST_HOMEPAGE_CONTROL.id}`);
+  revalidatePath("/");
+}
+
 export async function pinLandingExperiment(
   experimentId: string,
   variant: string,
 ): Promise<void> {
   const admin = await requireAdmin();
-  if (experimentId !== ACTIVE_LANDING_EXPERIMENT.id) {
+  if (!isMutableLandingDefinition(experimentId)) {
     throw new Error("Historical landing experiments are read-only");
   }
   await pinExperimentVariant(admin.id, experimentId, variant);

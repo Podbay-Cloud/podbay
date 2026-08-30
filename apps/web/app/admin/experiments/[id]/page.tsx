@@ -58,7 +58,11 @@ export default async function ExperimentDetailPage({
   if (!experiment) notFound();
   const variants = experiment.variantOrder;
   const lowData = experiment.sampleProgress.percent < 100;
-  const interpretation = experiment.deliveryMode === "validation"
+  const interpretation = experiment.controlType === "homepage-promotion"
+    ? experiment.pinnedVariant === "selfhost"
+      ? "Self-host is currently shown at both / and /selfhost. Remove the homepage promotion to restore the acquisition landing at /."
+      : "Self-host is available only at /selfhost. Promote it when you want the same page to replace the homepage."
+    : experiment.deliveryMode === "validation"
     ? "A/A/A validation: assignments are live, but every visitor sees the validation page. Use these data only to verify instrumentation."
     : experiment.deliveryMode === "historical"
       ? "Historical instrumentation run: preserved for audit and baseline context, not a measured winner read."
@@ -75,7 +79,13 @@ export default async function ExperimentDetailPage({
       wide
       actions={
         <Badge variant={experiment.status === "active" ? "default" : "secondary"}>
-          {experiment.activeDefinition ? experiment.status : "historical"}
+          {experiment.controlType === "homepage-promotion"
+            ? experiment.pinnedVariant === "selfhost"
+              ? "on homepage"
+              : "/selfhost only"
+            : experiment.activeDefinition
+              ? experiment.status
+              : "historical"}
         </Badge>
       }
     >
@@ -83,16 +93,23 @@ export default async function ExperimentDetailPage({
         <p className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-[12.5px] text-warning">
           {interpretation}
         </p>
-        {experiment.assignmentBalance.status === "warning" && (
+        {experiment.controlType !== "homepage-promotion" && experiment.assignmentBalance.status === "warning" && (
           <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-[12.5px] text-destructive">
             Assignment-balance warning: observed allocation is {experiment.assignmentBalance.maxStandardDeviation.toFixed(1)} standard deviations from expectation. Check assignment and traffic instrumentation before reading outcomes.
           </p>
         )}
 
         <Card>
-          <CardHeader><CardTitle>Runtime and controls</CardTitle></CardHeader>
+          <CardHeader><CardTitle>{experiment.controlType === "homepage-promotion" ? "Visibility" : "Runtime and controls"}</CardTitle></CardHeader>
           <CardContent className="grid gap-5 lg:grid-cols-[1fr_auto]">
-            <dl className="grid grid-cols-2 gap-x-7 gap-y-3 text-sm sm:grid-cols-4">
+            {experiment.controlType === "homepage-promotion" ? (
+              <dl className="grid grid-cols-2 gap-x-7 gap-y-3 text-sm">
+                <div><dt className="text-muted-foreground">Permanent URL</dt><dd className="mt-1"><Link className="text-primary hover:underline" href="/selfhost" target="_blank">/selfhost</Link></dd></div>
+                <div><dt className="text-muted-foreground">Homepage state</dt><dd className="mt-1">{experiment.pinnedVariant === "selfhost" ? "Self-host landing" : "Acquisition landing"}</dd></div>
+                <div><dt className="text-muted-foreground">Last changed</dt><dd className="mt-1">{date(experiment.stoppedAt ?? experiment.startedAt)}</dd></div>
+                <div><dt className="text-muted-foreground">Control ID</dt><dd className="mt-1 font-mono text-[11px]">{experiment.id}</dd></div>
+              </dl>
+            ) : <dl className="grid grid-cols-2 gap-x-7 gap-y-3 text-sm sm:grid-cols-4">
               <div><dt className="text-muted-foreground">Experiment ID</dt><dd className="mt-1 font-mono text-[11px]">{experiment.id}</dd></div>
               <div><dt className="text-muted-foreground">Delivery mode</dt><dd className="mt-1">{experiment.deliveryMode}</dd></div>
               <div><dt className="text-muted-foreground">Allocation</dt><dd className="mt-1">{allocation(experiment.allocation)}</dd></div>
@@ -107,17 +124,19 @@ export default async function ExperimentDetailPage({
               <div className="col-span-2"><dt className="text-muted-foreground">Narrative freeze</dt><dd className="mt-1">{experiment.narrativeFreeze}</dd></div>
               <div className="col-span-2"><dt className="text-muted-foreground">Activation metrics</dt><dd className="mt-1">{experiment.activationMetrics.map(label).join(", ")}</dd></div>
               <div className="col-span-2"><dt className="text-muted-foreground">Operational sample progress</dt><dd className="mt-1">{experiment.sampleProgress.minimumObserved} / {experiment.sampleProgress.targetPerVariant} minimum exposures per variant ({experiment.sampleProgress.percent}%)</dd></div>
-            </dl>
+            </dl>}
             <ExperimentControls
               experimentId={experiment.id}
               status={experiment.status}
               pinnedVariant={experiment.pinnedVariant}
               variants={variants}
-              mutable={experiment.activeDefinition}
+              mutable={experiment.mutableDefinition}
+              controlType={experiment.controlType}
             />
           </CardContent>
         </Card>
 
+        {experiment.controlType !== "homepage-promotion" && <>
         <Card>
           <CardHeader><CardTitle>Variant previews</CardTitle></CardHeader>
           <CardContent className="flex flex-wrap gap-2">
@@ -170,8 +189,9 @@ export default async function ExperimentDetailPage({
             </table>
           </CardContent>
         </Card>
+        </>}
 
-        <div className="grid gap-5 lg:grid-cols-2">
+        {experiment.controlType !== "homepage-promotion" && <div className="grid gap-5 lg:grid-cols-2">
           <Card>
             <CardHeader><CardTitle>Acquisition by variant</CardTitle></CardHeader>
             <CardContent>
@@ -206,9 +226,9 @@ export default async function ExperimentDetailPage({
               </dl>
             </CardContent>
           </Card>
-        </div>
+        </div>}
 
-        <Card>
+        {experiment.controlType !== "homepage-promotion" && <Card>
           <CardHeader><CardTitle>Recent sanitized events</CardTitle></CardHeader>
           <CardContent>
             {experiment.recentEvents.length ? (
@@ -230,7 +250,7 @@ export default async function ExperimentDetailPage({
               </div>
             ) : <p className="text-sm text-muted-foreground">No events recorded yet.</p>}
           </CardContent>
-        </Card>
+        </Card>}
 
         <Card>
           <CardHeader><CardTitle>Admin audit</CardTitle></CardHeader>

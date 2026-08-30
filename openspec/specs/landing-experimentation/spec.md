@@ -233,6 +233,16 @@ SHALL be available only for the active definition, SHALL validate against that d
 declared variants, and SHALL write the administrator, action, prior state, resulting state, and
 timestamp to an immutable audit record.
 
+The self-host homepage promotion SHALL be an independently mutable control in the same admin area,
+not a variant added to the active acquisition experiment. It SHALL allow an administrator to show
+the self-host landing at `/` or remove that promotion while leaving `/selfhost` available, and both
+changes SHALL be audited without altering acquisition assignments or measurements.
+
+Promotion and removal SHALL mutate the runtime state and insert its audit row atomically. A failed
+audit write SHALL leave the prior homepage state unchanged. When an anonymous visitor starts sign-in
+from the self-host landing, the site SHALL clear active-acquisition attribution cookies before the
+sign-in flow so a self-host conversion cannot appear without an acquisition exposure.
+
 #### Scenario: Administrator stops the active experiment
 - **GIVEN** an authorized administrator is viewing the active experiment
 - **WHEN** the administrator confirms Stop
@@ -251,3 +261,25 @@ timestamp to an immutable audit record.
 - **THEN** the action SHALL be rejected without changing runtime state or writing a success audit
   record
 
+#### Scenario: Administrator promotes the self-host landing
+- **GIVEN** the self-host landing is available only at `/selfhost`
+- **WHEN** an administrator confirms Show on homepage
+- **THEN** `/` SHALL render the self-host landing, the acquisition experiment SHALL remain unchanged,
+  and an audit record SHALL identify the administrator and resulting promotion state
+
+#### Scenario: Administrator removes the self-host homepage promotion
+- **GIVEN** the self-host landing currently renders at `/`
+- **WHEN** an administrator confirms Keep only at `/selfhost`
+- **THEN** the acquisition landing SHALL return at `/`, `/selfhost` SHALL remain available, and an
+  audit record SHALL identify the administrator and restored state
+
+#### Scenario: Homepage audit write fails
+- **GIVEN** the current homepage state is known
+- **WHEN** a promotion or removal cannot insert its audit record
+- **THEN** the homepage state SHALL remain unchanged and the action SHALL report failure
+
+#### Scenario: Self-host visitor starts sign-in
+- **GIVEN** an anonymous visitor is viewing the self-host landing at `/selfhost` or promoted at `/`
+- **WHEN** they choose a Podbay access action
+- **THEN** active-acquisition visitor and variant cookies SHALL be cleared before `/signin` loads, so
+  later sign-in and activation events are not attributed to the acquisition experiment

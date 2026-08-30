@@ -4,6 +4,7 @@ import AgentComputerLanding from "./landing-agent-computer";
 import AgentHomeLanding from "./landing-agent-home";
 import LandingExperimentExposure from "./landing-experiment-client";
 import OutcomesLanding from "./landing-outcomes";
+import SelfhostLanding from "./selfhost/selfhost-landing";
 import { redirect } from "next/navigation";
 import { editionOss, getCurrentUser } from "@/lib/session";
 import {
@@ -11,7 +12,11 @@ import {
   isVariantForExperiment,
   type LandingVariant,
 } from "@/lib/landing-experiment-config";
-import { getExperimentRuntimeSafe } from "@/lib/landing-experiment-store";
+import {
+  getExperimentRuntimeSafe,
+  isSelfhostHomepageEnabled,
+} from "@/lib/landing-experiment-store";
+import { selfhostLandingMetadata } from "@/lib/selfhost-landing-metadata";
 
 export const dynamic = "force-dynamic";
 
@@ -19,7 +24,7 @@ const landingTitle = "Podbay — Give Claude a real home in the cloud";
 const landingDescription =
   "A Podbay pod is a private cloud VM with Claude Code, your project, and tools inside—always on, reachable anywhere, using your existing Claude subscription.";
 
-export const metadata: Metadata = {
+const acquisitionMetadata: Metadata = {
   title: landingTitle,
   description: landingDescription,
   alternates: { canonical: "https://podbay.cloud/" },
@@ -36,6 +41,12 @@ export const metadata: Metadata = {
     description: landingDescription,
   },
 };
+
+export async function generateMetadata(): Promise<Metadata> {
+  return (await isSelfhostHomepageEnabled())
+    ? selfhostLandingMetadata("https://podbay.cloud/")
+    : acquisitionMetadata;
+}
 
 async function assignedVariant(): Promise<LandingVariant> {
   const definition = ACTIVE_LANDING_EXPERIMENT;
@@ -54,7 +65,12 @@ async function assignedVariant(): Promise<LandingVariant> {
 export default async function Home() {
   // Self-host is single-tenant with no marketing surface — the root IS the app.
   if (editionOss()) redirect("/dashboard");
-  const [variant, user] = await Promise.all([assignedVariant(), getCurrentUser()]);
+  const [selfhostHomepage, variant, user] = await Promise.all([
+    isSelfhostHomepageEnabled(),
+    assignedVariant(),
+    getCurrentUser(),
+  ]);
+  if (selfhostHomepage) return <SelfhostLanding user={user} />;
   const landing = variant === "agent-home"
     ? <AgentHomeLanding user={user} />
     : variant === "agent-computer"

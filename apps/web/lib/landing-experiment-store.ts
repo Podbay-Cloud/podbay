@@ -17,9 +17,11 @@ import {
   ACTIVE_LANDING_EXPERIMENT,
   LANDING_EVENT_TYPES,
   LANDING_EXPERIMENTS,
+  SELFHOST_HOMEPAGE_CONTROL,
   getLandingExperimentDefinition,
   isLandingEvent,
   isLandingVisitorId,
+  isMutableLandingDefinition,
   isVariantForExperiment,
   landingPreviewPath,
   type LandingDeliveryMode,
@@ -113,9 +115,11 @@ export async function getExperimentRuntime(
   return normalizeRuntime(await ensureRun(db, definition), definition);
 }
 
-export async function getExperimentRuntimeSafe(): Promise<ExperimentRuntime> {
+export async function getExperimentRuntimeSafe(
+  experimentId: string = ACTIVE_LANDING_EXPERIMENT.id,
+): Promise<ExperimentRuntime> {
   try {
-    return await getExperimentRuntime();
+    return await getExperimentRuntime(undefined, experimentId);
   } catch {
     return {
       status: "active",
@@ -310,6 +314,8 @@ export interface ExperimentSummary {
   deliveryMode: LandingDeliveryMode;
   allocation: Readonly<Partial<Record<LandingVariant, number>>>;
   activeDefinition: boolean;
+  mutableDefinition: boolean;
+  controlType: LandingExperimentDefinition["controlType"];
 }
 
 export interface ExperimentDetail extends ExperimentSummary {
@@ -465,6 +471,8 @@ export async function getExperimentDetail(
     deliveryMode: definition.deliveryMode,
     allocation: definition.allocation,
     activeDefinition: definition.id === ACTIVE_LANDING_EXPERIMENT.id,
+    mutableDefinition: isMutableLandingDefinition(definition.id),
+    controlType: definition.controlType,
     variantOrder: definition.variants,
     primaryMetric: definition.primaryMetric,
     activationMetrics: definition.activationMetrics,
@@ -550,6 +558,8 @@ export async function listExperimentSummaries(
     deliveryMode: detail.deliveryMode,
     allocation: detail.allocation,
     activeDefinition: detail.activeDefinition,
+    mutableDefinition: detail.mutableDefinition,
+    controlType: detail.controlType,
   }));
 }
 
@@ -600,38 +610,99 @@ export async function pinExperimentVariant(
   variant: string,
   db = createAppDb(),
 ): Promise<ExperimentRuntime> {
-  if (experimentId !== ACTIVE_LANDING_EXPERIMENT.id) {
+  if (!isMutableLandingDefinition(experimentId)) {
     throw new Error("Historical landing experiments are read-only");
   }
   const definition = definitionFor(experimentId);
   if (!isVariantForExperiment(definition, variant)) throw new Error("Unknown landing variant");
-  const current = await ensureRun(db, definition);
-  if (current.status === "stopped" && current.pinnedVariant === variant) {
-    return normalizeRuntime(current, definition);
-  }
+  await ensureRun(db, definition);
   const now = new Date();
-  await db
-    .update(landingExperimentRuns)
-    .set({
-      status: "stopped",
-      pinnedVariant: variant,
-      stoppedAt: current.stoppedAt ?? now,
-      updatedBy: actorUserId,
-      updatedAt: now,
-    })
-    .where(eq(landingExperimentRuns.experimentId, experimentId));
-  await db.insert(landingExperimentAudit).values({
-    id: randomUUID(),
-    experimentId,
-    actorUserId,
-    action: "pin",
-    previousStatus: current.status,
-    previousPinnedVariant: current.pinnedVariant,
-    nextStatus: "stopped",
-    nextPinnedVariant: variant,
-    at: now,
-  });
+  const auditId = randomUUID();
+  await db.execute(sql`
+    WITH current AS MATERIALIZED (
+      SELECT status, pinned_variant
+      FROM landing_experiment_runs
+      WHERE experiment_id = ${experimentId}
+      FOR UPDATE
+    ), updated AS (
+      UPDATE landing_experiment_runs AS run
+      SET status = 'stopped',
+          pinned_variant = ${variant},
+          stopped_at = COALESCE(run.stopped_at, ${now}),
+          updated_by = ${actorUserId},
+          updated_at = ${now}
+      FROM current
+      WHERE run.experiment_id = ${experimentId}
+        AND NOT (current.status = 'stopped' AND current.pinned_variant IS NOT DISTINCT FROM ${variant})
+      RETURNING current.status AS previous_status,
+                current.pinned_variant AS previous_pinned_variant
+    ), audited AS (
+      INSERT INTO landing_experiment_audit (
+        id, experiment_id, actor_user_id, action,
+        previous_status, previous_pinned_variant,
+        next_status, next_pinned_variant, at
+      )
+      SELECT ${auditId}, ${experimentId}, ${actorUserId}, 'pin',
+             previous_status, previous_pinned_variant,
+             'stopped', ${variant}, ${now}
+      FROM updated
+      RETURNING id
+    )
+    SELECT id FROM audited
+  `);
   return getExperimentRuntime(db, experimentId);
+}
+
+export async function clearExperimentPin(
+  actorUserId: string,
+  experimentId: string,
+  db = createAppDb(),
+): Promise<ExperimentRuntime> {
+  if (experimentId !== SELFHOST_HOMEPAGE_CONTROL.id) {
+    throw new Error("Only the homepage promotion can be unpinned");
+  }
+  const definition = definitionFor(experimentId);
+  await ensureRun(db, definition);
+  const now = new Date();
+  const auditId = randomUUID();
+  await db.execute(sql`
+    WITH current AS MATERIALIZED (
+      SELECT status, pinned_variant
+      FROM landing_experiment_runs
+      WHERE experiment_id = ${experimentId}
+      FOR UPDATE
+    ), updated AS (
+      UPDATE landing_experiment_runs AS run
+      SET status = 'active',
+          pinned_variant = NULL,
+          stopped_at = NULL,
+          updated_by = ${actorUserId},
+          updated_at = ${now}
+      FROM current
+      WHERE run.experiment_id = ${experimentId}
+        AND NOT (current.status = 'active' AND current.pinned_variant IS NULL)
+      RETURNING current.status AS previous_status,
+                current.pinned_variant AS previous_pinned_variant
+    ), audited AS (
+      INSERT INTO landing_experiment_audit (
+        id, experiment_id, actor_user_id, action,
+        previous_status, previous_pinned_variant,
+        next_status, next_pinned_variant, at
+      )
+      SELECT ${auditId}, ${experimentId}, ${actorUserId}, 'unpin',
+             previous_status, previous_pinned_variant,
+             'active', NULL, ${now}
+      FROM updated
+      RETURNING id
+    )
+    SELECT id FROM audited
+  `);
+  return getExperimentRuntime(db, experimentId);
+}
+
+export async function isSelfhostHomepageEnabled(): Promise<boolean> {
+  const runtime = await getExperimentRuntimeSafe(SELFHOST_HOMEPAGE_CONTROL.id);
+  return runtime.status === "stopped" && runtime.pinnedVariant === "selfhost";
 }
 
 export const LANDING_FUNNEL_EVENTS = FUNNEL;

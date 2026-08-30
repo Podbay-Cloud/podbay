@@ -29,6 +29,16 @@ export function middleware(req: NextRequest) {
     return NextResponse.redirect(url, 308);
   }
 
+  if (req.nextUrl.pathname === "/selfhost/signin") {
+    const url = req.nextUrl.clone();
+    url.pathname = "/signin";
+    url.search = "";
+    const response = NextResponse.redirect(url);
+    response.cookies.delete(LANDING_EXPERIMENT.cookie.variant);
+    response.cookies.delete(LANDING_EXPERIMENT.cookie.visitor);
+    return response;
+  }
+
   if (req.nextUrl.pathname !== "/") return NextResponse.next();
 
   const requestHeaders = new Headers(req.headers);

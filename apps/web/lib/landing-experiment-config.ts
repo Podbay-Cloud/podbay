@@ -1,4 +1,4 @@
-export const LANDING_VARIANTS = ["outcomes", "agent-computer", "agent-home"] as const;
+export const LANDING_VARIANTS = ["outcomes", "agent-computer", "agent-home", "selfhost"] as const;
 export type LandingVariant = (typeof LANDING_VARIANTS)[number];
 
 export const LANDING_EVENT_TYPES = [
@@ -14,11 +14,13 @@ export const LANDING_EVENT_TYPES = [
 ] as const;
 export type LandingExperimentEvent = (typeof LANDING_EVENT_TYPES)[number];
 export type LandingDeliveryMode = "historical" | "validation" | "measured";
+export type LandingControlType = "acquisition" | "homepage-promotion";
 
 export interface LandingExperimentDefinition {
   id: string;
   label: string;
   hypothesis: string;
+  controlType: LandingControlType;
   variants: readonly LandingVariant[];
   deliveryMode: LandingDeliveryMode;
   allocation: Readonly<Partial<Record<LandingVariant, number>>>;
@@ -46,6 +48,7 @@ export interface LandingExperimentDefinition {
 }
 
 const common = {
+  controlType: "acquisition" as const,
   primaryMetric: "signin_completed" as const,
   activationMetrics: ["pod_created", "agent_connected", "first_project_opened"] as const,
   guardrailMetric: "agent_connected" as const,
@@ -90,7 +93,7 @@ export const AUGUST_LANDING_EXPERIMENT = {
   label: "Landing positioning: outcomes vs computer vs home",
   hypothesis:
     "Qualified coding-agent users will activate more often when Podbay is presented as a capable home the agent knows how to operate.",
-  variants: LANDING_VARIANTS,
+  variants: ["outcomes", "agent-computer", "agent-home"],
   deliveryMode: augustDeliveryMode,
   allocation: { outcomes: 34, "agent-computer": 33, "agent-home": 33 },
   fallbackVariant: "outcomes",
@@ -163,17 +166,50 @@ export const AGENT_COMPUTER_LANDING = {
   },
 } as const satisfies LandingExperimentDefinition;
 
+// A manual, independently audited promotion control. It never enrolls visitors into the
+// acquisition experiment: /selfhost is always available, while a pin makes that page the root.
+export const SELFHOST_HOMEPAGE_CONTROL = {
+  ...common,
+  id: "homepage-selfhost-promotion-2026-08",
+  label: "Homepage promotion: self-hosted AI admin",
+  hypothesis:
+    "Keep the self-host landing available at /selfhost and promote it to the homepage only when an administrator chooses to.",
+  controlType: "homepage-promotion",
+  variants: ["selfhost"],
+  deliveryMode: "validation" as LandingDeliveryMode,
+  allocation: { selfhost: 100 },
+  fallbackVariant: "selfhost",
+  validationVariant: "selfhost",
+  crawlerVariant: "selfhost",
+  observationWindow: "Manual promotion control; no visitor allocation or winner read.",
+  minimumExposuresPerVariant: 1,
+  baseline: "The current acquisition landing remains canonical until selfhost is pinned.",
+  cookie: {
+    visitor: "pb_landing_visitor",
+    variant: "pb_homepage_selfhost_promotion",
+    maxAgeSeconds: 60 * 60 * 24 * 90,
+  },
+} as const satisfies LandingExperimentDefinition;
+
 export const LANDING_EXPERIMENTS = [
   JULY_LANDING_EXPERIMENT,
   AUGUST_LANDING_EXPERIMENT,
   AGENT_COMPUTER_LANDING_2026_08,
   AGENT_COMPUTER_LANDING_TAXONOMY_2026_08,
   AGENT_COMPUTER_LANDING,
+  SELFHOST_HOMEPAGE_CONTROL,
 ] as const satisfies readonly LandingExperimentDefinition[];
 
 export const ACTIVE_LANDING_EXPERIMENT = AGENT_COMPUTER_LANDING;
 // Compatibility alias for call sites that only operate on the active acquisition experiment.
 export const LANDING_EXPERIMENT = ACTIVE_LANDING_EXPERIMENT;
+
+export function isMutableLandingDefinition(experimentId: string): boolean {
+  return (
+    experimentId === ACTIVE_LANDING_EXPERIMENT.id ||
+    experimentId === SELFHOST_HOMEPAGE_CONTROL.id
+  );
+}
 
 for (const definition of LANDING_EXPERIMENTS) {
   const allocation: Readonly<Partial<Record<LandingVariant, number>>> = definition.allocation;
@@ -226,6 +262,7 @@ export function chooseLandingVariant(
 }
 
 export function landingPreviewPath(variant: LandingVariant): string {
+  if (variant === "selfhost") return "/selfhost";
   return `/preview/landing/${variant}`;
 }
 

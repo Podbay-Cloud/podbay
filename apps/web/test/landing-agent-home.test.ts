@@ -29,7 +29,7 @@ describe("agent-home landing preview", () => {
       "utf8",
     );
 
-    expect(LANDING_VARIANTS).toEqual(["outcomes", "agent-computer", "agent-home"]);
+    expect(LANDING_VARIANTS).toEqual(["outcomes", "agent-computer", "agent-home", "selfhost"]);
     expect(isLandingVariant("agent-home")).toBe(true);
     expect(source).toContain("TrackedLink");
     expect(source.match(/landing_primary_cta/g)).toHaveLength(2);

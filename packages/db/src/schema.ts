@@ -317,7 +317,7 @@ export const podBaseImages = pgTable("pod_base_images", {
 
 /** Runtime state for a code-defined landing experiment. Definitions and
  * allocation stay immutable in code; admins can only stop or pin a variant. */
-export type LandingExperimentVariant = "outcomes" | "agent-computer" | "agent-home";
+export type LandingExperimentVariant = "outcomes" | "agent-computer" | "agent-home" | "selfhost";
 export type LandingExperimentRuntimeStatus = "active" | "stopped";
 export type LandingExperimentEventType =
   | "landing_exposure"
@@ -348,7 +348,7 @@ export const landingExperimentRuns = pgTable(
     check("landing_runs_status_check", sql`${t.status} in ('active', 'stopped')`),
     check(
       "landing_runs_pin_check",
-      sql`${t.pinnedVariant} is null or ${t.pinnedVariant} in ('outcomes', 'agent-computer', 'agent-home')`,
+      sql`${t.pinnedVariant} is null or ${t.pinnedVariant} in ('outcomes', 'agent-computer', 'agent-home', 'selfhost')`,
     ),
   ],
 );
@@ -374,7 +374,7 @@ export const landingExperimentAssignments = pgTable(
     primaryKey({ columns: [t.experimentId, t.visitorId] }),
     check(
       "landing_assignments_variant_check",
-      sql`${t.variant} in ('outcomes', 'agent-computer', 'agent-home')`,
+      sql`${t.variant} in ('outcomes', 'agent-computer', 'agent-home', 'selfhost')`,
     ),
     index("landing_assignments_user_idx").on(t.userId),
     index("landing_assignments_variant_idx").on(t.experimentId, t.variant),
@@ -397,7 +397,7 @@ export const landingExperimentEvents = pgTable(
   },
   (t) => [
     uniqueIndex("landing_events_funnel_once_idx").on(t.experimentId, t.visitorId, t.type),
-    check("landing_events_variant_check", sql`${t.variant} in ('outcomes', 'agent-computer', 'agent-home')`),
+    check("landing_events_variant_check", sql`${t.variant} in ('outcomes', 'agent-computer', 'agent-home', 'selfhost')`),
     check(
       "landing_events_type_check",
       sql`${t.type} in ('landing_exposure', 'landing_primary_cta', 'landing_example_select', 'landing_starter_select', 'landing_playbook_select', 'signin_completed', 'pod_created', 'agent_connected', 'first_project_opened')`,
@@ -417,7 +417,7 @@ export const landingExperimentAudit = pgTable(
     actorUserId: text("actor_user_id")
       .notNull()
       .references(() => user.id, { onDelete: "restrict" }),
-    action: text("action").$type<"stop" | "pin">().notNull(),
+    action: text("action").$type<"stop" | "pin" | "unpin">().notNull(),
     previousStatus: text("previous_status")
       .$type<LandingExperimentRuntimeStatus>()
       .notNull(),
@@ -428,14 +428,14 @@ export const landingExperimentAudit = pgTable(
   },
   (t) => [
     index("landing_audit_experiment_at_idx").on(t.experimentId, t.at),
-    check("landing_audit_action_check", sql`${t.action} in ('stop', 'pin')`),
+    check("landing_audit_action_check", sql`${t.action} in ('stop', 'pin', 'unpin')`),
     check(
       "landing_audit_status_check",
       sql`${t.previousStatus} in ('active', 'stopped') and ${t.nextStatus} in ('active', 'stopped')`,
     ),
     check(
       "landing_audit_pin_check",
-      sql`(${t.previousPinnedVariant} is null or ${t.previousPinnedVariant} in ('outcomes', 'agent-computer', 'agent-home')) and (${t.nextPinnedVariant} is null or ${t.nextPinnedVariant} in ('outcomes', 'agent-computer', 'agent-home'))`,
+      sql`(${t.previousPinnedVariant} is null or ${t.previousPinnedVariant} in ('outcomes', 'agent-computer', 'agent-home', 'selfhost')) and (${t.nextPinnedVariant} is null or ${t.nextPinnedVariant} in ('outcomes', 'agent-computer', 'agent-home', 'selfhost'))`,
     ),
   ],
 );

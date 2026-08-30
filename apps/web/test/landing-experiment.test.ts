@@ -5,12 +5,15 @@ import {
   landingExperimentAssignments,
   landingExperimentAudit,
   landingExperimentEvents,
+  sql,
   user,
   type Database,
 } from "@podbay/db";
 import {
   getExperimentDetail,
+  getExperimentRuntime,
   listExperimentSummaries,
+  clearExperimentPin,
   pinExperimentVariant,
   recordAttributedUserEvent,
   recordLandingEvent,
@@ -22,6 +25,7 @@ import {
   AGENT_COMPUTER_LANDING_TAXONOMY_2026_08,
   JULY_LANDING_EXPERIMENT,
   AUGUST_LANDING_EXPERIMENT,
+  SELFHOST_HOMEPAGE_CONTROL,
   chooseLandingVariant,
   isCrawler,
   isLandingEvent,
@@ -53,6 +57,11 @@ describe("landing experiment configuration", () => {
     expect(chooseLandingVariant(0.99)).toBe("outcomes");
     // agent-home is still a valid variant globally (kept for history), just not in the active split.
     expect(chooseLandingVariant(0.5, AUGUST_LANDING_EXPERIMENT)).toBe("agent-computer");
+    expect(AUGUST_LANDING_EXPERIMENT.variants).toEqual([
+      "outcomes",
+      "agent-computer",
+      "agent-home",
+    ]);
     expect(isLandingVariant("agent-computer")).toBe(true);
     expect(isLandingVariant("agent-home")).toBe(true);
     expect(isLandingVariant("v2")).toBe(false);
@@ -70,6 +79,20 @@ describe("landing experiment configuration", () => {
 });
 
 describe("landing experiment request assignment", () => {
+  it("clears acquisition attribution before self-host visitors sign in", () => {
+    const request = new NextRequest("https://podbay.cloud/selfhost/signin", {
+      headers: {
+        cookie: `${LANDING_EXPERIMENT.cookie.variant}=agent-computer; ${LANDING_EXPERIMENT.cookie.visitor}=visitor_1234567890abcdef`,
+      },
+    });
+    const response = middleware(request);
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("https://podbay.cloud/signin");
+    expect(response.cookies.get(LANDING_EXPERIMENT.cookie.variant)?.value).toBe("");
+    expect(response.cookies.get(LANDING_EXPERIMENT.cookie.visitor)?.value).toBe("");
+  });
+
   it("assigns on the first root response and preserves a valid repeat assignment", () => {
     vi.spyOn(Math, "random").mockReturnValue(0.75);
     const first = middleware(new NextRequest("https://podbay.cloud/"));
@@ -217,6 +240,58 @@ describe("landing experiment persistence", () => {
     expect(audit.map((entry) => entry.action)).toEqual(["stop", "pin"]);
   });
 
+  it("promotes and removes the self-host homepage without changing the acquisition experiment", async () => {
+    const db = await freshDb();
+    await db.insert(user).values({ id: "admin", name: "Admin", email: "admin@example.com" });
+
+    const promoted = await pinExperimentVariant(
+      "admin",
+      SELFHOST_HOMEPAGE_CONTROL.id,
+      "selfhost",
+      db,
+    );
+    expect(promoted.status).toBe("stopped");
+    expect(promoted.pinnedVariant).toBe("selfhost");
+
+    const removed = await clearExperimentPin("admin", SELFHOST_HOMEPAGE_CONTROL.id, db);
+    expect(removed.status).toBe("active");
+    expect(removed.pinnedVariant).toBeNull();
+
+    const acquisition = await getExperimentDetail(LANDING_EXPERIMENT.id, db);
+    expect(acquisition?.status).toBe("active");
+    expect(acquisition?.pinnedVariant).toBeNull();
+
+    const audit = await db.select().from(landingExperimentAudit);
+    expect(audit.map((entry) => entry.action)).toEqual(["pin", "unpin"]);
+  });
+
+  it("rolls back homepage promotion when its audit insert fails", async () => {
+    const db = await freshDb();
+    await db.insert(user).values({ id: "admin", name: "Admin", email: "admin@example.com" });
+    await db.execute(sql`DROP TABLE landing_experiment_audit`);
+
+    await expect(
+      pinExperimentVariant("admin", SELFHOST_HOMEPAGE_CONTROL.id, "selfhost", db),
+    ).rejects.toThrow();
+    const runtime = await getExperimentRuntime(db, SELFHOST_HOMEPAGE_CONTROL.id);
+    expect(runtime.status).toBe("active");
+    expect(runtime.pinnedVariant).toBeNull();
+  });
+
+  it("rolls back homepage removal when its audit insert fails", async () => {
+    const db = await freshDb();
+    await db.insert(user).values({ id: "admin", name: "Admin", email: "admin@example.com" });
+    await pinExperimentVariant("admin", SELFHOST_HOMEPAGE_CONTROL.id, "selfhost", db);
+    await db.execute(sql`DROP TABLE landing_experiment_audit`);
+
+    await expect(
+      clearExperimentPin("admin", SELFHOST_HOMEPAGE_CONTROL.id, db),
+    ).rejects.toThrow();
+    const runtime = await getExperimentRuntime(db, SELFHOST_HOMEPAGE_CONTROL.id);
+    expect(runtime.status).toBe("stopped");
+    expect(runtime.pinnedVariant).toBe("selfhost");
+  });
+
   it("keeps July history queryable while new activation attaches only to August", async () => {
     const db = await freshDb();
     await db.insert(user).values({ id: "u_history", name: "History", email: "history@example.com" });
@@ -259,9 +334,10 @@ describe("landing experiment persistence", () => {
     expect(taxonomy?.variants["agent-computer"]?.funnel.pod_created).toBe(0);
     expect(active?.variants["agent-computer"]?.funnel.landing_exposure).toBe(1);
     expect(active?.variants["agent-computer"]?.funnel.pod_created).toBe(1);
-    // All five definitions are listed newest-first. Both preceding agent-computer runs remain
-    // queryable after the real-home/cloud message receives a distinct active experiment id.
+    // The independent homepage promotion is listed first, followed by acquisition definitions
+    // newest-first. Both preceding agent-computer runs remain queryable.
     expect((await listExperimentSummaries(db)).map((entry) => entry.id)).toEqual([
+      SELFHOST_HOMEPAGE_CONTROL.id,
       LANDING_EXPERIMENT.id,
       AGENT_COMPUTER_LANDING_TAXONOMY_2026_08.id,
       AGENT_COMPUTER_LANDING_2026_08.id,

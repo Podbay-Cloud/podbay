@@ -358,6 +358,13 @@
       "when": 1788039602632,
       "tag": "0050_pod_base_image_version",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1788040000000,
+      "tag": "0051_selfhost_landing_control",
+      "breakpoints": true
     }
   ]
 }

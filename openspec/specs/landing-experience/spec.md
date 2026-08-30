@@ -3,6 +3,70 @@
 ## Purpose
 Defines the public landing page: an outcome-led narrative with distinct sections, rotating illustrative build examples, a starter catalog, and subscription positioning, presented truthfully without overstating unavailable capabilities. It ensures the page is responsive, respects reduced-motion and keyboard navigation, carries proper metadata, and emits interaction analytics that degrade gracefully when no backend is present.
 ## Requirements
+### Requirement: Stable self-host landing
+The public site SHALL expose a self-host-focused landing at `/selfhost` with its own canonical
+metadata. The page SHALL present Claude as the operator, Podbay as the persistent computer and
+prepared operating environment, official Claude desktop and mobile apps as the normal interface,
+and the visitor's existing Claude Pro or Max subscription as the agent subscription.
+
+The page SHALL distinguish Podbay Cloud from the self-hosted edition, link the latter to the public
+Podbay source repository, and qualify Podbay as early alpha. Its availability at `/selfhost` SHALL NOT
+depend on whether administrators also promote it to `/`.
+
+The route SHALL resolve authentication at request time so returning cloud users see their account
+and dashboard actions rather than an anonymously cached page. In the OSS edition, `/selfhost` SHALL
+redirect to the dashboard instead of exposing cloud marketing metadata on the owner's installation.
+When the page is promoted to `/`, the root title, description, canonical URL, Open Graph, and Twitter
+metadata SHALL describe the self-host experience rendered in the body.
+
+After the operating contract and before the hosting choice, the page SHALL show an attributable
+horizontal feed of public self-host maintenance reports for the apps in the supported catalog. Each
+report SHALL name its public author and platform, link to the original GitHub issue or Reddit
+thread, pause while a visitor interacts with it, and become a manually scrollable snap row when
+reduced motion is requested.
+
+Immediately after the supported-app catalog, the page SHALL present the product's operating
+contract: upstream release and security monitoring, automatic application of updates that pass
+clone-based testing, owner approval for risky or breaking changes, and one-click return to the
+last-good state. This contract is the implementation target for the self-hosted AI-admin product.
+
+#### Scenario: Visitor opens the secondary self-host landing
+- **WHEN** a visitor opens `/selfhost`
+- **THEN** the page SHALL render the self-host positioning, supported-app outcomes, hosting choices,
+  early-alpha qualification, Claude subscription message, and Cloud and self-host calls to action
+
+#### Scenario: Homepage promotion is disabled
+- **GIVEN** an administrator has chosen Keep only at `/selfhost`
+- **WHEN** a visitor opens `/selfhost`
+- **THEN** the self-host landing SHALL remain available with `/selfhost` as its canonical URL
+
+#### Scenario: Returning user opens the self-host landing
+- **GIVEN** a cloud user is signed in
+- **WHEN** they open `/selfhost`
+- **THEN** the request-time page SHALL show their account and dashboard actions rather than anonymous
+  access-request actions
+
+#### Scenario: Self-host owner opens the marketing path
+- **GIVEN** Podbay is running in the OSS edition
+- **WHEN** the owner opens `/selfhost`
+- **THEN** they SHALL be redirected to the dashboard
+
+#### Scenario: Self-host landing owns the homepage
+- **GIVEN** an administrator has promoted the self-host landing to `/`
+- **WHEN** a crawler or visitor opens `/`
+- **THEN** the root metadata and rendered body SHALL both describe the self-host experience while the
+  canonical URL remains `https://podbay.cloud/`
+
+#### Scenario: Visitor evaluates operational trust
+- **WHEN** a visitor finishes the supported-app catalog
+- **THEN** the page SHALL explain the monitoring, safe-patching, approval, and rollback contract
+  before showing maintenance reports and hosting choices
+
+#### Scenario: Visitor evaluates the hidden cost of self-hosting
+- **WHEN** a visitor moves from the operating contract toward the hosting choice
+- **THEN** the page SHALL show source-linked reports about the supported apps from real self-hosters
+  in a horizontal feed without inventing identities or presenting the reporters as Podbay customers
+
 ### Requirement: A signed-in visitor is shown the way back to their machines
 
 When a signed-in user views the landing page, the primary navigation SHALL present their account mark
@@ -315,4 +379,3 @@ status without depending on color or motion.
 - **GIVEN** the visitor uses keyboard navigation
 - **WHEN** focus reaches navigation or CTA links
 - **THEN** each link SHALL show a visible focus indicator and expose a meaningful accessible name
-
