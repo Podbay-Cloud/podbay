@@ -20,6 +20,7 @@ import { SettingRow } from "@/components/setting-row";
 import { RowSkeleton } from "@/components/ui/skeleton";
 import { useConfirm } from "@/components/ui/use-confirm";
 import { SESSION_INTERRUPT_WARNING } from "@/lib/pod-copy";
+import { claudeReauthMode } from "@/lib/agent-reauth";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { qk } from "@/lib/query-keys";
 import {
@@ -170,6 +171,8 @@ export default function AgentCards({
   externalControl = false,
   onPairCodex,
   onSignin,
+  agentAuth,
+  onRenewToken,
 }: {
   slug: string;
   podName: string | null;
@@ -202,6 +205,11 @@ export default function AgentCards({
   onPairCodex?: () => void;
   /** Open the full-page Claude sign-in / reconnect wizard (cockpit takeover) for that agent. */
   onSignin?: (agentId: string, mode: "signin" | "reconnect") => void;
+  /** The pod's Claude auth MODE — a setup-token pod renews non-destructively (§5.1) rather than doing
+   * the subscription reconnect's full, session-interrupting re-login. */
+  agentAuth?: "subscription" | "api-key" | "setup-token" | null;
+  /** Open the full-page setup-token RENEW wizard (cockpit takeover). Used for setup-token pods. */
+  onRenewToken?: () => void;
 }) {
   const running = status === "running";
   const queryClient = useQueryClient();
@@ -402,9 +410,22 @@ export default function AgentCards({
   const reconnectExpiring = async (id: string) => {
     const left = expiringInMs(id);
     const days = left != null ? Math.max(1, Math.round(left / (24 * 60 * 60 * 1000))) : null;
+    const inN = days != null ? ` for ~${days} more day${days === 1 ? "" : "s"}` : "";
+    // A setup-token pod renews NON-destructively — mint a fresh ~1-year token, no forced sign-out — so
+    // it skips the session-interrupt warning and opens the renew wizard, not the reconnect wizard (§5.1).
+    if (id === "claude-code" && claudeReauthMode(agentAuth) === "renew" && onRenewToken) {
+      const ok = await confirm({
+        title: `Renew ${label(id)}'s login now?`,
+        message: `${label(id)}'s 1-year login still works${inN}. Renewing mints a fresh token now — it does NOT sign the agent out or interrupt the session.`,
+        confirmLabel: "Renew login",
+      });
+      if (!ok) return;
+      onRenewToken();
+      return;
+    }
     const ok = await confirm({
       title: `Reconnect ${label(id)} now?`,
-      message: `${label(id)}'s login still works${days != null ? ` for ~${days} more day${days === 1 ? "" : "s"}` : ""}. Reconnecting signs it out and starts a fresh sign-in now — do this when it's convenient, before the login expires.`,
+      message: `${label(id)}'s login still works${inN}. Reconnecting signs it out and starts a fresh sign-in now — do this when it's convenient, before the login expires.`,
       warning: SESSION_INTERRUPT_WARNING,
       confirmLabel: `Reconnect ${label(id)}`,
     });
@@ -493,14 +514,31 @@ export default function AgentCards({
         {starting === id ? (<><Loader2 className="size-3.5 animate-spin" /> Starting…</>) : (<>Start {name}</>)}
       </Button>
     ) : st === "login-expired" ? (
-      <Button
-        size="sm"
-        variant="outline"
-        disabled={reconnecting !== null}
-        onClick={() => (id === "claude-code" && onSignin ? onSignin(id, "reconnect") : doReconnect(id))}
-      >
-        {reconnecting === id ? (<><Loader2 className="size-3.5 animate-spin" /> Reconnecting…</>) : (<>Reconnect {name}</>)}
-      </Button>
+      // A setup-token pod RENEWS (mints a fresh 1-year token) instead of a subscription re-login; the
+      // login is already dead so neither path needs a confirm (§5.1).
+      (() => {
+        const renew = id === "claude-code" && claudeReauthMode(agentAuth) === "renew" && !!onRenewToken;
+        return (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={reconnecting !== null}
+            onClick={() =>
+              renew
+                ? onRenewToken!()
+                : id === "claude-code" && onSignin
+                  ? onSignin(id, "reconnect")
+                  : doReconnect(id)
+            }
+          >
+            {reconnecting === id ? (
+              <><Loader2 className="size-3.5 animate-spin" /> {renew ? "Renewing…" : "Reconnecting…"}</>
+            ) : (
+              <>{renew ? "Renew" : "Reconnect"} {name}</>
+            )}
+          </Button>
+        );
+      })()
     ) : st === "claude-down" ? (
       <Button size="sm" variant="outline" disabled={restoringFor !== null} onClick={() => doRestoreRc(id)}>
         {restoringFor === id ? (<><Loader2 className="size-3.5 animate-spin" /> Restoring…</>) : (<>Restore remote control</>)}

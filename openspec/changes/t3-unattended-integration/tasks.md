@@ -55,9 +55,10 @@ batched.
       `providerLabel` — the signin body now serves Codex device-auth too). No per-entry-point wizard dup.
 
 ## 5. Reconnect / renew affordance (safe)
-- [ ] 5.1 Cockpit trigger for the renew/reconnect wizard (currently URL-only `?wiz=renew-token`):
-      setup-token pod → renew wizard (non-destructive); expiring subscription → reconnect wizard behind a
-      confirm (never a silent cred wipe — the reverted 2026-08-24 affordance).
+- [x] 5.1 DONE: the cockpit re-auth affordance (agent-cards) now routes by auth MODE via claudeReauthMode:
+      setup-token → non-destructive RENEW wizard (no session-interrupt warning); subscription → confirmed
+      RECONNECT wizard. Both the expiring-soon prompt and the expired Reconnect button branch. Pure helper
+      unit-tested; dashboard spec updated. e2e of the wizard-open flow deferred (fake-stack setup-token pod).
 
 ## 6. Edition parity + specs + verify
 - [ ] 6.1 Self-host (`LocalProvider`): `:3000` transport + a deep link that resolves to a user-reachable

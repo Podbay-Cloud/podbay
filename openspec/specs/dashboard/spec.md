@@ -834,6 +834,21 @@ BOTH the live agent state and the persisted pod row, so a lag in either path sti
 - **THEN** the wizard SHALL NOT treat that initial authed state as "done" and close — it stays open
   through the wipe, and only returns to the cockpit once the re-login actually completes
 
+#### Scenario: A setup-token pod renews non-destructively; a subscription pod reconnects
+
+The cockpit's re-auth affordance (both the "expiring soon" prompt on a still-valid login and the
+"Reconnect" action on an expired one) SHALL route by the pod's Claude auth MODE. A setup-token pod
+SHALL open the RENEW wizard — minting a fresh ~1-year token WITHOUT signing the agent out or
+interrupting the session — and its still-valid confirm SHALL NOT carry the session-interrupt warning.
+A subscription pod SHALL open the RECONNECT wizard, a full session-interrupting re-login, confirmed
+first. Only an explicit setup-token mode renews; an unset or subscription mode reconnects.
+
+- **WHEN** the owner triggers re-auth for `claude-code` on a setup-token pod
+- **THEN** the non-destructive renew wizard SHALL open, labelled "Renew", with no session-interrupt warning
+
+- **WHEN** the owner triggers re-auth on a subscription pod
+- **THEN** the reconnect wizard SHALL open, labelled "Reconnect", behind the session-interrupt confirm
+
 #### Scenario: The pasted code is validated against the LIVE agents, not stale stored config
 
 The cockpit shows an agent's sign-in step by reading that agent from LIVE health, so accepting the

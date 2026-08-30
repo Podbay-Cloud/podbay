@@ -1455,6 +1455,8 @@ export default function PodCockpit(props: PodCockpitProps) {
                 externalControl={t3InControl}
                 onPairCodex={openPairing}
                 onSignin={(agentId, mode) => setWiz(`${mode}:${agentId}`)}
+                agentAuth={agentAuth}
+                onRenewToken={() => setWiz("renew-token")}
               />
               <T3ConnectPanel
                 slug={slug}
