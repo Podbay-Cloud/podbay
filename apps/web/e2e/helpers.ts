@@ -107,7 +107,7 @@ export async function launchPod(
   // Docker (fixed 2026-07-29); a helper that depends on catalog ORDER is fragile by
   // construction, so it now asks for what it wants.
   await page.goto(`/dashboard/pods/new?env=${env}`);
-  // Walk the launch wizard (Basics → [GitHub] → [Settings] → Review): on each step
+  // Walk the launch wizard (Basics → [GitHub] → Agents → [Secrets] → Review): on each step
   // fill any secret fields (so a required one doesn't keep the step gated), then
   // advance — clicking "Create pod" as soon as the Review step offers it. Non-BYO
   // envs only, so there's no GitHub repo gate to satisfy here.
@@ -123,7 +123,7 @@ export async function launchPod(
     }
     // Pick a non-default agent when asked. The Agents control is a MULTI-SELECT of
     // `<button aria-pressed>` toggles ("pick one or more", launch-configure.tsx) and lives on the
-    // SETTINGS step — it used to be a radio-group, so `getByRole("radio")` matched nothing and the
+    // AGENTS step — it used to be a radio-group, so `getByRole("radio")` matched nothing and the
     // old `if (count > 0)` guard silently skipped, launching every `agent: "codex"` pod as CLAUDE.
     // onboarding.spec.ts's Codex test then failed against a page behaving perfectly correctly.
     // Tolerant per step (we pass through Basics first, where no toggle exists) but asserted AFTER

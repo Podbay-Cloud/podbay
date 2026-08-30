@@ -80,11 +80,11 @@ in place regardless.
 
 The launch flow SHALL present configuration one step at a time rather than as a single form, and SHALL
 show only the steps a given environment actually needs. The steps are Basics (name, size), GitHub
-(connect + choose repo), Settings (agent, secrets), and a read-only Review that launches. The GitHub
-step SHALL be present only when the environment is bring-your-own-repo; the agent choice SHALL appear
-only when the environment offers more than one agent. The Settings step SHALL be present only when it
-has something to configure — an agent choice, the control picker, or declared secrets — so a
-single-agent environment with no secrets goes straight from Basics to Review. Advancing SHALL be gated
+(connect + choose repo), Agents (agent selection + control), Secrets (the env's declared secrets), and
+a read-only Review that launches. The GitHub step SHALL be present only when the environment is
+bring-your-own-repo. Every environment offers every agent, so the Agents step is always present. The
+Secrets step SHALL be present only when the environment declares secrets — agents and secrets are
+separate steps (one decision per screen), never combined. Advancing SHALL be gated
 per step (Basics
 requires a pod name; a BYO repo must be chosen; required secrets must be filled); going back SHALL
 never re-validate. The Review step SHALL present the chosen size as its tier label and machine specs
@@ -97,15 +97,15 @@ unchanged.
 - **WHEN** a user is on the Basics step with the name field empty
 - **THEN** Next SHALL be disabled until a pod name is entered
 
-#### Scenario: An environment with no repo and one agent
+#### Scenario: A non-BYO environment with a required secret
 
-- **WHEN** a user launches a non-BYO, single-agent environment that declares a required secret
-- **THEN** the wizard SHALL show Basics → Settings → Review, with no GitHub step and no agent choice
+- **WHEN** a user launches a non-BYO environment that declares a required secret
+- **THEN** the wizard SHALL show Basics → Agents → Secrets → Review, with no GitHub step
 
-#### Scenario: An environment with nothing to configure
+#### Scenario: A non-BYO environment with no declared secrets
 
-- **WHEN** a user launches a non-BYO, single-agent environment with no declared secrets and no control picker
-- **THEN** the wizard SHALL show Basics → Review, skipping the empty Settings step
+- **WHEN** a user launches a non-BYO environment that declares no secrets
+- **THEN** the wizard SHALL show Basics → Agents → Review, with no Secrets step
 
 #### Scenario: A bring-your-own-repo environment
 

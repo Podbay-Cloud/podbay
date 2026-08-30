@@ -36,12 +36,14 @@ async function seedGithubConnection(email: string): Promise<void> {
 
 async function expectStep(page: Page, label: string, current: number, total: number): Promise<void> {
   const main = page.getByRole("main");
-  await expect(main.getByText(label, { exact: true })).toBeVisible();
+  // The step LABEL can appear twice (e.g. "Agents" is both the header and the agents-picker label);
+  // the header is first in the DOM. The "N / M" counter is the unique per-step signal.
+  await expect(main.getByText(label, { exact: true }).first()).toBeVisible();
   await expect(main.getByText(`${current} / ${total}`, { exact: true })).toBeVisible();
 }
 
 test.describe("launch wizard", () => {
-  test("steps through Basics → Settings → Review, gating each step, then launches", async ({
+  test("steps through Basics → Agents → Secrets → Review, gating each step, then launches", async ({
     page,
   }) => {
     // Walking the wizard + creating a pod (real in-process pod-agent/gateway stack)
@@ -50,27 +52,31 @@ test.describe("launch wizard", () => {
     test.setTimeout(180_000);
     await login(page, "approved");
 
-    // doc-qa: non-BYO, single-agent, one required secret (ANTHROPIC_API_KEY) → the
-    // wizard is Basics → Settings → Review (no GitHub step, no agent choice).
+    // doc-qa: non-BYO, one required secret (ANTHROPIC_API_KEY) → Basics → Agents → Secrets →
+    // Review (no GitHub step). Agents and secrets are separate steps.
     await page.goto("/dashboard/pods/new?env=doc-qa");
     await expect(page.getByRole("heading", { name: /new pod — ask your docs/i })).toBeVisible();
 
     // Step 1 — Basics. Name lives here; there's no "Create pod" yet, only "Next".
-    await expectStep(page, "Basics", 1, 3);
+    await expectStep(page, "Basics", 1, 4);
     await expect(page.getByRole("button", { name: /^create pod$/i })).toHaveCount(0);
     await page.getByLabel("Name").fill("e2e Chef");
     await page.getByRole("button", { name: /^next$/i }).click();
 
-    // Step 2 — Settings. The required secret gates "Next" until it's filled.
-    await expectStep(page, "Settings", 2, 3);
+    // Step 2 — Agents. No gate (an agent is always selected); just advance.
+    await expectStep(page, "Agents", 2, 4);
+    await page.getByRole("button", { name: /^next$/i }).click();
+
+    // Step 3 — Secrets. The required secret gates "Next" until it's filled.
+    await expectStep(page, "Secrets", 3, 4);
     const next = page.getByRole("button", { name: /^next$/i });
     await expect(next).toBeDisabled();
     await page.locator('input[type="password"]').first().fill("sk-e2e-placeholder");
     await expect(next).toBeEnabled();
     await next.click();
 
-    // Step 3 — Review. Now "Create pod" appears and is enabled.
-    await expectStep(page, "Review", 3, 3);
+    // Step 4 — Review. Now "Create pod" appears and is enabled.
+    await expectStep(page, "Review", 4, 4);
     const launch = page.getByRole("button", { name: /^create pod$/i });
     await expect(launch).toBeEnabled();
     await launch.click();
@@ -94,15 +100,18 @@ test.describe("launch wizard", () => {
     await page.goto("/dashboard/pods/new?env=doc-qa");
     await page.getByLabel("Name").fill("e2e Chef");
     await page.getByRole("button", { name: /^next$/i }).click();
-    await expectStep(page, "Settings", 2, 3);
+    await expectStep(page, "Agents", 2, 4);
+    await page.getByRole("button", { name: /^next$/i }).click();
+    await expectStep(page, "Secrets", 3, 4);
     await page.locator('input[type="password"]').first().fill("sk-e2e-placeholder");
 
     // Reload mid-wizard: same step, and the required secret is still filled (so Next
-    // stays enabled). Going Back shows the name typed on Basics survived too.
+    // stays enabled). Going Back to Basics shows the name typed there survived too.
     await page.reload();
-    await expectStep(page, "Settings", 2, 3);
+    await expectStep(page, "Secrets", 3, 4);
     await expect(page.getByRole("button", { name: /^next$/i })).toBeEnabled();
-    await page.getByRole("button", { name: /^back$/i }).click();
+    await page.getByRole("button", { name: /^back$/i }).click(); // → Agents
+    await page.getByRole("button", { name: /^back$/i }).click(); // → Basics
     await expect(page.getByLabel("Name")).toHaveValue("e2e Chef");
   });
 
@@ -154,7 +163,7 @@ test.describe("launch wizard", () => {
     await login(page, "approved");
 
     await page.goto("/dashboard/pods/new?env=doc-qa");
-    await expectStep(page, "Basics", 1, 3);
+    await expectStep(page, "Basics", 1, 4);
     await page.getByLabel("Name").fill("e2e Scroll");
 
     // The dashboard shell scrolls its <main> (dashboard-shell.tsx: `overflow-y-auto`), NOT the
@@ -170,11 +179,11 @@ test.describe("launch wizard", () => {
     expect(await offset(), "step 1 must be scrollable for this test to mean anything").toBeGreaterThan(0);
 
     await page.getByRole("button", { name: /^next$/i }).click();
-    await expectStep(page, "Settings", 2, 3);
+    await expectStep(page, "Agents", 2, 4);
 
     // The new step starts at its beginning, not wherever the previous one was scrolled to.
     await expect.poll(offset).toBe(0);
-    await expect(page.getByRole("main").getByText("Settings", { exact: true })).toBeInViewport();
+    await expect(page.getByRole("main").getByText("Agents", { exact: true }).first()).toBeInViewport();
   });
 
   test("wizard without an env redirects to the environments gallery", async ({ page }) => {

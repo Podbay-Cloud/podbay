@@ -44,11 +44,12 @@ const SHOW_API_KEY_MODE = false;
 
 const AGENT_LABELS: Record<string, string> = { "claude-code": "Claude Code", codex: "Codex" };
 
-type LaunchStep = "basics" | "github" | "settings" | "review";
+type LaunchStep = "basics" | "github" | "agents" | "secrets" | "review";
 const STEP_LABELS: Record<LaunchStep, string> = {
   basics: "Basics",
   github: "GitHub",
-  settings: "Settings",
+  agents: "Agents",
+  secrets: "Secrets",
   review: "Review",
 };
 
@@ -129,14 +130,14 @@ export default function LaunchConfigure({
   const toggleProvider = (id: string) =>
     setProviders((prev) => (prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]));
 
-  // The Settings step shows only when it has something to configure: an agent CHOICE (>1 offered),
-  // the Control picker (T3 enabled), declared secrets, or the api-key auth mode. A single-agent env
-  // with no secrets skips straight from Basics to Review instead of showing an empty step.
-  const hasSettings = offered.length > 1 || t3Enabled || secrets.length > 0 || SHOW_API_KEY_MODE;
+  // Every env offers every agent, so the Agents step (agent multi-select + control) ALWAYS shows.
+  // Secrets get their OWN step — one decision per screen — present only when the env declares any.
+  const hasSecrets = secrets.length > 0;
   const steps: LaunchStep[] = [
     "basics",
     ...(byoRepo ? (["github"] as const) : []),
-    ...(hasSettings ? (["settings"] as const) : []),
+    "agents",
+    ...(hasSecrets ? (["secrets"] as const) : []),
     "review",
   ];
 
@@ -252,7 +253,7 @@ export default function LaunchConfigure({
       ? nameFilled
       : step === "github"
         ? repoPicked
-        : step === "settings"
+        : step === "secrets"
           ? requiredFilled
           : true;
 
@@ -437,11 +438,9 @@ export default function LaunchConfigure({
             </div>
           )}
 
-          {step === "settings" && (
+          {step === "agents" && (
             <>
-              {/* Agents — multi-select, ≥1. Hidden when the env offers only ONE agent: there's nothing to
-                  pick (providers already defaults to it), so a single-agent launch isn't asked a non-question. */}
-              {offered.length > 1 && (
+              {/* Agents — multi-select, ≥1. Every env offers every agent, so this always shows. */}
               <div className="flex flex-col gap-2.5">
                 <div className="flex items-baseline gap-2">
                   <Label>Agents</Label>
@@ -483,7 +482,6 @@ export default function LaunchConfigure({
                     : "The agent CLIs that run on this pod. You'll sign in to each during setup."}
                 </p>
               </div>
-              )}
 
               {/* Control — Podbay vs T3 Code (t3-unattended-integration 3.1). Hidden when the T3 harness
                   is disabled (agent-harness-toggle §2.1); control then stays pinned to its "podbay" default. */}
@@ -576,7 +574,11 @@ export default function LaunchConfigure({
                 )}
               </div>
               )}
+            </>
+          )}
 
+          {step === "secrets" && (
+            <>
               {secrets.map((s) => (
                 <div key={s.key} className="flex flex-col gap-2">
                   <Label htmlFor={`secret-${s.key}`} className="flex items-center gap-2">

@@ -134,9 +134,12 @@ test("VISUAL launch wizard — name required, secret persists, review size", asy
   await expect(page.getByRole("button", { name: /^next$/i })).toBeEnabled();
   await page.getByRole("button", { name: /^next$/i }).click();
 
-  // Settings: type a secret, reload → the value is still there (persisted draft).
-  // Header is now the compact "Settings · 2 / 3" (not "Step 2 of 3 — Settings").
-  await expect(page.getByText("2 / 3", { exact: true })).toBeVisible();
+  // Step 2 is now Agents; advance to the Secrets step (step 3 of 4).
+  await expect(page.getByText("2 / 4", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /^next$/i }).click();
+
+  // Secrets: type a secret, reload → the value is still there (persisted draft).
+  await expect(page.getByText("3 / 4", { exact: true })).toBeVisible();
   await page.locator("#secret-ANTHROPIC_API_KEY").fill("sk-persist-check-123");
   await page.reload();
   await page.waitForLoadState("networkidle");
