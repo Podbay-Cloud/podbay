@@ -7,6 +7,15 @@ them, not the commit log. See [docs/runbooks/release-notes.md](docs/runbooks/rel
 The format is loosely [Keep a Changelog](https://keepachangelog.com): newest first, grouped
 **New / Fixed / Improved**. `scripts/cut-release.sh` reads the section for the version being cut.
 
+## 0.2.0
+
+### Fixed
+- Pods that sign in with a long-lived token now start on that token instead of getting stuck at a
+  sign-in screen — reconnecting no longer leaves the pod on "sign-in expired".
+
+### Improved
+- Claude and Codex are updated to their latest versions.
+
 ## 0.1.0
 
 The first named version. Everything before this was identified only by image digest; from here a pod
