@@ -30,9 +30,8 @@ const STEPS: Record<Platform, ReactNode[]> = {
       Choose <Chip>Remote</Chip>, then <Chip>⋯</Chip> (top-right)
     </>,
     <>
-      <Chip>Add connection</Chip> → <Chip>Pair manually</Chip>
+      <Chip>Add connection</Chip> → <Chip>Pair a new device</Chip>
     </>,
-    <>Enter the code below</>,
   ],
   desktop: [
     <>
@@ -253,7 +252,8 @@ export function CodexPairPanel({
             className="rounded-lg bg-white p-1.5"
           />
           <span className="text-[13px] leading-relaxed text-muted-foreground">
-            Scan this with your phone at step 3, or enter the code below.
+            Scan this with your phone at step 3, or tap <Chip>Pair manually</Chip> and enter the
+            code below.
           </span>
         </div>
       )}

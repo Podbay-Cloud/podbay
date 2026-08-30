@@ -256,7 +256,7 @@ export function UpdateInfoDialog({
   // One entry per build between current and target (newest first). Falls back to
   // the target alone when the range/manifest is unavailable, so the modal always
   // shows something.
-  const builds = (info.images && info.images.length > 0 ? info.images : target ? [target] : []).map(
+  const allBuilds = (info.images && info.images.length > 0 ? info.images : target ? [target] : []).map(
     (img) => ({
       digest: img.digest ?? null,
       date: fmtDate(img.builtAt ?? null),
@@ -264,6 +264,16 @@ export function UpdateInfoDialog({
       parsed: parseNotes(img.notes),
     }),
   );
+  // Collapse builds whose owner-facing content is identical — a run of rebuilds carrying the SAME
+  // note (e.g. two back-to-back CLI-pin bumps) should read as one change, not the same sentence
+  // repeated (velsa, 2026-08-30). Keeps the newest occurrence's date/digest.
+  const seenKeys = new Set<string>();
+  const builds = allBuilds.filter((b) => {
+    const key = `${b.summary ?? ""} ${b.parsed.entries.map((e) => e.text).join("")}`;
+    if (seenKeys.has(key)) return false;
+    seenKeys.add(key);
+    return true;
+  });
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -346,24 +356,10 @@ export function UpdateInfoDialog({
                       </div>
                     )}
                     {b.summary ? (
-                      // Summary-first: the hand-written, user-facing "what's new for
-                      // you" leads. The git-commit changelog is developer text, so it
-                      // is demoted into a collapsed "Technical changes" for the curious
-                      // (and for support), never the headline.
-                      <div className="flex flex-col gap-1.5">
-                        <p className="whitespace-pre-line text-[13px] leading-relaxed">{b.summary}</p>
-                        {!b.parsed.empty && (
-                          <details className="group">
-                            <summary className="cursor-pointer list-none text-[11px] uppercase tracking-wide text-muted-foreground hover:text-foreground">
-                              <span className="group-open:hidden">Technical changes ▾</span>
-                              <span className="hidden group-open:inline">Technical changes ▴</span>
-                            </summary>
-                            <div className="mt-1.5">
-                              <NoteList entries={b.parsed.entries} />
-                            </div>
-                          </details>
-                        )}
-                      </div>
+                      // Summary-only: the hand-written, user-facing "what's new for you". The
+                      // git-commit changelog is developer text — an owner never needs it, so it is
+                      // NOT surfaced here (velsa, 2026-08-30); it lives in git for support.
+                      <p className="whitespace-pre-line text-[13px] leading-relaxed">{b.summary}</p>
                     ) : b.parsed.empty ? (
                       <p className="text-[12.5px] text-muted-foreground">Rebuild — nothing new to run.</p>
                     ) : (
