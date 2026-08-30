@@ -6,6 +6,7 @@ import LaunchConfigure from "@/components/launch-configure";
 import DashboardPage from "@/components/dashboard-page";
 import { isAdmin } from "@/lib/access-rules";
 import { editionOss } from "@/lib/session";
+import { harnessEnabled } from "@/lib/agent-harness";
 import { ACCOUNT_SLOT_CAP } from "@podbay/shared/tiers";
 
 export const dynamic = "force-dynamic";
@@ -51,6 +52,7 @@ export default async function NewPodPage({
         initialStep={step}
         slots={{ used: slots.used, cap: ACCOUNT_SLOT_CAP, unlimited: isAdmin(user.email) || oss }}
         oss={oss}
+        t3Enabled={harnessEnabled("t3")}
         capacity={capacity}
       />
     </DashboardPage>

@@ -6,6 +6,7 @@ import { getPostHogClient } from "./posthog-server";
 import type { MetricsSnapshot, PodIssue } from "@podbay/shared";
 import type { PodLiveSignals, ClaudeSettings } from "@podbay/control-plane";
 import { requireUser, editionOss } from "./session";
+import { harnessEnabled } from "./agent-harness";
 import QRCode from "qrcode";
 import { requireApprovedUser } from "./access";
 import { isAdmin } from "./access-rules";
@@ -259,6 +260,10 @@ function message(e: unknown): string {
 
 /** Launch a pod from a catalog environment. Returns the new pod id — the
  * client opens the workspace in a new tab (a server redirect can't). */
+/** T3 Code enable/connect surfaces refuse when the T3 harness is disabled (agent-harness-toggle §3).
+ * disableT3Code is deliberately NOT guarded — an already-T3 pod must keep an off-switch. */
+const T3_DISABLED = { error: "T3 Code isn't available." } as const;
+
 export async function launchPod(
   environmentName: string,
   config?: {
@@ -393,6 +398,7 @@ function t3UnreachableMessage(): string {
 /** Kick off T3 Code control (async). Returns as soon as provisioning is marked in-flight; the cockpit
  * polls `t3Progress` and, once ready, calls `regenerateT3Pairing` to show the QR. */
 export async function enableT3Code(slug: string): Promise<ActionResult> {
+  if (!harnessEnabled("t3")) return T3_DISABLED;
   const user = await requireUser();
   const backendUrl = await t3BackendUrl(slug);
   if (!backendUrl) return { error: t3UnreachableMessage() };
@@ -489,7 +495,7 @@ export async function completeSetupToken(slug: string, code: string): Promise<Ac
   // stored, and the cockpit's setup-token auto-enable effect is the backstop if this misses.
   try {
     const pod = await getPodService().getPod(user.id, slug);
-    if (!pod.t3Control) {
+    if (!pod.t3Control && harnessEnabled("t3")) {
       const backendUrl = await t3BackendUrl(slug);
       if (backendUrl) await getPodService().startT3Enable(user.id, slug, backendUrl);
     }
@@ -502,6 +508,7 @@ export async function completeSetupToken(slug: string, code: string): Promise<Ac
 /** Start T3 Connect (t3-connect-account-wizard): `t3 connect login --headless` on the pod prints an
  * app.t3.codes/connect OAuth URL — sign into the owner's T3 account so the env syncs to their devices. */
 export async function startT3Connect(slug: string): Promise<{ authUrl: string } | { error: string }> {
+  if (!harnessEnabled("t3")) return T3_DISABLED;
   const user = await requireUser();
   try {
     return await getPodService().startT3Connect(user.id, slug);
@@ -513,6 +520,7 @@ export async function startT3Connect(slug: string): Promise<{ authUrl: string } 
 
 /** Finish T3 Connect: feed the code, then link this environment so it syncs to the owner's T3 devices. */
 export async function submitT3ConnectCode(slug: string, code: string): Promise<ActionResult> {
+  if (!harnessEnabled("t3")) return T3_DISABLED;
   const user = await requireUser();
   try {
     await getPodService().completeT3Connect(user.id, slug, code);
@@ -538,6 +546,7 @@ export async function revertToSubscription(slug: string): Promise<ActionResult> 
 
 /** Fresh pairing code for an already-enabled T3 backend (the "regenerate" action). */
 export async function regenerateT3Pairing(slug: string): Promise<T3ConnectResult> {
+  if (!harnessEnabled("t3")) return T3_DISABLED;
   const user = await requireUser();
   const backendUrl = await t3BackendUrl(slug);
   if (!backendUrl) return { error: t3UnreachableMessage() };

@@ -17,6 +17,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { deriveSetupStep } from "@/lib/pod-onboarding";
 import { recordAttributedUserEvent } from "@/lib/landing-experiment-store";
 import { editionOss } from "@/lib/session";
+import { harnessEnabled } from "@/lib/agent-harness";
 
 export const dynamic = "force-dynamic";
 
@@ -308,6 +309,7 @@ export default async function PodCockpitPage({ params }: { params: Promise<{ slu
         activityEvents={activityEvents}
         relay={relay}
         oss={editionOss()}
+        t3Enabled={harnessEnabled("t3")}
         cpus={pod.cpus}
         memoryMb={pod.memoryMb}
         hostCapacity={capacity}

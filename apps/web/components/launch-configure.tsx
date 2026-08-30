@@ -72,6 +72,7 @@ type Draft = {
 };
 
 export default function LaunchConfigure({
+  t3Enabled = true,
   env,
   secrets,
   byoRepo = false,
@@ -99,6 +100,9 @@ export default function LaunchConfigure({
    * chooser. `capacity` is the Docker host's CPU/RAM + what running pods reserved (null if
    * docker was unreachable). Both default off ⇒ cloud tier picker, unchanged. */
   oss?: boolean;
+  /** Whether the T3 Code harness is enabled (agent-harness-toggle). When false, the Control picker
+   * is hidden, control is pinned to "podbay", and no t3 draft can restore. */
+  t3Enabled?: boolean;
   capacity?: HostCapacity | null;
 }) {
   const router = useRouter();
@@ -175,7 +179,7 @@ export default function LaunchConfigure({
         setGithubRepo(draft.githubRepo ?? null);
       if (draft.agent) setAgent(draft.agent);
       if (Array.isArray(draft.providers) && draft.providers.length) setProviders(draft.providers.filter((p) => offered.includes(p)));
-      if (draft.control === "podbay" || draft.control === "t3") setControl(draft.control);
+      if (draft.control === "podbay" || (draft.control === "t3" && t3Enabled)) setControl(draft.control);
       if (draft.agentAuth) setAgentAuth(draft.agentAuth);
     }
     // Initial step: the saved draft wins (true resume), else the ?step= hint, else first.
@@ -478,7 +482,9 @@ export default function LaunchConfigure({
                 </p>
               </div>
 
-              {/* Control — Podbay vs T3 Code (t3-unattended-integration 3.1). */}
+              {/* Control — Podbay vs T3 Code (t3-unattended-integration 3.1). Hidden when the T3 harness
+                  is disabled (agent-harness-toggle §2.1); control then stays pinned to its "podbay" default. */}
+              {t3Enabled && (
               <div className="flex flex-col gap-2.5">
                 <Label>Control</Label>
                 <div className="inline-flex w-fit rounded-md border border-border p-0.5" role="radiogroup" aria-label="Control">
@@ -525,6 +531,7 @@ export default function LaunchConfigure({
                   </div>
                 )}
               </div>
+              )}
 
               {SHOW_API_KEY_MODE && (
               <div className="flex flex-col gap-2">

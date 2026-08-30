@@ -213,6 +213,9 @@ export interface PodCockpitProps {
   /** Self-host edition: the relay is a cloud-only concept (routes egress through podbay.cloud) —
    * hide it, and any other cloud-only cockpit surfaces. */
   oss?: boolean;
+  /** Whether the T3 Code harness is enabled (agent-harness-toggle). Gates the T3 panel, the T3
+   * wizard routes, and the ?enableT3 auto-enable. Default true. */
+  t3Enabled?: boolean;
   /** Self-host explicit sizing (null ⇒ unlimited) — pre-fills the OSS resize chooser + labels stats. */
   cpus?: number | null;
   memoryMb?: number | null;
@@ -263,6 +266,7 @@ export default function PodCockpit(props: PodCockpitProps) {
     gatewayUrl,
     initialStep,
     oss = false,
+    t3Enabled = true,
     cpus: podCpus = null,
     memoryMb: podMemoryMb = null,
     hostCapacity = null,
@@ -321,7 +325,7 @@ export default function PodCockpit(props: PodCockpitProps) {
   // but that one-shot flag is stripped the moment the enable fires (review #1) — so read it ONCE here.
   // It drives skipping the subscription-login onboarding step (see effPhase below): a T3 pod needs ONLY
   // the 1-year setup-token, minted as the SINGLE login by the auto-enable flow. (fix/t3-launch-single-login)
-  const [t3Launch] = useState(() => searchParams.get("enableT3") === "1");
+  const [t3Launch] = useState(() => t3Enabled && searchParams.get("enableT3") === "1");
   // Seeded from the durable row (props.authUrl) so a refresh mid-login still shows
   // the sign-in link; the live WS `links` frame refines it if a newer one arrives.
   const [authUrl, setAuthUrl] = useState<string | null>(props.authUrl);
@@ -999,7 +1003,7 @@ export default function PodCockpit(props: PodCockpitProps) {
       />
     );
   }
-  if ((wiz === "t3connect" || connecting) && !onboarding) {
+  if (((wiz === "t3connect" && t3Enabled) || connecting) && !onboarding) {
     // Post-enable (via `connecting`, no flash) or a re-entry from the Control tab (via ?wiz): sign into the
     // T3 account + link the env so it syncs to the owner's devices. Full-page — not the control page.
     const leaveConnect = () => {
@@ -1020,7 +1024,7 @@ export default function PodCockpit(props: PodCockpitProps) {
       />
     );
   }
-  if ((wiz === "renew-token" || wiz === "renew-then-t3") && !onboarding) {
+  if ((wiz === "renew-token" || (wiz === "renew-then-t3" && t3Enabled)) && !onboarding) {
     // "renew-then-t3" (2.2): the owner asked to enable T3 on a pod that isn't yet on the 1-year token —
     // mint it here, THEN kick off the T3 enable (which now launches t3 serve on the token, task 2.1).
     return (
@@ -1458,6 +1462,11 @@ export default function PodCockpit(props: PodCockpitProps) {
                 agentAuth={agentAuth}
                 onRenewToken={() => setWiz("renew-token")}
               />
+              {/* Hidden when the T3 harness is disabled (agent-harness-toggle §2.2) — UNLESS the pod is
+                  already in T3 control, so its Turn-off row stays reachable (the "keep the off-switch"
+                  rule; disableT3Code is not gated). The panel shows Enable only when !inControl, so a
+                  disabled+in-control pod naturally shows just Turn-off. */}
+              {(t3Enabled || t3InControl) && (
               <T3ConnectPanel
                 slug={slug}
                 podName={name}
@@ -1476,6 +1485,7 @@ export default function PodCockpit(props: PodCockpitProps) {
                   setT3Enabling(true);
                 }}
               />
+              )}
             </CardContent>
           </Card>
         </TabsContent>
