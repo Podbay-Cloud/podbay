@@ -357,7 +357,9 @@ export default function LaunchConfigure({
       <WizardProgress current="configure" />
 
       <div className="flex items-baseline justify-between gap-3">
-        <p className="text-sm font-semibold text-foreground">{STEP_LABELS[step]}</p>
+        <p className="text-[12px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+          {STEP_LABELS[step]}
+        </p>
         <p className="text-[12px] tabular-nums text-muted-foreground">{idx + 1} / {steps.length}</p>
       </div>
 
@@ -377,7 +379,7 @@ export default function LaunchConfigure({
                   id="pod-name"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="Name this pod — also names the session in your Claude app"
+                  placeholder="Name this pod"
                   maxLength={60}
                 />
               </div>

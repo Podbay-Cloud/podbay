@@ -100,9 +100,10 @@ test("VISUAL github → clone into a non-empty ~/work → confirm overwrite", as
 
   await page.goto(`/dashboard/pods/${slug}/github`);
 
-  // Connected → the choose-repo step. Pick a repo, then clone.
-  await page.getByRole("button", { name: /search your repositories/i }).click();
-  await page.getByRole("option", { name: /octocat\/hello-world/i }).click();
+  // Connected → the inline repo list; pick the repo directly (no dropdown to open), then clone.
+  const option = page.getByRole("option", { name: /octocat\/hello-world/i });
+  await expect(option).toBeVisible({ timeout: 20_000 });
+  await option.click();
   await page.getByRole("button", { name: /clone to ~\/work/i }).click();
 
   // Non-empty → the confirm-overwrite panel (a distinct destructive prompt).

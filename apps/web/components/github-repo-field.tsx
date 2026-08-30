@@ -174,7 +174,7 @@ export function GithubRepoField({ onSelect }: { onSelect: (repo: string | null) 
               repos={repos}
               value={selected}
               onChange={pick}
-              placeholder="Choose a repository…"
+              placeholder="Search repositories…"
               triggerId="github-repository-picker"
               labelledBy="github-repository-label"
             />

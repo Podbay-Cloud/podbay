@@ -92,7 +92,7 @@ describe("dashboard presentation contract", () => {
     expect(launch).not.toContain("The repo to work on");
 
     expect(repository).toContain("Repository");
-    expect(repository).toContain('placeholder="Choose a repository…"');
+    expect(repository).toContain('placeholder="Search repositories…"');
     expect(repository).not.toContain("Your repository");
     expect(repository).not.toContain("— required");
     expect(repository).not.toContain("Connected as");

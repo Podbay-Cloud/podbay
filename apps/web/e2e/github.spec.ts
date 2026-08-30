@@ -19,10 +19,10 @@ test.describe("github → clone into ~/work", () => {
     await scriptPodGithub(slug, { gh: true, workEmpty: true });
 
     await page.goto(`/dashboard/pods/${slug}/github`);
-    // Connected → the choose-repo step.
-    await expect(page.getByText(/Choose a repository/i)).toBeVisible({ timeout: 20_000 });
-    await page.getByRole("button", { name: /search your repositories/i }).click();
-    await page.getByRole("option", { name: /octocat\/hello-world/i }).click();
+    // Connected → the inline repo list; pick the repo directly (no dropdown to open).
+    const option = page.getByRole("option", { name: /octocat\/hello-world/i });
+    await expect(option).toBeVisible({ timeout: 20_000 });
+    await option.click();
     await page.getByRole("button", { name: /clone to ~\/work/i }).click();
 
     // Empty workspace → clones straight away, NO "Replace ~/work" destructive prompt.
@@ -38,8 +38,9 @@ test.describe("github → clone into ~/work", () => {
     await scriptPodGithub(slug, { gh: true, workEmpty: false });
 
     await page.goto(`/dashboard/pods/${slug}/github`);
-    await page.getByRole("button", { name: /search your repositories/i }).click();
-    await page.getByRole("option", { name: /octocat\/hello-world/i }).click();
+    const option = page.getByRole("option", { name: /octocat\/hello-world/i });
+    await expect(option).toBeVisible({ timeout: 20_000 });
+    await option.click();
     await page.getByRole("button", { name: /clone to ~\/work/i }).click();
 
     // Non-empty → a distinct destructive confirm before anything is overwritten.

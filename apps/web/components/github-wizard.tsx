@@ -211,18 +211,14 @@ export default function GithubWizard({
                 )}{" "}
                 Pick a repository to clone into <code className="rounded bg-muted px-1 py-0.5 text-[11px]">~/work</code>.
               </p>
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="min-w-0 flex-1">
-                  <RepoPicker
-                    repos={repos ?? []}
-                    value={chosenRepo}
-                    onChange={setChosenRepo}
-                    placeholder={
-                      repos === null ? "Loading your repositories…" : "Search your repositories…"
-                    }
-                  />
-                </div>
-                <Button disabled={!chosenRepo || cloning} onClick={() => clone()}>
+              <div className="flex flex-col gap-3">
+                <RepoPicker
+                  repos={repos ?? []}
+                  value={chosenRepo}
+                  onChange={setChosenRepo}
+                  placeholder={repos === null ? "Loading your repositories…" : "Search repositories…"}
+                />
+                <Button className="self-end" disabled={!chosenRepo || cloning} onClick={() => clone()}>
                   {cloning ? "Cloning…" : "Clone to ~/work"}
                 </Button>
               </div>

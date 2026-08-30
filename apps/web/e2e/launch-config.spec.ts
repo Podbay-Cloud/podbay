@@ -115,7 +115,7 @@ test.describe("launch wizard", () => {
     await expect(page.getByLabel("Name")).toHaveValue("e2e Chef");
   });
 
-  test("the connected repository step stays compact on mobile", async ({ page }) => {
+  test("the connected repository step: search + pick a repo, Next stays reachable on mobile", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await login(page, "approved");
     await seedGithubConnection(USERS.approved.email);
@@ -133,18 +133,17 @@ test.describe("launch wizard", () => {
     await expect(page.getByLabel("GitHub connected as @octocat")).toBeVisible();
     const next = page.getByRole("button", { name: /^next$/i });
     await expect(next).toBeDisabled();
-    const picker = page.getByRole("button", { name: /Repository required/i });
-    await expect(picker).toHaveAccessibleDescription("Choose a repository…");
-    await picker.click();
-    await page.getByRole("option", { name: "octocat/hello-world" }).click();
-    await expect(picker).toHaveAccessibleDescription("octocat/hello-world");
+    // Inline picker: the repos are a searchable list shown directly (no dropdown to open). Picking a
+    // repo marks its row selected and enables Next.
+    const option = page.getByRole("option", { name: "octocat/hello-world" });
+    await option.click();
+    await expect(option).toHaveAttribute("aria-selected", "true");
     await expect(next).toBeEnabled();
     await expect(page.getByText("Your repository", { exact: false })).toHaveCount(0);
     await expect(page.getByText("The repo to work on", { exact: false })).toHaveCount(0);
 
-    const card = await page.locator('[data-slot="card"]').boundingBox();
-    expect(card, "repository card should render").not.toBeNull();
-    expect(card!.height, "repository card should stay compact").toBeLessThan(240);
+    // The list is height-bounded (it scrolls internally), so even a long repo list keeps Back/Next
+    // reachable on a phone rather than pushing them off the bottom.
     await expect(page.getByRole("button", { name: /^back$/i })).toBeInViewport();
     await expect(next).toBeInViewport();
     if (process.env.VISUAL_OUT) {
