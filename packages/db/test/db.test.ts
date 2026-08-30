@@ -103,4 +103,22 @@ describe("pod_base_images carries an optional version (release-versioning migrat
     const [row] = await db.select().from(podBaseImages).where(eq(podBaseImages.digest, "d2"));
     expect(row.version).toBe("0.1.0");
   });
+
+  it("rollback shows the version going BACKWARDS — the per-row storage the design needs (§6.3)", async () => {
+    const db = await freshDb();
+    // Two releases: v0.2.0 current, v0.1.0 superseded (the prior build we roll back TO).
+    await db.insert(podBaseImages).values({ digest: "newer", env: "pod-base", status: "superseded", version: "0.2.0" });
+    await db.insert(podBaseImages).values({ digest: "older", env: "pod-base", status: "superseded", version: "0.1.0" });
+    await db.update(podBaseImages).set({ status: "current" }).where(eq(podBaseImages.digest, "newer"));
+    // Read the current version (what the cockpit shows): 0.2.0.
+    let cur = await db.select().from(podBaseImages).where(eq(podBaseImages.status, "current"));
+    expect(cur[0].version).toBe("0.2.0");
+    // ROLL BACK: re-promote the older image (promoteImage's exact two writes).
+    await db.update(podBaseImages).set({ status: "rolled-back" }).where(eq(podBaseImages.digest, "newer"));
+    await db.update(podBaseImages).set({ status: "current" }).where(eq(podBaseImages.digest, "older"));
+    // The current version now follows the re-promoted row — it went BACKWARDS to 0.1.0, not forwards.
+    cur = await db.select().from(podBaseImages).where(eq(podBaseImages.status, "current"));
+    expect(cur[0].version).toBe("0.1.0");
+    expect(cur[0].digest).toBe("older");
+  });
 });

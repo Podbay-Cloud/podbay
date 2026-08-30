@@ -76,7 +76,7 @@
       prod; currentImage.version=0.1.0, so its cockpit renders `Up to date · v0.1.0 (1ac359)`. (First retry
       hung on transient box contention; recovered + succeeded on retry.)
       description shown, and the offline fallback exercised.
-- [ ] 6.3 Verify rollback shows the version going backwards (re-promote a prior image).
+- [x] 6.3 Verified (db test, PGlite): flipping which row is current (promoteImage semantics) makes the current version follow the re-promoted row — 0.2.0 rolls BACK to 0.1.0, the per-row design. Not tested against prod (a live rollback flips every pod to "update available").
 
 ## 7. Owner decisions (blocking their respective tasks, not the mechanism)
 
