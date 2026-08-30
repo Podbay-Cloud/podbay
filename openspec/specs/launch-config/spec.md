@@ -82,7 +82,10 @@ The launch flow SHALL present configuration one step at a time rather than as a 
 show only the steps a given environment actually needs. The steps are Basics (name, size), GitHub
 (connect + choose repo), Settings (agent, secrets), and a read-only Review that launches. The GitHub
 step SHALL be present only when the environment is bring-your-own-repo; the agent choice SHALL appear
-only when the environment offers more than one agent. Advancing SHALL be gated per step (Basics
+only when the environment offers more than one agent. The Settings step SHALL be present only when it
+has something to configure — an agent choice, the control picker, or declared secrets — so a
+single-agent environment with no secrets goes straight from Basics to Review. Advancing SHALL be gated
+per step (Basics
 requires a pod name; a BYO repo must be chosen; required secrets must be filled); going back SHALL
 never re-validate. The Review step SHALL present the chosen size as its tier label and machine specs
 (vCPU, RAM, disk), not a bare tier code. Reaching Review and launching SHALL send the same launch
@@ -96,8 +99,13 @@ unchanged.
 
 #### Scenario: An environment with no repo and one agent
 
-- **WHEN** a user launches a non-BYO, single-agent environment
+- **WHEN** a user launches a non-BYO, single-agent environment that declares a required secret
 - **THEN** the wizard SHALL show Basics → Settings → Review, with no GitHub step and no agent choice
+
+#### Scenario: An environment with nothing to configure
+
+- **WHEN** a user launches a non-BYO, single-agent environment with no declared secrets and no control picker
+- **THEN** the wizard SHALL show Basics → Review, skipping the empty Settings step
 
 #### Scenario: A bring-your-own-repo environment
 

@@ -129,8 +129,10 @@ export default function LaunchConfigure({
   const toggleProvider = (id: string) =>
     setProviders((prev) => (prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]));
 
-  // The Settings step now always carries the Agents + Control (Podbay/T3) picker, so it always shows.
-  const hasSettings = true;
+  // The Settings step shows only when it has something to configure: an agent CHOICE (>1 offered),
+  // the Control picker (T3 enabled), declared secrets, or the api-key auth mode. A single-agent env
+  // with no secrets skips straight from Basics to Review instead of showing an empty step.
+  const hasSettings = offered.length > 1 || t3Enabled || secrets.length > 0 || SHOW_API_KEY_MODE;
   const steps: LaunchStep[] = [
     "basics",
     ...(byoRepo ? (["github"] as const) : []),
@@ -358,8 +360,11 @@ export default function LaunchConfigure({
         <p className="text-[12px] tabular-nums text-muted-foreground">{idx + 1} / {steps.length}</p>
       </div>
 
-      <Card>
-        <CardContent className="flex flex-col gap-5">
+      {/* No outer card on wizard steps — the step content sits directly on the page (aligned with the
+          header), same as the cockpit tab pages; a bordered card here is a redundant box that just adds
+          padding (owner call, 2026-08-30). See ui-patterns "Rows & lists". */}
+      <Card className="border-0 bg-transparent py-0 shadow-none">
+        <CardContent className="flex flex-col gap-5 px-0">
           {step === "basics" && (
             <>
               <div className="flex flex-col gap-2">
@@ -396,7 +401,7 @@ export default function LaunchConfigure({
                 {!slots.unlimited && (
                   <p className={`text-[13px] ${slotsFit ? "text-muted-foreground" : "text-destructive"}`}>
                     Uses <strong>{slotCost}</strong> of your <strong>{slotsFree}</strong> free slot
-                    {slotsFree === 1 ? "" : "s"} ({slots.used}/{slots.cap} in use).{" "}
+                    {slotsFree === 1 ? "" : "s"}.{" "}
                     {!slotsFit && (
                       <>
                         Suspend a pod to free some, or{" "}
@@ -434,7 +439,9 @@ export default function LaunchConfigure({
 
           {step === "settings" && (
             <>
-              {/* Agents — multi-select, ≥1 (t3-unattended-integration 3.1). Always shown so Control is pickable. */}
+              {/* Agents — multi-select, ≥1. Hidden when the env offers only ONE agent: there's nothing to
+                  pick (providers already defaults to it), so a single-agent launch isn't asked a non-question. */}
+              {offered.length > 1 && (
               <div className="flex flex-col gap-2.5">
                 <div className="flex items-baseline gap-2">
                   <Label>Agents</Label>
@@ -476,6 +483,7 @@ export default function LaunchConfigure({
                     : "The agent CLIs that run on this pod. You'll sign in to each during setup."}
                 </p>
               </div>
+              )}
 
               {/* Control — Podbay vs T3 Code (t3-unattended-integration 3.1). Hidden when the T3 harness
                   is disabled (agent-harness-toggle §2.1); control then stays pinned to its "podbay" default. */}
