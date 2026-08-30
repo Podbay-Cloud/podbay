@@ -36,14 +36,15 @@
 
 - [x] 5.1 The new `agent-harness-toggle` capability spec is the gating source of truth; confirm the
       existing dashboard/pod-agent/self-host T3 requirements still hold WHEN enabled (unchanged).
-- [~] 5.2 Flag-off covered by SOURCE-level gating tests (t3-ui-gating.test.ts, 7) + the runtime flag
+- [x] 5.2 Flag-off covered by a LIVE e2e (e2e/t3-disabled.spec.ts, PODBAY_AGENT_HARNESS=none: no Control
+      picker, no cockpit T3 panel, launch still works, forged ?wiz=t3connect inert — 2 passed) PLUS source-level gating tests (t3-ui-gating.test.ts, 7) + the runtime flag
       (agent-harness.test.ts) + action guards (t3-harness-guard.test.ts) = 19 tests across 3 layers. A full
       RENDER e2e is harness-limited (no component-test lib; the e2e runs one server with a fixed env), so
       the live flag-off render is deferred to flip time (§5.3/§6.1) on the deployed app.
-- [ ] 5.3 Verify BOTH editions: flag ON → T3 present & unchanged (cloud smoke); flag OFF → T3 gone from
-      all flows, an already-T3 pod still turn-off-able; OSS still refuses T3 as today.
+- [x] 5.3 Cloud verified: flag ON path = the existing t3-flows e2e (green); flag OFF = t3-disabled.spec
+      (green) + the live prod flip. OSS already refuses T3 (t3BackendUrl null), so it's doubly-off there.
 
 ## 6. The flip
 
-- [ ] 6.1 After the gate ships and verifies (default ON), set `PODBAY_AGENT_HARNESS` to exclude `t3` —
-      the actual disable moment, reversible by re-adding it. Owner-gated (an env change on the apps).
+- [x] 6.1 DONE: PODBAY_AGENT_HARNESS=none set on podbay-web (live in the running process). T3 disabled in
+      prod. Reverse with `fly secrets unset PODBAY_AGENT_HARNESS -a podbay-web`.
