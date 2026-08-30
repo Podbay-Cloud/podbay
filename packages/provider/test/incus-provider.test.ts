@@ -429,6 +429,25 @@ describe("refreshSpecPermissions", () => {
     expect(refreshSpecPermissions("{not json", fresh)).toBe("{not json");
   });
 
+  // A dashboard rename updates the DB but the on-pod spec is preserved verbatim across an update, so
+  // the greeter re-applied the STALE podName as the Claude-app session title on every fresh session —
+  // reverting the user's rename after each update (owner report 2026-08-30). Refresh it from the DB.
+  it("refreshes podName from the current pod record", () => {
+    const named = JSON.stringify({ slug: "x", podName: "first10", other: 1 });
+    const out = JSON.parse(refreshSpecPermissions(named, undefined, "podbay first10"));
+    expect(out.podName).toBe("podbay first10");
+    expect(out.other).toBe(1); // everything else preserved
+  });
+  it("leaves podName untouched when no name is passed (e.g. live config-refresh)", () => {
+    const named = JSON.stringify({ podName: "first10" });
+    expect(refreshSpecPermissions(named, undefined)).toBe(named); // unchanged
+  });
+  it("clears podName when the name is null (dashboard name removed → greeter falls back to slug)", () => {
+    const named = JSON.stringify({ podName: "first10" });
+    const out = JSON.parse(refreshSpecPermissions(named, undefined, null));
+    expect(out.podName).toBeNull();
+  });
+
   // buildInitFiles wrote `<origin>/pods/<slug>` — the bare web TERMINAL — as cockpitUrl for every
   // pod on every provider until 2026-08-27. Fixing the builder only helps NEW pods, because
   // updateImage preserves the spec verbatim (the very reason this function exists). Heal it here so

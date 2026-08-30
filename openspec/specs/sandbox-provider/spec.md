@@ -232,6 +232,12 @@ the layer's staging path on the ephemeral rootfs while the persistent volume sti
 seed-once marker — without this, an image update NEVER refreshed the config layer (found live
 2026-07-28). Layer delivery is best-effort: its failure SHALL NOT fail the image update.
 
+An update SHALL also refresh the pod's DB-derived display name (`podName`) in the preserved pod-spec
+from the current pod record, rather than keeping the value the pod was created with. The spec is
+otherwise preserved verbatim across the recreate, which froze a dashboard rename — the in-pod greeter
+re-applies `podName` as the agent-app session title on every fresh session, so a stale value reverted
+the owner's rename after each update (owner report 2026-08-30).
+
 #### Scenario: Update preserves the workspace
 
 - **WHEN** `updateImage(id, image)` runs on a running pod
@@ -243,6 +249,12 @@ seed-once marker — without this, an image update NEVER refreshed the config la
 - **WHEN** `updateImage` runs on a running pod with a supplied current `.claude` layer
 - **THEN** the provider SHALL push the layer, clear the seed marker, and restart the agent after
   both — so the seed re-runs with the fresh layer present
+
+#### Scenario: Update refreshes the display name
+
+- **WHEN** `updateImage` runs on a pod whose display name was changed (in the dashboard) after creation
+- **THEN** the preserved pod-spec's `podName` SHALL be set to the current name, so the agent-app session
+  title reflects the rename rather than reverting to the launch-time name
 
 #### Scenario: Layer delivery fails
 

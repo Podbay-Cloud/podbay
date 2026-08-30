@@ -3166,7 +3166,9 @@ export class PodService {
         void this.store.update(id, { updateStage: stage }).catch(() => undefined);
         void this.emit(rec, "update_stage", { stage });
       },
-      { claudeFiles, permissions },
+      // Pass the CURRENT display name so updateImage refreshes the preserved spec's podName from the
+      // DB — otherwise a dashboard rename is frozen on-pod and the Claude-app session reverts (2026-08-30).
+      { claudeFiles, permissions, name: rec.name ?? null },
     );
     const to = info.imageDigest ?? image.split("@")[1] ?? null;
     // The recreate just delivered this env's current layer — record its hash so the drift sweep

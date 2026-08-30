@@ -80,7 +80,11 @@ function mapStatus(incusStatus: string): PodStatus {
  * existing pod on update. Pure + total: a nullish `permissions` or an unparseable spec is
  * returned unchanged, because an image update must never fail over this.
  */
-export function refreshSpecPermissions(specJson: string, permissions: unknown): string {
+export function refreshSpecPermissions(
+  specJson: string,
+  permissions: unknown,
+  name?: string | null,
+): string {
   try {
     const spec = JSON.parse(specJson) as unknown;
     if (spec && typeof spec === "object" && !Array.isArray(spec)) {
@@ -88,6 +92,15 @@ export function refreshSpecPermissions(specJson: string, permissions: unknown): 
       let changed = false;
       if (permissions != null) {
         s.permissions = permissions;
+        changed = true;
+      }
+      // Refresh the display name from the current pod record (DB `pods.name`). The spec is otherwise
+      // preserved VERBATIM across an update, which froze a dashboard rename — the greeter re-applies
+      // `podName` as the Claude-app session title on every fresh session, so a stale value reverted
+      // the user's rename after each update (owner report 2026-08-30). `undefined` ⇒ caller didn't
+      // pass it (e.g. live config-refresh) ⇒ leave podName untouched; `null` ⇒ cleared name, fall to slug.
+      if (name !== undefined && JSON.stringify(s.podName ?? null) !== JSON.stringify(name ?? null)) {
+        s.podName = name ?? null;
         changed = true;
       }
       if (healCockpitUrl(s)) changed = true;
@@ -476,6 +489,7 @@ export class IncusProvider implements SandboxProvider {
     opts?: {
       claudeFiles?: { guest_path: string; raw_value: string }[];
       permissions?: unknown;
+      name?: string | null;
     },
   ): Promise<PodInfo> {
     const stage = (s: string) => { try { onStage?.(s); } catch { /* progress is best-effort */ } };
@@ -548,7 +562,7 @@ export class IncusProvider implements SandboxProvider {
         // created with — a preset fix (or a new security deny) never reached it on update
         // (git-push prompt lingered on pre-2026-08-01 pods). Everything else in the spec
         // is preserved. See refreshSpecPermissions.
-        const specToPush = refreshSpecPermissions(preservedSpec, opts?.permissions);
+        const specToPush = refreshSpecPermissions(preservedSpec, opts?.permissions, opts?.name);
         await this.incus.pushFile(id, "/etc/podbay/pod-spec.json", Buffer.from(specToPush, "utf8"));
         // Deliver the CURRENT env .claude layer with the update. The recreate wiped
         // /etc/podbay/claude (ephemeral rootfs) and the home volume still carries

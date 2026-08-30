@@ -86,6 +86,11 @@ export interface SandboxProvider {
        * the frozen one it was created with — the path a preset fix / new deny reaches an
        * existing pod (the 2026-08-01 git-push removal otherwise never propagated). */
       permissions?: unknown;
+      /** The pod's CURRENT display name (DB `pods.name`, null ⇒ fall back to slug), merged into the
+       * preserved pod-spec so an UPDATE refreshes `podName` from the dashboard instead of keeping the
+       * verbatim on-pod value — otherwise a dashboard rename was FROZEN and the greeter re-applied the
+       * stale name as the Claude-app session title on every fresh session (owner report 2026-08-30). */
+      name?: string | null;
     },
   ): Promise<PodInfo>;
   /** Write the pod's app secrets to /etc/podbay/secrets.env (0600, dev-owned) on
