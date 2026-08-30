@@ -119,17 +119,21 @@ export default function LandingPodNetwork() {
         ))}
 
         <div className={styles.messageRelay}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/podbay-mark.svg" alt="" />
-          <span>podbay msg</span>
-          <strong>Secure handoffs</strong>
-          <small>durable · owner-scoped</small>
+          <div className={styles.messageRelayBrand}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/podbay-mark.svg" alt="" />
+            <span>Podbay</span>
+          </div>
+          <div className={styles.messageRelayCopy}>
+            <strong>Pods can message each other.</strong>
+          </div>
+          <div aria-hidden="true" className={styles.messageRelayRoute}>
+            <span>Development</span>
+            <i>Message</i>
+            <span>Scheduled work</span>
+          </div>
         </div>
       </div>
-
-      <figcaption>
-        Messages carry context and results, not shared filesystem access or authorization.
-      </figcaption>
     </figure>
   );
 }

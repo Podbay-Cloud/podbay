@@ -43,17 +43,18 @@ describe("revised landing bundles", () => {
   });
 
   it("leads Agent Computer with the lasting-computer benefit and dashboard proof", () => {
-    expect(computer).toContain('Give <span className={styles.noWrap}>Claude Code</span> a computer that keeps working.');
-    expect(computer).toContain("a pod (cloud computer) with your project, tools, services");
-    expect(computer).toContain("It keeps working when your laptop closes.");
+    expect(computer).toContain('Give <span className={styles.noWrap}>Claude Code</span> an always-on computer.');
+    expect(computer).toContain("We call it a pod: a private cloud computer with your project, tools, and services inside.");
     expect(computer).not.toContain("a persistent computer with your project");
     expect(computer).toContain("Claude is the interface. Podbay is its computer.");
     expect(computer).toContain('import dashboardImage from "../../../docs/images/dashboard.png"');
     expect(computer).toContain("See every pod at a glance.");
     expect(computer).not.toContain("Open running apps and know when Claude is working or needs you.");
     expect(computer).toContain('/landing/session-continuity-v10.png');
-    expect(computer).toContain("Close the laptop. The pod keeps working.");
-    expect(computer).toContain("The same Claude session, files, tools, and running services stay in one Podbay workspace.");
+    expect(computer).toContain("Continue anywhere.");
+    expect(computer).not.toContain("Start here.");
+    expect(computer).toContain("Close your laptop and Claude keeps working in the pod.");
+    expect(computer).toContain("Pick up the same session from desktop, mobile, or web without restarting or moving the project.");
     expect(computer).toContain("Start on desktop");
     expect(computer).toContain("Pod runs 24/7");
     expect(computer).toContain("Continue on phone");
@@ -125,16 +126,25 @@ describe("revised landing bundles", () => {
   });
 
   it("shows separate pods exchanging owner-scoped durable messages", () => {
+    const tabletNetworkStyles = agentStyles.slice(
+      agentStyles.indexOf("@media (max-width: 900px)"),
+      agentStyles.indexOf("@media (max-width: 700px)"),
+    );
+
     expect(podNetwork).not.toContain('"use client"');
     expect(podNetwork).toContain("Research & PMF");
     expect(podNetwork).toContain("Development");
     expect(podNetwork).toContain("Scheduled work");
     expect(podNetwork).toContain("Production");
-    expect(podNetwork).toContain("podbay msg");
-    expect(podNetwork).toContain("durable · owner-scoped");
+    expect(podNetwork).toContain("Pods can message each other.");
+    expect(podNetwork).toContain(">Message</i>");
+    expect(podNetwork).not.toContain("Pass the work, not the access.");
+    expect(podNetwork).not.toContain("Files, secrets, and permissions stay separate.");
+    expect(podNetwork).not.toContain("Secure handoff");
+    expect(podNetwork).not.toContain("podbay msg");
     expect(podNetwork).toContain("<animateMotion");
     expect(podNetwork).toContain("styles.mobileNetworkRail");
-    expect(podNetwork).toContain("not shared filesystem access or authorization");
+    expect(podNetwork).not.toContain("not shared filesystem access or authorization");
     expect(agentStyles).toContain(".podNetworkCanvas { position: relative; display: grid;");
     expect(agentStyles).toContain(".podNetworkHeading { display: flex; align-items: flex-start;");
     expect(agentStyles).toContain(".podNetworkHeading > p { max-width: 52ch; margin-top: 29px;");
@@ -147,6 +157,12 @@ describe("revised landing bundles", () => {
     expect(agentStyles).toContain(".networkPacket { display: none; }");
     expect(agentStyles).toContain("@keyframes mobileMessageRoute");
     expect(agentStyles).toContain(".mobileNetworkRail i { display: none; }");
+    expect(agentStyles).toContain(".messageRelayCopy");
+    expect(agentStyles).toContain(".messageRelayRoute");
+    expect(agentStyles).toContain("width: min(210px, calc(100% - 24px));");
+    expect(tabletNetworkStyles).toContain(
+      ".podNetworkCanvas { min-height: 0; grid-template-columns: repeat(2, minmax(0, 1fr));",
+    );
   });
 
   it("centers the subscription reassurance without a competing support-status line", () => {

@@ -153,12 +153,13 @@
 .podNode p { margin-top: 7px; color: #9ba8ad; font-size: 12px; line-height: 1.55; }
 .podNodeTags { display: flex; gap: 6px; margin-top: 14px; }
 .podNodeTags span { border: 1px solid #2c383d; border-radius: 999px; padding: 4px 8px; color: #77868c; font-family: var(--font-mono); font-size: 8px; letter-spacing: .04em; text-transform: uppercase; }
-.messageRelay { position: relative; z-index: 2; display: grid; width: 158px; overflow: hidden; grid-column: 2; grid-row: 1 / 3; align-self: center; justify-self: center; justify-items: center; border: 1px solid #40505a; border-radius: 10px; background: #10161a; padding: 17px 12px 15px; box-shadow: 0 0 55px rgba(77, 130, 255, .14); text-align: center; }
-.messageRelay img { width: 30px; height: 30px; }
-.messageRelay span { margin-top: 9px; color: var(--blue-soft); font-family: var(--font-mono); font-size: 9px; letter-spacing: .05em; }
-.messageRelay strong { margin-top: 5px; color: #edf2f3; font-size: 13px; }
-.messageRelay small { margin-top: 4px; color: #728086; font-family: var(--font-mono); font-size: 8px; text-transform: uppercase; }
-.podNetwork figcaption { margin-top: 5px; color: #718087; font-size: 10px; line-height: 1.5; text-align: center; }
+.messageRelay { position: relative; z-index: 2; display: grid; width: min(210px, calc(100% - 24px)); overflow: hidden; grid-column: 2; grid-row: 1 / 3; align-self: center; justify-self: center; border: 1px solid #40505a; border-radius: 10px; background: #10161a; padding: 18px; box-shadow: 0 0 55px rgba(77, 130, 255, .14); text-align: left; }
+.messageRelayBrand { display: flex; align-items: center; gap: 9px; }
+.messageRelayBrand img { width: 32px; height: 32px; }
+.messageRelayBrand span { color: var(--blue-soft); font-family: var(--font-mono); font-size: 9px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+.messageRelayCopy { margin-top: 15px; }
+.messageRelayCopy strong { display: block; color: #edf2f3; font-size: 16px; line-height: 1.25; }
+.messageRelayRoute { display: none; }
 
 @keyframes mobileMessageRoute {
   from { top: 8%; }
@@ -193,6 +194,31 @@
 @media (max-width: 900px) {
   .heroCopy h1 { font-size: 46px; }
   .trust { gap: 42px; }
+  .podNetwork { margin-top: 38px; }
+  .podNetworkHeading { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .podNetworkHeading > p { margin-top: 0; }
+  .podNetworkCanvas { min-height: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: auto auto auto; gap: 24px 28px; }
+  .networkConnections { display: none; }
+  .mobileNetworkRail { position: absolute; z-index: 0; display: block; inset: 0; background: linear-gradient(#35434a, #35434a) center / 1px 100% no-repeat; pointer-events: none; }
+  .mobileNetworkRail i { position: absolute; top: 8%; left: 50%; width: 8px; height: 8px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 9px rgba(77, 130, 255, .9); transform: translate(-50%, -50%); animation: mobileMessageRoute 5.2s ease-in-out infinite; }
+  .podNode { width: 100%; min-height: 0; }
+  .podNoderesearch,
+  .podNodeautomation { grid-column: 1; }
+  .podNodedevelopment,
+  .podNodeproduction { grid-column: 2; }
+  .podNoderesearch,
+  .podNodedevelopment { grid-row: 1; }
+  .podNodeautomation,
+  .podNodeproduction { grid-row: 3; }
+  .messageRelay { width: 100%; min-height: 0; grid-column: 1 / 3; grid-row: 2; padding: 18px; }
+  .messageRelayBrand img { width: 36px; height: 36px; }
+  .messageRelayCopy { margin-top: 14px; }
+  .messageRelayCopy strong { font-size: 18px; }
+  .messageRelayRoute { display: grid; grid-template-columns: auto minmax(70px, 1fr) auto; align-items: center; gap: 9px; margin-top: 16px; border-top: 1px solid var(--line); padding-top: 13px; }
+  .messageRelayRoute span { color: var(--muted); font-family: var(--font-mono); font-size: 9px; letter-spacing: .03em; text-transform: uppercase; }
+  .messageRelayRoute i { display: flex; align-items: center; gap: 7px; color: var(--blue-soft); font-family: var(--font-mono); font-size: 8px; font-style: normal; letter-spacing: .03em; text-transform: uppercase; }
+  .messageRelayRoute i::before,
+  .messageRelayRoute i::after { height: 1px; flex: 1; background: var(--blue); opacity: .55; content: ""; }
 }
 
 @media (max-width: 700px) {
@@ -211,32 +237,11 @@
   .continuitySteps span:nth-child(2),
   .continuitySteps span:last-child { justify-content: flex-start; }
   .sectionHeading { align-items: flex-start; flex-direction: column; gap: 17px; }
-  .sectionHeading > p,
-  .podNetworkHeading > p { margin-top: 0; }
+  .sectionHeading > p { margin-top: 0; }
   .reasonsBand { padding: 66px 0 70px; }
   .reasons { grid-template-columns: 1fr; }
   .reasons article { padding: 24px 0; }
   .reasons article + article { border-top: 1px solid var(--line); border-left: 0; padding-left: 0; }
-  .podNetwork { margin-top: 38px; }
-  .podNetworkHeading { align-items: flex-start; flex-direction: column; gap: 12px; }
-  .podNetworkCanvas { min-height: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: auto auto auto; gap: 24px 28px; }
-  .networkConnections { display: none; }
-  .mobileNetworkRail { position: absolute; z-index: 0; display: block; inset: 0; background: linear-gradient(#35434a, #35434a) center / 1px 100% no-repeat; pointer-events: none; }
-  .mobileNetworkRail i { position: absolute; top: 8%; left: 50%; width: 8px; height: 8px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 9px rgba(77, 130, 255, .9); transform: translate(-50%, -50%); animation: mobileMessageRoute 5.2s ease-in-out infinite; }
-  .podNode { width: 100%; min-height: 0; }
-  .podNoderesearch,
-  .podNodeautomation { grid-column: 1; }
-  .podNodedevelopment,
-  .podNodeproduction { grid-column: 2; }
-  .podNoderesearch,
-  .podNodedevelopment { grid-row: 1; }
-  .podNodeautomation,
-  .podNodeproduction { grid-row: 3; }
-  .messageRelay { width: 100%; min-height: 0; grid-column: 1 / 3; grid-row: 2; grid-template-columns: 30px auto 1fr; justify-items: start; gap: 0 10px; padding: 12px 14px; text-align: left; }
-  .messageRelay img { grid-row: 1 / 3; }
-  .messageRelay span { align-self: end; margin-top: 0; }
-  .messageRelay strong { align-self: start; margin-top: 0; }
-  .messageRelay small { display: none; }
   .trustBand { padding: 68px 0; }
   .trust { grid-template-columns: 1fr; gap: 32px; }
   .trustGrid { grid-template-columns: 1fr; }

@@ -47,10 +47,9 @@ export default async function AgentComputerLanding({
       <section className={`${styles.shell} ${styles.hero}`}>
         <div className={styles.heroCopy}>
           <p className={styles.eyebrow}>Claude is the interface. Podbay is its computer.</p>
-          <h1>Give <span className={styles.noWrap}>Claude Code</span> a computer that keeps working.</h1>
+          <h1>Give <span className={styles.noWrap}>Claude Code</span> an always-on computer.</h1>
           <p className={styles.heroText}>
-            Podbay gives Claude Code a pod (cloud computer) with your project, tools, services,
-            and data. It keeps working when your laptop closes.
+            We call it a pod: a private cloud computer with your project, tools, and services inside.
           </p>
           <div className={styles.heroActions}>
             <TrackedLink
@@ -106,9 +105,9 @@ export default async function AgentComputerLanding({
         <div className={styles.sectionHeading}>
           <div>
             <p className={styles.eyebrow}>Desktop, phone, or web</p>
-            <h2>Close the laptop. The pod keeps working.</h2>
+            <h2>Continue anywhere.</h2>
           </div>
-          <p>The same Claude session, files, tools, and running services stay in one Podbay workspace. Continue from desktop, mobile, or web without moving the project.</p>
+          <p>Close your laptop and Claude keeps working in the pod. Pick up the same session from desktop, mobile, or web without restarting or moving the project.</p>
         </div>
         <div className={styles.continuityVisual}>
           <div className={styles.continuityArtwork}>
