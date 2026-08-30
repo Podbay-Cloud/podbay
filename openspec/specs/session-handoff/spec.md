@@ -180,8 +180,8 @@ their Claude desktop app** to see the agent running on the pod, and — for adva
 pointing at the relevant control — advanced with Next/Back and dismissed with Done or Skip. It SHALL be
 shown at most once **per owner** (not per pod), persisted on the user so that once the owner has finished
 or skipped it on ANY pod it does not reappear on a newly created pod, on later visits, or on other
-devices. The cockpit's Details tab SHALL offer a **Replay walkthrough** affordance to run it again on
-demand.
+devices. The cockpit's Insights tab (Details section) SHALL offer a **Replay walkthrough** affordance to run it
+again on demand.
 
 #### Scenario: First arrival at ready
 

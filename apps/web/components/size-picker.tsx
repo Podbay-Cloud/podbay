@@ -21,7 +21,7 @@ export default function SizePicker({
   note?: (s: PodSize) => string | null;
 }) {
   return (
-    <div className="grid grid-cols-3 gap-2">
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
       {POD_SIZES.map((s) => {
         const t = POD_TIERS[s];
         const disabled = disabledSizes.includes(s);

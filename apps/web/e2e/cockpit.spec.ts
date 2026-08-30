@@ -22,9 +22,11 @@ test.describe("cockpit", () => {
 
     const strip = page.getByRole("tab", { name: /settings/i });
     for (const [from, to] of [
-      ["Details", "Stats"], // tall → short: the reported case
-      ["Admin", "Stats"],
-      ["Stats", "Details"],
+      // Stats/Activity/Details are now sub-tabs inside Insights — use the TOP-level tabs that still
+      // differ most in panel height (Settings is the tallest, Admin the shortest) to exercise the clamp.
+      ["Settings", "Admin"], // tall → short: the reported case
+      ["Admin", "Settings"], // short → tall
+      ["Insights", "Admin"],
     ] as const) {
       await page.getByRole("tab", { name: new RegExp(from, "i") }).click();
       await page.waitForTimeout(500);

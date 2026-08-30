@@ -28,7 +28,7 @@ describe("connect walkthrough steps", () => {
   });
 
   it("keeps the shared tab steps ungated so every pod still gets them", () => {
-    for (const tour of ["tab-settings", "tab-secrets", "tab-stats", "tab-details", "tab-admin"]) {
+    for (const tour of ["preview", "tab-settings", "tab-secrets", "tab-insights", "tab-admin"]) {
       const entry = src.slice(src.indexOf(`tour: "${tour}"`));
       const nextStep = entry.indexOf("},");
       expect(entry.slice(0, nextStep)).not.toContain("agent:");

@@ -224,8 +224,18 @@ export interface PodCockpitProps {
 }
 
 /** A settings row: label + description left, one control right. */
-/** Cockpit tab ids, also the accepted values of ?tab= (anything else → settings). */
-const COCKPIT_TABS = ["control", "settings", "secrets", "stats", "activity", "details", "admin"] as const;
+/** Cockpit tab ids, also the accepted values of ?tab= (anything else → control). */
+const COCKPIT_TABS = ["control", "settings", "secrets", "insights", "admin"] as const;
+
+/** Back-compat: the three read-only monitoring tabs (stats/activity/details) were merged into
+ * one "insights" tab, but old links, the guided-tour anchors, and shared `?tab=` URLs still point
+ * at the retired ids — map them onto insights so those never dead-end on the default. */
+const RETIRED_TAB_ALIASES: Record<string, string> = { stats: "insights", activity: "insights", details: "insights" };
+function normalizeTab(raw: string | null): string {
+  const t = raw ?? "";
+  if (RETIRED_TAB_ALIASES[t]) return RETIRED_TAB_ALIASES[t];
+  return (COCKPIT_TABS as readonly string[]).includes(t) ? t : "control";
+}
 
 export default function PodCockpit(props: PodCockpitProps) {
   const {
@@ -285,10 +295,14 @@ export default function PodCockpit(props: PodCockpitProps) {
   // router transition, which queues behind any in-flight server action (a pod
   // update takes minutes), so the tabs appeared frozen. Local state switches
   // instantly; the URL catches up whenever the router is free.
-  const initialTab = (COCKPIT_TABS as readonly string[]).includes(searchParams.get("tab") ?? "")
-    ? (searchParams.get("tab") as string)
-    : "control";
+  const initialTab = normalizeTab(searchParams.get("tab"));
   const [activeTab, setActiveTab] = useState(initialTab);
+  /** The Insights sub-view (Metrics/Activity/Details), seeded from the retired ?tab= alias so an old
+   * ?tab=activity or ?tab=details link opens on the matching sub-tab, not just the Metrics default. */
+  const initialInsightsView =
+    ({ stats: "metrics", activity: "activity", details: "details" } as Record<string, string>)[
+      searchParams.get("tab") ?? ""
+    ] ?? "metrics";
   /** The tab strip, so switching can keep it in view (see selectTab). */
   const tabsRef = useRef<HTMLDivElement>(null);
   function selectTab(next: string) {
@@ -1282,15 +1296,20 @@ export default function PodCockpit(props: PodCockpitProps) {
                     static). Show it once captured; a spinner until then. */}
                 {authUrl ? (
                   <div className="flex flex-col gap-3 rounded-xl border border-primary bg-primary/10 px-[18px] py-4">
-                    <div className="text-sm text-muted-foreground">
-                      1. Copy this code &nbsp; 2. Open OpenAI and enter it to authorize:
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2.5">
+                    {/* Two sequential actions, each paired with its own control — one line with two
+                        numbers above a shared button row read as cramped, worse on a narrow phone. */}
+                    <div className="flex flex-col gap-1.5">
+                      <span className="text-sm text-muted-foreground">1. Copy this code</span>
                       <CopyCodeButton
                         code={authUrl}
-                        className="px-3 py-2 text-lg tracking-[0.15em]"
+                        className="self-start px-3 py-2 text-lg tracking-[0.15em]"
                       />
-                      <Button asChild variant="outline">
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <span className="text-sm text-muted-foreground">
+                        2. Open OpenAI and enter it to authorize
+                      </span>
+                      <Button asChild variant="outline" className="self-start">
                         <a
                           href="https://auth.openai.com/codex/device"
                           target="_blank"
@@ -1406,12 +1425,14 @@ export default function PodCockpit(props: PodCockpitProps) {
               outranks its preview and its agents. Renders nothing when healthy. */}
           <HealthStrip slug={slug} running={status === "running"} />
           {previewUrl && (
-            <PreviewCard
-              slug={slug}
-              url={previewUrl}
-              isPublic={previewPublic}
-              running={status === "running"}
-            />
+            <div data-tour="preview">
+              <PreviewCard
+                slug={slug}
+                url={previewUrl}
+                isPublic={previewPublic}
+                running={status === "running"}
+              />
+            </div>
           )}
         </div>
       )}
@@ -1430,9 +1451,7 @@ export default function PodCockpit(props: PodCockpitProps) {
           <TabsTrigger value="control" className="flex-none px-0" data-tour="tab-control">Control</TabsTrigger>
           <TabsTrigger value="settings" className="flex-none px-0" data-tour="tab-settings">Settings</TabsTrigger>
           <TabsTrigger value="secrets" className="flex-none px-0" data-tour="tab-secrets">Secrets</TabsTrigger>
-          <TabsTrigger value="stats" className="flex-none px-0" data-tour="tab-stats">Stats</TabsTrigger>
-          <TabsTrigger value="activity" className="flex-none px-0" data-tour="tab-activity">Activity</TabsTrigger>
-          <TabsTrigger value="details" className="flex-none px-0" data-tour="tab-details">Details</TabsTrigger>
+          <TabsTrigger value="insights" className="flex-none px-0" data-tour="tab-insights">Insights</TabsTrigger>
           <TabsTrigger value="admin" className="flex-none px-0" data-tour="tab-admin">Admin</TabsTrigger>
         </TabsList>
 
@@ -1441,8 +1460,8 @@ export default function PodCockpit(props: PodCockpitProps) {
         <TabsContent value="control" className="min-h-[20rem]">
           {/* ONE card of rows (like Settings): Claude + Codex always shown (an Enable row when not on
               the pod), then T3 Code control. Divider rows come from each row's `border-t first:border-t-0`. */}
-          <Card className="gap-1 py-4">
-            <CardContent className="py-0">
+          <Card className="gap-1 border-0 bg-transparent py-0 shadow-none">
+            <CardContent className="px-0">
               <AgentCards
                 slug={slug}
                 podName={props.name}
@@ -1491,8 +1510,8 @@ export default function PodCockpit(props: PodCockpitProps) {
         </TabsContent>
 
         <TabsContent value="settings" className="min-h-[20rem] space-y-4">
-          <Card className="gap-1 py-4">
-            <CardContent className="py-0">
+          <Card className="gap-1 border-0 bg-transparent py-0 shadow-none">
+            <CardContent className="px-0">
           <SettingRow
             label="Software"
             /* Say WHAT the update contains, not just that one exists — the owner
@@ -1630,7 +1649,7 @@ export default function PodCockpit(props: PodCockpitProps) {
                   setConfirm({
                     title: "Suspend this pod?",
                     message:
-                      "It pauses to free compute for another pod. Your files and Claude login are kept. It stays suspended until you click Resume — nothing else wakes it, so the Claude app (and any preview) stay disconnected until then.",
+                      "Pauses the pod to free compute; your files and Claude login are kept. It stays down until you Resume.",
                     warning: SESSION_INTERRUPT_WARNING,
                     confirmLabel: "Suspend",
                     run: () => {
@@ -1783,16 +1802,25 @@ export default function PodCockpit(props: PodCockpitProps) {
         </TabsContent>
 
         <TabsContent value="secrets" className="min-h-[20rem]">
-          <Card>
-            <CardContent>
+          <Card className="border-0 bg-transparent py-0 shadow-none">
+            <CardContent className="px-0">
               <SecretsPanel slug={slug} />
             </CardContent>
           </Card>
         </TabsContent>
 
-        <TabsContent value="stats" className="min-h-[20rem]">
-          <Card className="gap-1 py-4">
-            <CardContent className="py-0">
+        <TabsContent value="insights" className="min-h-[20rem]">
+          <Tabs defaultValue={initialInsightsView}>
+            {/* Sub-tabs so Insights shows ONE view at a time — the stacked layout ran too long. */}
+            <TabsList variant="line" className="mb-4 justify-start gap-5">
+              <TabsTrigger value="metrics" className="flex-none px-0">Metrics</TabsTrigger>
+              <TabsTrigger value="activity" className="flex-none px-0">Activity</TabsTrigger>
+              <TabsTrigger value="details" className="flex-none px-0">Details</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="metrics">
+          <Card className="gap-1 border-0 bg-transparent py-0 shadow-none">
+            <CardContent className="px-0">
               <PodStats slug={slug} oss={oss} cpus={podCpus} memoryMb={podMemoryMb} />
               {/* A SINCE-LAUNCH lifecycle view — deliberately a different span from
                   the windowed charts above, so it's labeled and divided off rather
@@ -1815,15 +1843,15 @@ export default function PodCockpit(props: PodCockpitProps) {
               )}
             </CardContent>
           </Card>
-        </TabsContent>
+            </TabsContent>
 
-        <TabsContent value="activity" className="min-h-[20rem]">
+            <TabsContent value="activity">
           <ActivityTab slug={slug} initialEvents={activityEvents} running={status === "running"} />
-        </TabsContent>
+            </TabsContent>
 
-        <TabsContent value="details" className="min-h-[20rem]">
-          <Card className="gap-1 py-4">
-            <CardContent className="py-0">
+            <TabsContent value="details">
+          <Card className="gap-1 border-0 bg-transparent py-0 shadow-none">
+            <CardContent className="px-0">
           {[
             ["Slug", <span key="s" className="font-mono text-[12.5px]">{slug}</span>],
             ["Environment", environmentName],
@@ -1904,11 +1932,13 @@ export default function PodCockpit(props: PodCockpitProps) {
           )}
             </CardContent>
           </Card>
+            </TabsContent>
+          </Tabs>
         </TabsContent>
 
         <TabsContent value="admin" className="min-h-[20rem]">
-          <Card className="gap-1 py-4">
-            <CardContent className="py-0">
+          <Card className="gap-1 border-0 bg-transparent py-0 shadow-none">
+            <CardContent className="px-0">
               {/* The full check list lives here, not on the happy path — same rule
                   as the terminal: routine use never meets the machinery. */}
               <div className="border-b border-border/60 py-3.5">
@@ -1981,7 +2011,7 @@ export default function PodCockpit(props: PodCockpitProps) {
             <AlertDialogTitle>Resize pod</AlertDialogTitle>
             <AlertDialogDescription>
               {oss
-                ? "Change CPU and memory live — applied instantly, no restart. Going back to “No limit” isn’t supported here (it would recreate the pod and lose its data); set a positive value."
+                ? "Change CPU and memory live — no restart. Returning to “No limit” isn’t offered here (it would recreate the pod and lose its data)."
                 : "Applying a new size restarts the pod (a minute or two) — your work and login are kept. CPU and RAM change to the tier; disk can only grow."}
             </AlertDialogDescription>
           </AlertDialogHeader>

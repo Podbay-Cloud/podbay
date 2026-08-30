@@ -1306,9 +1306,26 @@ pod recorded nothing across a gap, and carrying a state over it would assert kno
 - **WHEN** activity is summarised over a window whose samples come from more than one tier
 - **THEN** each sample SHALL count for the time it represents
 
+### Requirement: The cockpit groups read-only monitoring into one Insights tab
+
+The pod cockpit SHALL present its read-only monitoring — live resource metrics, the pod's activity
+history, and its static details (image, region, skills, rules, preview URL, replay walkthrough) — as a
+single **Insights** tab, so the tab strip (Control · Settings · Secrets · Insights · Admin) stays short
+enough to fit a phone without horizontal scroll. Within Insights the three are **sub-tabs**
+(Metrics · Activity · Details) that show one view at a time (defaulting to Metrics), so the page never
+grows into one long crowded scroll. The retired `?tab=stats`, `?tab=activity`, and `?tab=details`
+deep-links SHALL resolve to the Insights tab — on the matching sub-tab — so old links, shared URLs, and
+guided-tour anchors do not dead-end.
+
+#### Scenario: An old ?tab=stats link still resolves
+
+- **GIVEN** a shared or bookmarked cockpit link with `?tab=stats` (or `?tab=activity` / `?tab=details`)
+- **WHEN** the owner opens it
+- **THEN** the cockpit SHALL open on the Insights tab rather than falling back to the default tab
+
 ### Requirement: Cockpit reads run in parallel, so one slow read can't freeze the others
 
-The cockpit's polled reads — the live-signals feed, the Secrets tab, the Stats tab — SHALL be served
+The cockpit's polled reads — the live-signals feed, the Secrets tab, the Insights tab's metrics — SHALL be served
 by HTTP Route Handlers (`GET /api/...`) consumed via `fetch`, NOT by Next.js server actions. Server
 actions run one-at-a-time per client on a single serialized lane; the always-on live-signals poll can
 stall on a wedged pod's health probe and monopolize that lane, leaving every other read stuck in its
@@ -1319,7 +1336,7 @@ service authorizes by the session user) and never returns a secret's value, only
 #### Scenario: A wedged pod does not freeze the cockpit's other tabs
 
 - **GIVEN** one of the owner's pods is unresponsive, so its health probe is slow
-- **WHEN** the owner opens the Secrets or Stats tab while the live-signals poll is mid-sweep
+- **WHEN** the owner opens the Secrets or Insights tab while the live-signals poll is mid-sweep
 - **THEN** that tab's data SHALL load on its own parallel request rather than queue behind the poll and
   stick in a skeleton until a manual refresh
 
@@ -1399,13 +1416,13 @@ never silently swallowed.
 
 - **WHEN** the pod emits a critical unplanned incident that already recovered (e.g. `oom_killed`)
 - **THEN** the cockpit SHALL show a dismissible banner (not a permanent pinned strip), and the incident
-  SHALL appear in the Activity tab
+  SHALL appear in the Insights tab's activity feed
 
 #### Scenario: Dismissing a pile of repeated incidents
 
 - **WHEN** the pod has accrued several undismissed incidents over time and the owner dismisses the banner
 - **THEN** every banner-worthy incident at or before that one SHALL become dismissed in a single action,
-  and SHALL remain visible (marked dismissed) in the Activity tab
+  and SHALL remain visible (marked dismissed) in the Insights tab's activity feed
 
 #### Scenario: A new incident after dismissal
 

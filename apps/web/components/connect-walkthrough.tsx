@@ -32,6 +32,11 @@ const STEPS: Step[] = [
     body: "Codex has no one-click hand-off: pair your phone or desktop app with the code here. On phone that's it — the pod shows up in your Projects. On desktop there's one extra step, spelled out below the code.",
   },
   {
+    tour: "preview",
+    title: "Your app preview",
+    body: "Whatever your pod serves on port 3000 shows up here — open it in a new tab. You choose whether the link is just for you or anyone who has it.",
+  },
+  {
     tour: "tab-settings",
     title: "Settings",
     body: "Suspend or resize the pod, set preview access, connect GitHub, and manage the relay.",
@@ -42,19 +47,9 @@ const STEPS: Step[] = [
     body: "The environment variables your app needs — set them here; the agent can request one too.",
   },
   {
-    tour: "tab-stats",
-    title: "Stats",
-    body: "Live CPU, memory, disk and network for the pod over the last hours.",
-  },
-  {
-    tour: "tab-activity",
-    title: "Activity",
-    body: "Everything that has happened to the pod — updates, restarts, resizes, and any incidents like running out of memory. Dismiss a notice from the cockpit and you can always retrace it here.",
-  },
-  {
-    tour: "tab-details",
-    title: "Details",
-    body: "The pod's image, region and size, plus its skills and rules.",
+    tour: "tab-insights",
+    title: "Insights",
+    body: "Live CPU, memory, disk and network; the full history of what's happened to the pod — updates, restarts, resizes, and incidents like running out of memory; plus the pod's image, region, skills and rules.",
   },
   {
     tour: "tab-admin",
