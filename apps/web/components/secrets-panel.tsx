@@ -446,12 +446,12 @@ export default function SecretsPanel({ slug }: { slug: string }) {
         </div>
       )}
 
-      <ul className="flex flex-col gap-4">
+      <ul className="flex flex-col">
         {secrets?.map((s) => {
           const shown = s.key in revealed;
           const isEditing = s.key in editing;
           return (
-            <li key={s.key} className="rounded-xl border border-border p-4">
+            <li key={s.key} className="border-t border-border/60 py-3.5 first:border-t-0">
               <div className="flex flex-wrap items-center gap-2">
                 <code className="font-mono text-sm font-semibold">{s.key}</code>
                 {/* No pill for a set secret — the filled field already says so. Only an
