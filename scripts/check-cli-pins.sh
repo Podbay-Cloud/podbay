@@ -48,6 +48,18 @@ add_row "codex-standalone" "$sa" "$npm_codex" "$split"
 [ "$JSON" = 1 ] || printf '  %-28s pinned %-10s must match npm codex %-6s %s\n' "codex-standalone" "$sa" "$npm_codex" \
   "$([ "$split" = true ] && echo "← SPLIT" || echo "ok")"
 
+# The build INPUT (provision-pod-base.sh) reinstalls the CLIs, so its pins must MATCH the Dockerfile —
+# a split there silently ships the OLD version even when the Dockerfile is bumped (hit live 2026-08-30:
+# the image shipped 2.1.215 while the Dockerfile said 2.1.251, because only the Dockerfile was bumped).
+PROVISION="${PROVISION:-scripts/incus/provision-pod-base.sh}"
+for pkg in "@anthropic-ai/claude-code" "@openai/codex"; do
+  d=$(pin_of "$pkg"); pv=$(grep -oE "$pkg@[0-9]+\.[0-9]+\.[0-9]+" "$PROVISION" | head -1 | sed "s|.*@||")
+  if [ -n "$d" ] && [ -n "$pv" ] && [ "$d" != "$pv" ]; then
+    behind=$((behind+1))
+    [ "$JSON" = 1 ] || printf '  %-28s Dockerfile %-10s provision %-10s %s\n' "$pkg" "$d" "$pv" "← SPLIT (provision-pod-base.sh)"
+  fi
+done
+
 if [ "$JSON" = 1 ]; then
   printf '{"behind":%d,"pins":[%s]}\n' "$behind" "$rows"
 else
