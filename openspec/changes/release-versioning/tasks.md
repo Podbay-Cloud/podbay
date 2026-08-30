@@ -43,9 +43,8 @@
 - [x] 3.2 v0.1.0 released on the public mirror (Podbay-Cloud/podbay) — tag + GitHub Release cut
       explicitly at the synced HEAD, body from CHANGELOG.md. (Done manually with gh; folding it into
       cut-release.sh for future releases is a follow-up.)
-- [~] 3.3 Not currently in the path: the public release body is the HAND-WRITTEN CHANGELOG section
-      (owner prose, no private paths), not auto-derived commit subjects — so there is nothing to filter
-      yet. Needed only if a future public release switches to auto-derived notes.
+- [x] 3.3 N/A in the current path: the public release body is the HAND-WRITTEN CHANGELOG section (owner
+      prose, no private paths), not auto-derived commit subjects. Filter only needed if that ever changes.
 - [x] 3.4 The `--no-release` path is the existing `build-and-record.sh` (records an image with NO version;
       the row stays digest-identified). cut-release is the separate, deliberate step — nothing forces a version.
 - [x] 3.5 Added §4b to `docs/runbooks/shipping.md`: write CHANGELOG section → dry-run → cut (outward,
@@ -53,9 +52,8 @@
 
 ## 4. Self-host gets a release channel
 
-- [~] 4.1 Generation wired: admin GET `?releases=1` returns released rows; publish-install-mirror.sh
-      writes releases.json from it (token-optional). PUBLISHING is outward (needs owner yes) + needs the
-      ?releases route deployed.
+- [x] 4.1 releases.json PUBLISHED to podbay-cloud/install (live at raw.githubusercontent.com/podbay-cloud/
+      install/main/releases.json, v0.1.0). Generated from the deployed ?releases=1 endpoint.
 - [x] 4.2 `fetchSelfHostRelease(ossLatestDigest)` (self-host-releases.ts) resolves from the pod's
       latestImageDigest joined to the published manifest — no pinnedDigest dependency. Wired into the OSS cockpit.
 - [x] 4.3 fetchSelfHostRelease NEVER throws (offline/404/malformed → null → digest line); unit-tested.
