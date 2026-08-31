@@ -2284,6 +2284,31 @@ export class PodService {
     await this.providerFor(rec.provider).clearGithubToken(id);
   }
 
+  /** Fan the owner's DURABLE GitHub connection out to EVERY pod they own: install `token` on each
+   * (connect/reconnect) or clear it (disconnect, token=null). This is what makes the account
+   * connection the single source of truth — one connect grants all pods, one disconnect revokes all
+   * (global-github-connection). Best-effort PER POD: an unreachable pod (suspended, mid-provision)
+   * is skipped rather than failing the whole fan-out; it is re-synced on its next wake. Returns how
+   * many pods were reached vs total, so the caller can tell the owner if some were offline. */
+  async syncGithubToOwnedPods(
+    ownerId: string,
+    token: string | null,
+  ): Promise<{ synced: number; total: number }> {
+    const pods = await this.listPods(ownerId);
+    let synced = 0;
+    for (const rec of pods) {
+      try {
+        const p = this.providerFor(rec.provider);
+        if (token) await p.setGithubToken(rec.id, token);
+        else await p.clearGithubToken(rec.id);
+        synced += 1;
+      } catch {
+        // Unreachable/suspended pod — skip; it re-syncs from the account row on its next wake.
+      }
+    }
+    return { synced, total: pods.length };
+  }
+
   /** Begin an IN-POD GitHub device login (self-host): the pod runs the OAuth device flow itself. */
   async startGhLogin(ownerId: string, id: string): Promise<GhDeviceStart> {
     const rec = await this.owned(ownerId, id);

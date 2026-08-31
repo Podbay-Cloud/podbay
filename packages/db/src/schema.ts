@@ -270,12 +270,13 @@ export const podSecrets = pgTable(
 );
 
 /**
- * Short-lived, encrypted GitHub connection for the BYO-repo launch flow
- * (docs/plans/byo-repo-plan.md). One per user. `tokenEnc` is AES-256-GCM ciphertext
- * (@podbay/shared/crypto, PODBAY_CRED_KEY) — never plaintext, never sent to the
- * client. TTL'd via `expiresAt` (a stale connection = reconnect); deleted on
- * disconnect. The token's long-term home stays the pod (injected at launch);
- * this row only exists during the connect→launch window.
+ * The owner's durable, encrypted GitHub connection — the SINGLE source of truth every pod draws
+ * from (docs/plans/byo-repo-plan.md; global-github-connection). One per user. `tokenEnc` is
+ * AES-256-GCM ciphertext (@podbay/shared/crypto, PODBAY_CRED_KEY) — never plaintext, never sent to
+ * the client. Connect once (dashboard Settings); every pod (launch + add-to-existing) reuses it.
+ * `expiresAt` NULL = durable (the go-forward default); a non-null value is the legacy 24h launch
+ * buffer, still honored so old rows expire during a rollout. Disconnect deletes the row AND clears
+ * the token from every owned pod; reconnect restores it to all.
  */
 export const githubConnections = pgTable("github_connections", {
   userId: text("user_id")
@@ -284,7 +285,10 @@ export const githubConnections = pgTable("github_connections", {
   tokenEnc: text("token_enc").notNull(),
   login: text("login").notNull(),
   connectedAt: timestamp("connected_at").notNull().defaultNow(),
-  expiresAt: timestamp("expires_at").notNull(),
+  // NULL = a durable, owner-managed connection (the go-forward default): it does not expire on its
+  // own and is the single source of truth every pod draws from. A non-null value is the legacy 24h
+  // launch-buffer TTL, still honored so old rows expire as before during a rollout.
+  expiresAt: timestamp("expires_at"),
 });
 
 /**

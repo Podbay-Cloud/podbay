@@ -18,6 +18,17 @@ import {
   listRepos,
   type Repo,
 } from "./github-connect";
+import { getPodService } from "./pod-service";
+
+/** Fan the durable account connection out to every owned pod — install the token (connect/reconnect)
+ * or clear it (disconnect, token=null). Fire-and-forget with logging: connecting/disconnecting must
+ * not block on reaching N pods, and an unreachable pod re-syncs on its next wake. */
+function fanOutGithubToPods(userId: string, token: string | null): void {
+  void getPodService()
+    .syncGithubToOwnedPods(userId, token)
+    .then((r) => log.info("gh_fanout", { userId, connect: token != null, ...r }))
+    .catch((e) => log.error("gh_fanout_failed", { userId, connect: token != null, err: e }));
+}
 
 /** Short-lived cookie carrying the CSRF `state` + where to return after the callback. */
 const OAUTH_COOKIE = "gh_oauth";
@@ -88,6 +99,7 @@ export async function completeGithubAccountConnect(deviceCode: string): Promise<
     const poll = await pollDeviceFlow(deviceCode);
     if (poll.status !== "authorized") return poll;
     const { login } = await storeConnection(user.id, poll.token);
+    fanOutGithubToPods(user.id, poll.token); // reconnect restores access on every owned pod
     return { status: "connected", login };
   } catch (e) {
     log.error("gh_account_connect_failed", { userId: user.id, err: e });
@@ -101,9 +113,11 @@ export async function githubAccountRepos(): Promise<Repo[]> {
   return listRepos(user.id).catch(() => []);
 }
 
-/** Forget our copy of the token (full revoke is the user's GitHub settings). */
+/** Disconnect the account connection AND revoke GitHub from every owned pod (the damaging action the
+ * Settings UI warns about). Full revoke of the token itself is the user's GitHub settings. */
 export async function disconnectGithubAccount(): Promise<{ ok: boolean }> {
   const user = await requireUser();
+  fanOutGithubToPods(user.id, null); // every owned pod loses GitHub access
   await disconnect(user.id).catch(() => {});
   return { ok: true };
 }

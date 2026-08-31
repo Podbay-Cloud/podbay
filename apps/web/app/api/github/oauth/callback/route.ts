@@ -5,6 +5,7 @@ import { createLogger } from "@podbay/shared/log";
 import { getCurrentUser } from "@/lib/session";
 import { exchangeCodeForToken, safeReturnPath, OAUTH_CALLBACK_PATH } from "@/lib/github-oauth";
 import { storeConnection } from "@/lib/github-connect";
+import { getPodService } from "@/lib/pod-service";
 
 export const dynamic = "force-dynamic";
 
@@ -50,6 +51,11 @@ export async function GET(req: Request): Promise<Response> {
   try {
     const token = await exchangeCodeForToken(code, `${url.origin}${OAUTH_CALLBACK_PATH}`);
     await storeConnection(user.id, token);
+    // Fan the durable connection out to every owned pod (fire-and-forget; re-syncs offline pods on
+    // wake) so a one-click connect grants GitHub access everywhere at once.
+    void getPodService()
+      .syncGithubToOwnedPods(user.id, token)
+      .catch((e) => log.error("gh_oauth_fanout_failed", { userId: user.id, err: e }));
     return back("connected");
   } catch (e) {
     log.error("gh_oauth_exchange_failed", { userId: user.id, err: e });

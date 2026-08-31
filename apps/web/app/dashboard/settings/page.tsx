@@ -1,5 +1,6 @@
 import DashboardPage from "@/components/dashboard-page";
 import RelayConnectCard from "@/components/relay-connect-card";
+import { GithubAccountCard } from "@/components/github-account-card";
 import { myRelayStatus } from "@/lib/relay-actions";
 import { editionOss } from "@/lib/session";
 
@@ -20,6 +21,9 @@ export default async function SettingsPage() {
     <DashboardPage title="Settings">
       <div className="space-y-6">
         {!oss && relay && <RelayConnectCard initial={relay} />}
+        {/* GitHub is an owner-level connection (one per person, reused by every pod), so it lives
+            here like the relay. Cloud-only: self-host connects GitHub in-pod per pod. */}
+        {!oss && <GithubAccountCard />}
         <p className="text-sm text-muted-foreground">
           Sign out is in the user menu at the bottom of the sidebar. More settings are coming soon.
         </p>

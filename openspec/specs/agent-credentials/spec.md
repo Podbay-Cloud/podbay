@@ -199,6 +199,42 @@ from the agent's Claude/Codex login and follows the same no-leak rules.
   which is derived from `gh` — reflects the working connection rather than showing
   "not connected" while `git` alone is authenticated
 
+### Requirement: One durable GitHub connection, reused by every pod (cloud)
+
+On cloud, the owner's GitHub connection SHALL be a SINGLE durable account-level connection (one per
+user, stored encrypted), managed in dashboard Settings — connect once and every pod, at launch and
+when added to an existing pod, reuses it. The connection SHALL NOT self-expire; the owner ends it
+explicitly. Connecting or reconnecting SHALL install the token on the owner's reachable pods;
+disconnecting SHALL clear it from the owner's reachable pods AND delete the stored connection. The
+fan-out SHALL be best-effort per pod — an unreachable (suspended) pod is skipped rather than failing
+the whole operation. Disconnect and reconnect SHALL be available ONLY in Settings; the launch and
+add-to-pod wizards MAY show connection status but SHALL NOT offer disconnect (it is account-wide).
+Self-host is exempt — it connects GitHub in-pod, per pod, with no central account connection.
+
+#### Scenario: Connect once, every pod gets access
+
+- **WHEN** the owner connects GitHub in Settings
+- **THEN** the token SHALL be installed on each of the owner's reachable pods, and every future pod
+  SHALL reuse the same connection without a per-pod sign-in
+
+#### Scenario: Disconnect revokes access across pods
+
+- **WHEN** the owner disconnects GitHub in Settings (a warned, destructive action)
+- **THEN** the stored connection SHALL be deleted AND the token cleared from each reachable owned
+  pod, so those pods can no longer clone/pull/push a private repo until the owner reconnects — a repo
+  already cloned to a pod's disk remains
+
+#### Scenario: An unreachable pod does not fail the fan-out
+
+- **WHEN** a pod is suspended/unreachable while connecting or disconnecting
+- **THEN** the fan-out SHALL skip that pod and still complete for the rest, reporting how many pods
+  it reached
+
+#### Scenario: The connection is durable
+
+- **WHEN** time passes without the owner touching the connection
+- **THEN** it SHALL remain valid rather than self-expiring, so pods keep working across sessions
+
 ### Requirement: A running pod's agent login is kept fresh before it can hard-expire
 
 An agent's OAuth refresh token has a hard expiry (~27–30 days) and only refreshes while the agent is

@@ -3,19 +3,12 @@ import { createAppDb, githubConnections, eq } from "@podbay/db";
 import { encryptSecret, decryptSecret } from "@podbay/shared/crypto";
 
 /**
- * The user's short-lived GitHub connection for the BYO-repo launch flow
- * (docs/plans/byo-repo-plan.md). The token is stored ENCRYPTED (AES-256-GCM under
- * PODBAY_CRED_KEY — same as pod_secrets), TTL'd, and NEVER returned to the
- * client: callers get a connection status, repo names, or (server-only, for
- * launch) the decrypted token. Its long-term home stays the pod.
+ * The owner's DURABLE GitHub connection — the single source of truth every pod draws from
+ * (global-github-connection). The token is stored ENCRYPTED (AES-256-GCM under PODBAY_CRED_KEY —
+ * same as pod_secrets) and NEVER returned to the client: callers get a connection status, repo
+ * names, or (server-only, for launch + the pod fan-out) the decrypted token. It does not expire on
+ * its own; the owner disconnects/reconnects it explicitly in dashboard Settings.
  */
-
-// 24 hours, then reconnect. This is only the LAUNCH-side connection (the token's
-// long-term home is the pod's own vault after launch), so the TTL just bounds how
-// long an idle, unused token sits encrypted here. 8h was short enough that connecting
-// and launching a pod the next work session already read as "disconnected"; a day
-// covers a normal work rhythm without holding an unused OAuth token indefinitely.
-const TTL_MS = 24 * 60 * 60 * 1000;
 
 export interface ConnectionStatus {
   connected: boolean;
@@ -36,7 +29,10 @@ async function activeRow(userId: string) {
     .where(eq(githubConnections.userId, userId));
   const row = rows[0];
   if (!row) return null;
-  if (new Date(row.expiresAt).getTime() < Date.now()) {
+  // A durable connection (expiresAt NULL) never self-expires — it is the owner-managed source of
+  // truth. A legacy TTL'd row (non-null expiresAt) is still dropped once past its deadline, so old
+  // 24h launch-buffer rows age out normally during the rollout.
+  if (row.expiresAt && new Date(row.expiresAt).getTime() < Date.now()) {
     await disconnect(userId).catch(() => {});
     return null;
   }
@@ -65,7 +61,9 @@ export async function storeConnection(userId: string, token: string): Promise<{ 
     tokenEnc: encryptSecret(token),
     login,
     connectedAt: now,
-    expiresAt: new Date(now.getTime() + TTL_MS),
+    // Durable: the owner manages this connection explicitly (Settings → Disconnect/Reconnect); it
+    // does not self-expire. Legacy rows carrying a TTL still age out via activeRow().
+    expiresAt: null,
   });
   return { login };
 }

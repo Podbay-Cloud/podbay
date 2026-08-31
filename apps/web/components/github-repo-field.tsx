@@ -6,14 +6,12 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { GithubDevicePanel } from "@/components/github-device-panel";
 import { RepoPicker } from "@/components/repo-picker";
-import { DisconnectGithubButton } from "@/components/disconnect-github-button";
 import {
   githubAccountStatus,
   startGithubAccountConnect,
   startGithubAccountWebConnect,
   completeGithubAccountConnect,
   githubAccountRepos,
-  disconnectGithubAccount,
 } from "@/lib/github-connect-actions";
 import type { Repo } from "@/lib/github-connect";
 
@@ -123,13 +121,6 @@ export function GithubRepoField({ onSelect }: { onSelect: (repo: string | null) 
     setBusy(false);
   }
 
-  async function disconnect() {
-    await disconnectGithubAccount().catch(() => {});
-    setLogin(null);
-    setRepos(null);
-    pick("");
-  }
-
   if (configured === null) return null; // still loading status
   // No GitHub OAuth app configured. This env NEEDS a repo, so say so plainly —
   // silently hiding the field left "Create pod" disabled with nothing to act on.
@@ -189,7 +180,14 @@ export function GithubRepoField({ onSelect }: { onSelect: (repo: string | null) 
             >
               <Check className="h-3.5 w-3.5 text-success" aria-hidden /> @{login}
             </span>
-            <DisconnectGithubButton onConfirm={disconnect} variant="link" login={login} />
+            {/* Disconnect/reconnect is account-wide (it touches every pod), so it lives ONLY in
+                Settings — never here, where it would read as a per-launch action. */}
+            <a
+              href="/dashboard/settings"
+              className="text-[12px] font-medium text-muted-foreground hover:text-foreground hover:underline"
+            >
+              Manage in Settings
+            </a>
           </div>
           {repos === null ? (
             <p className="text-[13px] text-muted-foreground" role="status">
