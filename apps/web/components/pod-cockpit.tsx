@@ -1076,7 +1076,7 @@ export default function PodCockpit(props: PodCockpitProps) {
           {confirm?.warning && (
             <div
               role="note"
-              className="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-left text-[13px] text-warning"
+              className="mt-2 flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-left text-[13px] text-warning"
             >
               <TriangleAlert aria-hidden="true" className="mt-px size-4 shrink-0" />
               <span>{confirm.warning}</span>
@@ -1648,9 +1648,8 @@ export default function PodCockpit(props: PodCockpitProps) {
                 onClick={() =>
                   setConfirm({
                     title: "Suspend this pod?",
-                    message:
-                      "Pauses the pod to free compute; your files and Claude login are kept. It stays down until you Resume.",
-                    warning: SESSION_INTERRUPT_WARNING,
+                    message: "Pauses the pod to free compute; your files and data are kept.",
+                    warning: "All running tasks will be interrupted.",
                     confirmLabel: "Suspend",
                     run: () => {
                       track("pod_suspended", { pod_id: slug, environment: environmentName });

@@ -43,7 +43,7 @@ export default function GithubConnect({ slug }: { slug: string }) {
           </div>
         </div>
         <Button asChild variant="outline" size="sm">
-          <Link href={`/dashboard/pods/${slug}/github`}>{connected ? "Choose repo" : "Connect"}</Link>
+          <Link href={`/dashboard/pods/${slug}/github?from=settings`}>{connected ? "Choose repo" : "Connect"}</Link>
         </Button>
       </div>
     </div>

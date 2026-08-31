@@ -16,11 +16,16 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
 
 export default async function GithubConnectPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ slug: string }>;
+  searchParams: Promise<{ from?: string }>;
 }) {
   const user = await requireApprovedUser();
   const { slug } = await params;
+  // Return to the tab the wizard was opened from (e.g. Settings), not the cockpit default.
+  const { from } = await searchParams;
+  const backHref = `/dashboard/pods/${slug}${from ? `?tab=${encodeURIComponent(from)}` : ""}`;
   const oss = editionOss();
   // Self-host connects via an in-pod `gh` device login — no OAuth app to configure, so don't 404.
   if (!githubConnectConfigured() && !oss) notFound();
@@ -35,8 +40,8 @@ export default async function GithubConnectPage({
   const name = pod.name?.trim() || slug;
 
   return (
-    <DashboardPage backHref={`/dashboard/pods/${slug}`} backLabel={name} title="Connect GitHub">
-      <GithubWizard slug={slug} podName={name} oss={oss} />
+    <DashboardPage backHref={backHref} backLabel={name} title="Connect GitHub">
+      <GithubWizard slug={slug} backHref={backHref} oss={oss} />
     </DashboardPage>
   );
 }

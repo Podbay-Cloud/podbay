@@ -683,6 +683,13 @@ network, auth) SHALL leave `~/work` exactly as it was.
 - **THEN** the repository SHALL be cloned into `~/work` and the request SHALL report success with the
   destination
 
+#### Scenario: The pod reports the repo already in its workspace
+
+- **WHEN** the pod's GitHub status is requested
+- **THEN** it SHALL also report the `owner/repo` currently checked out in `~/work` (its `origin`
+  remote), or null when `~/work` is not a GitHub clone — so the UI can say "this pod is working on
+  X" instead of pushing the owner to clone a repo into a pod that already has one
+
 #### Scenario: Refuse a non-empty workspace
 
 - **WHEN** a clone is requested for a pod whose `~/work` already contains files, without the overwrite opt-in

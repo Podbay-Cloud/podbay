@@ -1007,7 +1007,7 @@ export class IncusProvider implements SandboxProvider {
     return typeof h?.agentStatus === "string" ? h.agentStatus : null;
   }
 
-  async githubStatus(id: string): Promise<{ connected: boolean; login: string | null }> {
+  async githubStatus(id: string): Promise<{ connected: boolean; login: string | null; workRepo?: string | null }> {
     const ip = await this.instanceIp(id);
     if (!ip) return { connected: false, login: null };
     try {
@@ -1015,7 +1015,7 @@ export class IncusProvider implements SandboxProvider {
         signal: AbortSignal.timeout(8000),
       });
       return res.ok
-        ? ((await res.json()) as { connected: boolean; login: string | null })
+        ? ((await res.json()) as { connected: boolean; login: string | null; workRepo?: string | null })
         : { connected: false, login: null };
     } catch {
       return { connected: false, login: null };

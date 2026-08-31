@@ -305,7 +305,7 @@ export function UpdateInfoDialog({
             20260729-0054", i.e. a hash turning into an internal build alias —
             which meant nothing to anyone outside this repo (owner, 2026-07-29).
             The date leads; the short id stays as a secondary, for support. */}
-        <dl className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-white/[0.02] p-3 text-[13px]">
+        <dl className="flex flex-col gap-1.5 text-[13px]">
           <div className="flex items-baseline gap-2">
             <dt className="w-24 shrink-0 text-muted-foreground">Running now</dt>
             <dd className="flex flex-wrap items-baseline gap-x-2">
@@ -334,9 +334,9 @@ export function UpdateInfoDialog({
           {/* The changelog is the ONLY thing that scrolls: it flexes to fill the space
               between the fixed header/card above and the action footer below (which are
               flex-none), so the footer can never overlap or clip it. */}
-          <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border/60 bg-white/[0.02]">
+          <div className="min-h-0 flex-1 overflow-y-auto">
             {builds.length === 0 || builds.every((b) => b.parsed.empty && !b.summary) ? (
-              <p className="p-3 text-[13px] text-muted-foreground">
+              <p className="py-3 text-[13px] text-muted-foreground">
                 Nothing your pod runs has changed since your build — this is the same software,
                 rebuilt. Updating is harmless but gains you nothing unless you&rsquo;re
                 troubleshooting.
@@ -344,7 +344,7 @@ export function UpdateInfoDialog({
             ) : (
               <ul className="flex flex-col">
                 {builds.map((b, bi) => (
-                  <li key={b.digest ?? bi} className="border-b border-border/40 p-3 last:border-b-0">
+                  <li key={b.digest ?? bi} className="border-b border-border/40 py-3 first:pt-0 last:border-b-0">
                     {/* A build header only when there's MORE than one build to tell
                         apart — a single-build changelog needs no date divider. */}
                     {builds.length > 1 && (

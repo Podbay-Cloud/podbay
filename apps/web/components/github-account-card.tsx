@@ -174,13 +174,7 @@ export function GithubAccountCard() {
             Cancel
           </Button>
         ) : (
-          <Button
-            variant="outline"
-            size="sm"
-            className="shrink-0 border-sky-400/50 bg-sky-400/[0.06] text-sky-300 hover:bg-sky-400/10"
-            onClick={connect}
-            disabled={busy}
-          >
+          <Button variant="outline" size="sm" className="shrink-0" onClick={connect} disabled={busy}>
             {busy ? "Connecting…" : "Connect GitHub"}
           </Button>
         )}

@@ -2243,7 +2243,7 @@ export class PodService {
   }
 
   /** Whether the owner's pod has a working GitHub login (private-repo clones). */
-  async githubStatus(ownerId: string, id: string): Promise<{ connected: boolean; login: string | null }> {
+  async githubStatus(ownerId: string, id: string): Promise<{ connected: boolean; login: string | null; workRepo?: string | null }> {
     const rec = await this.owned(ownerId, id);
     return this.providerFor(rec.provider).githubStatus(id);
   }

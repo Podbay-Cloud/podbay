@@ -3,7 +3,21 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cloneRepo } from "../src/gh-auth.js";
+import { cloneRepo, parseGithubRemote } from "../src/gh-auth.js";
+
+describe("parseGithubRemote — owner/repo from ~/work's origin", () => {
+  it("parses https + ssh remotes, with or without .git", () => {
+    expect(parseGithubRemote("https://github.com/velsa/podbay.git")).toBe("velsa/podbay");
+    expect(parseGithubRemote("https://github.com/velsa/podbay")).toBe("velsa/podbay");
+    expect(parseGithubRemote("git@github.com:velsa/podbay.git")).toBe("velsa/podbay");
+    expect(parseGithubRemote("https://github.com/octocat/Hello-World/\n")).toBe("octocat/Hello-World");
+  });
+  it("returns null for a non-GitHub or empty remote", () => {
+    expect(parseGithubRemote("https://gitlab.com/x/y.git")).toBeNull();
+    expect(parseGithubRemote("")).toBeNull();
+    expect(parseGithubRemote("not a url")).toBeNull();
+  });
+});
 
 // Exercises the REAL clone mechanics of Phase C (git clone → cp -a → temp cleanup,
 // with the empty-check + refusal) against a local file:// origin — no network, and

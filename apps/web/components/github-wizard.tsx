@@ -33,13 +33,16 @@ type Repo = { fullName: string; private: boolean; updatedAt: string };
  */
 export default function GithubWizard({
   slug,
-  podName,
+  backHref,
   oss = false,
 }: {
   slug: string;
-  podName: string;
+  /** Where "Done" returns — the cockpit tab the wizard was opened from (the page's top back-link
+   * uses the same href). Defaults to the pod's cockpit. */
+  backHref?: string;
   oss?: boolean;
 }) {
+  const back = backHref ?? `/dashboard/pods/${slug}`;
   const queryClient = useQueryClient();
 
   // Whether THIS pod has GitHub is the pod's own signal — on cloud the account fan-out installs it,
@@ -53,6 +56,9 @@ export default function GithubWizard({
   const [flow, setFlow] = useState<{ connected: boolean; login: string | null } | null>(null);
   const connected: boolean | null = flow ? flow.connected : (status?.connected ?? null);
   const login: string | null = flow ? flow.login : (status?.login ?? null);
+  // What ~/work already holds (its origin remote), so we don't push "choose a repo to clone" at a
+  // pod that is already working on one (velsa: podbay dev pod showed "Choose repo", 2026-08-31).
+  const workRepo: string | null = status?.workRepo ?? null;
   const webFlow = !oss && account?.webFlow === true;
 
   const [device, setDevice] = useState<{ userCode: string; verificationUri: string } | null>(null);
@@ -62,6 +68,7 @@ export default function GithubWizard({
   const poll = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [chosenRepo, setChosenRepo] = useState("");
+  const [cloneDifferent, setCloneDifferent] = useState(false); // reveal the picker to REPLACE an existing repo
   const [cloning, setCloning] = useState(false);
   const [confirmOverwrite, setConfirmOverwrite] = useState(false);
   const [result, setResult] = useState<{ tone: "ok" | "warn" | "err"; text: string } | null>(null);
@@ -179,30 +186,18 @@ export default function GithubWizard({
     [slug, chosenRepo],
   );
 
-  const step = connected ? 2 : 1;
-  const stepLabel = connected ? "Choose a repository" : "Authorize on GitHub";
-
   return (
     <div className="flex flex-col gap-5">
-      {/* Two-step indicator, matching the launch wizard's sub-step line. */}
-      <div className="flex items-center gap-3 text-[13px] font-medium">
-        <span className={step === 1 ? "text-foreground" : "text-success"}>
-          {step === 1 ? "1" : <Check className="inline size-3.5" />} Authorize
-        </span>
-        <span className="h-px w-8 bg-border" />
-        <span className={step === 2 ? "text-foreground" : "text-muted-foreground"}>2 Choose repo</span>
-      </div>
-      <p className="text-[13px] font-medium text-muted-foreground">
-        Step {step} of 2 — {stepLabel}
-      </p>
-
+      {/* No step rail: the two states (authorize → choose repo) aren't freely navigable, so a
+          numbered indicator only read as "go back to step 1" with nowhere to go (velsa, 2026-08-31).
+          The state is self-evident from the content below. */}
       {(error || reposErr) && (
         <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error ?? (reposErr as Error).message}
         </p>
       )}
 
-      {step === 1 ? (
+      {!connected ? (
         <div className="flex flex-col gap-4">
           <p className="text-sm text-muted-foreground">
             {oss
@@ -224,12 +219,7 @@ export default function GithubWizard({
             </>
           ) : (
             <div>
-              <Button
-                variant="outline"
-                className="border-sky-400/50 bg-sky-400/[0.06] text-sky-300 hover:bg-sky-400/10"
-                onClick={connect}
-                disabled={busy || connected === null}
-              >
+              <Button variant="outline" onClick={connect} disabled={busy || connected === null}>
                 {busy ? "Connecting…" : "Connect GitHub"}
               </Button>
             </div>
@@ -246,19 +236,40 @@ export default function GithubWizard({
             ) : (
               "Connected."
             )}{" "}
-            Pick a repository to clone into <code className="rounded bg-muted px-1 py-0.5 text-[11px]">~/work</code>.
+            {workRepo && !cloneDifferent ? (
+              <>
+                This pod is working on{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-[11px]">{workRepo}</code> in{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-[11px]">~/work</code>.
+              </>
+            ) : (
+              <>
+                Pick a repository to clone into{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-[11px]">~/work</code>.
+              </>
+            )}
           </p>
-          <div className="flex flex-col gap-3">
-            <RepoPicker
-              repos={repos ?? []}
-              value={chosenRepo}
-              onChange={setChosenRepo}
-              placeholder={repos === null ? "Loading your repositories…" : "Search repositories…"}
-            />
-            <Button className="self-end" disabled={!chosenRepo || cloning} onClick={() => clone()}>
-              {cloning ? "Cloning…" : "Clone to ~/work"}
-            </Button>
-          </div>
+          {workRepo && !cloneDifferent ? (
+            // Already has a repo — cloning ANOTHER replaces ~/work, so it's a deliberate secondary
+            // action, not the default. The clone below still hits the "replace ~/work?" confirm.
+            <div>
+              <Button variant="outline" size="sm" onClick={() => setCloneDifferent(true)}>
+                Clone a different repository…
+              </Button>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3">
+              <RepoPicker
+                repos={repos ?? []}
+                value={chosenRepo}
+                onChange={setChosenRepo}
+                placeholder={repos === null ? "Loading your repositories…" : "Search repositories…"}
+              />
+              <Button className="self-end" disabled={!chosenRepo || cloning} onClick={() => clone()}>
+                {cloning ? "Cloning…" : "Clone to ~/work"}
+              </Button>
+            </div>
+          )}
           {confirmOverwrite && (
             <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-[13px]">
               <p className="font-medium text-destructive">
@@ -295,16 +306,15 @@ export default function GithubWizard({
         </div>
       )}
 
-      <div className="flex items-center justify-between pt-1">
-        <Button asChild variant="outline">
-          <Link href={`/dashboard/pods/${slug}`}>Back to {podName}</Link>
-        </Button>
-        {result?.tone === "ok" && (
+      {/* No bottom "Back" button — the page's top back-link already returns to the cockpit; a second
+          one just duplicated it (velsa). "Done" appears only after a successful clone. */}
+      {result?.tone === "ok" && (
+        <div className="flex justify-end pt-1">
           <Button asChild>
-            <Link href={`/dashboard/pods/${slug}`}>Done</Link>
+            <Link href={back}>Done</Link>
           </Button>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

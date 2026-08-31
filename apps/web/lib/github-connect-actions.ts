@@ -63,9 +63,14 @@ export async function startGithubAccountWebConnect(
   const state = randomBytes(16).toString("hex");
   const h = await headers();
   const proto = h.get("x-forwarded-proto") ?? "https";
+  // The redirect_uri MUST be the app's REGISTERED callback (its canonical URL), not the request host.
+  // On a pod the host header is the internal 0.0.0.0:3000 bind, which GitHub rejects and which sent the
+  // user to a dead https://0.0.0.0:3000/…?github=error (velsa, 2026-08-31). Prefer BETTER_AUTH_URL (the
+  // domain the OAuth app's callback is registered under); fall back to the request host.
+  const canonical = process.env.BETTER_AUTH_URL?.trim().replace(/\/+$/, "");
   const host = h.get("host");
-  if (!host) return { error: "could not determine callback origin" };
-  const origin = `${proto}://${host}`;
+  const origin = canonical || (host ? `${proto}://${host}` : "");
+  if (!origin) return { error: "could not determine callback origin" };
   const jar = await cookies();
   jar.set(OAUTH_COOKIE, JSON.stringify({ state, returnPath: safeReturnPath(returnPath) }), {
     httpOnly: true,

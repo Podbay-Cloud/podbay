@@ -616,14 +616,14 @@ export async function resetWalkthrough(): Promise<ActionResult> {
  * cockpit can hide the chip when no OAuth app client_id is set. */
 export async function githubConnStatus(
   slug: string,
-): Promise<{ configured: boolean; connected: boolean; login: string | null }> {
+): Promise<{ configured: boolean; connected: boolean; login: string | null; workRepo?: string | null }> {
   const user = await requireUser();
   // Self-host connects via an IN-POD `gh` device login (no podbay OAuth app), so it's always
   // "configured" in OSS; cloud still requires the OAuth client_id.
   if (!githubConnectConfigured() && !editionOss()) return { configured: false, connected: false, login: null };
   const s = await getPodService()
     .githubStatus(user.id, slug)
-    .catch(() => ({ connected: false, login: null as string | null }));
+    .catch(() => ({ connected: false, login: null as string | null, workRepo: null as string | null }));
   return { configured: true, ...s };
 }
 

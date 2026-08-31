@@ -549,7 +549,7 @@ export class FakeProvider implements SandboxProvider {
   /** Fake GitHub connection state — flips on setGithubToken so the cockpit chip
    * can be driven end-to-end in dev/e2e without a real device flow. */
   private ghConnected = false;
-  async githubStatus(id?: string): Promise<{ connected: boolean; login: string | null }> {
+  async githubStatus(id?: string): Promise<{ connected: boolean; login: string | null; workRepo?: string | null }> {
     // e2e can script a pod as already-connected (the real device flow can't run headless).
     const connected = (id ? this.scripted(id).gh : undefined) ?? this.ghConnected;
     return { connected, login: connected ? "octocat" : null };

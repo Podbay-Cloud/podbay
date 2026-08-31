@@ -49,7 +49,10 @@ export async function GET(req: Request): Promise<Response> {
   }
 
   try {
-    const token = await exchangeCodeForToken(code, `${url.origin}${OAUTH_CALLBACK_PATH}`);
+    // Must match the redirect_uri the authorize step sent (the canonical BETTER_AUTH_URL, not the
+    // request host) or GitHub rejects the exchange.
+    const canonical = process.env.BETTER_AUTH_URL?.trim().replace(/\/+$/, "");
+    const token = await exchangeCodeForToken(code, `${canonical || url.origin}${OAUTH_CALLBACK_PATH}`);
     await storeConnection(user.id, token);
     // Fan the durable connection out to every owned pod (fire-and-forget; re-syncs offline pods on
     // wake) so a one-click connect grants GitHub access everywhere at once.

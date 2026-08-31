@@ -100,7 +100,7 @@ export interface SandboxProvider {
   /** Whether the pod has a working GitHub login (for private-repo clones), and as
    * whom. The web app runs the OAuth device flow; these two just proxy the pod
    * agent. Non-throwing status; setGithubToken throws if the pod is unreachable. */
-  githubStatus(id: string): Promise<{ connected: boolean; login: string | null }>;
+  githubStatus(id: string): Promise<{ connected: boolean; login: string | null; workRepo?: string | null }>;
   /** Secrets the agent asked the owner for, from inside the pod (names + reason only,
    * never values) — so the dashboard can render them as inputs. Non-throwing: a pod
    * that is down or has none returns an empty list. */

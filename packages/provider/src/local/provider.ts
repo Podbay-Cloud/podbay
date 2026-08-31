@@ -715,9 +715,9 @@ export class LocalProvider implements SandboxProvider {
   }
   // GitHub connect for self-host: proxy to the pod-agent's /gh/* endpoints (the token lives in the
   // pod, never reaches the web app). Same wire as FlyProvider, via the local agentGet/agentJson.
-  async githubStatus(id: string): Promise<{ connected: boolean; login: string | null }> {
-    const s = (await this.agentGet(id, "/gh/status")) as { connected?: boolean; login?: string | null } | null;
-    return { connected: Boolean(s?.connected), login: s?.login ?? null };
+  async githubStatus(id: string): Promise<{ connected: boolean; login: string | null; workRepo?: string | null }> {
+    const s = (await this.agentGet(id, "/gh/status")) as { connected?: boolean; login?: string | null; workRepo?: string | null } | null;
+    return { connected: Boolean(s?.connected), login: s?.login ?? null, workRepo: s?.workRepo ?? null };
   }
   async setGithubToken(id: string, token: string): Promise<{ login: string }> {
     const r = await this.agentJson(id, "/gh/token", "POST", { token });

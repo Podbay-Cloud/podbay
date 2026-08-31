@@ -32,6 +32,28 @@ function devOpts<T extends object>(extra?: T) {
 export interface GhStatus {
   connected: boolean;
   login: string | null;
+  /** The `owner/repo` already checked out in ~/work (its `origin` remote), or null when ~/work is not
+   * a GitHub clone. Lets the UI say "this pod is working on X" instead of pushing "choose a repo to
+   * clone" at a pod that already has one. */
+  workRepo?: string | null;
+}
+
+/** Extract `owner/repo` from a GitHub remote URL (ssh or https), or null if it isn't one.
+ * Handles git@github.com:owner/repo.git and https://github.com/owner/repo(.git). Pure + exported
+ * so the parse is unit-pinned. */
+export function parseGithubRemote(url: string): string | null {
+  const m = url.trim().match(/github\.com[:/]+([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i);
+  return m ? `${m[1]}/${m[2]}` : null;
+}
+
+/** The GitHub repo currently checked out in ~/work (origin remote), or null. Best-effort. */
+async function workRepoRemote(): Promise<string | null> {
+  try {
+    const out = await runOut("git", ["-C", `${DEV_HOME}/work`, "remote", "get-url", "origin"]);
+    return parseGithubRemote(out);
+  } catch {
+    return null; // not a git repo, no origin, or ~/work absent
+  }
 }
 
 /** Install a GitHub token into gh + git. Returns the authenticated login. */
@@ -48,7 +70,7 @@ export async function setGithubToken(token: string): Promise<{ login: string }> 
 /** Whether the pod already has a working GitHub login, and as whom. */
 export async function githubStatus(): Promise<GhStatus> {
   const login = await ghLogin();
-  return { connected: !!login, login };
+  return { connected: !!login, login, workRepo: await workRepoRemote() };
 }
 
 /** Forget the GitHub connection: log `gh` out so the stored token is removed and
