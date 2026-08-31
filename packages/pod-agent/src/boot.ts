@@ -83,6 +83,19 @@ const CODEX = "env -u OPENAI_API_KEY -u OPENAI_BASE_URL codex";
  *    See docs/strategy/agent-auth-lifecycle.md. */
 export type AgentAuth = "subscription" | "api-key" | "setup-token";
 
+/** The trimmed `podName` from a pod-spec JSON blob, or null if absent/blank/unparseable. The
+ * dashboard writes a rename here (patchPodSpec), so reading it fresh is how a rename reaches the
+ * pod's device name without a restart. Pure so the parse is unit-pinned. */
+export function podNameFromSpec(specJson: string): string | null {
+  try {
+    const spec = JSON.parse(specJson) as { podName?: unknown };
+    const n = typeof spec.podName === "string" ? spec.podName.trim() : "";
+    return n || null;
+  } catch {
+    return null;
+  }
+}
+
 /** Normalize a pod-spec's `agentAuth` field to a known mode; unknown/absent → "subscription".
  * The ONE place the spec value is trusted — every non-subscription mode MUST be listed here or it
  * silently degrades to subscription, and a token/key pod then boots down the `claude /login` path

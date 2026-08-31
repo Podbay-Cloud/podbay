@@ -11,6 +11,7 @@ import {
   RESERVED_OPENAI_KEY,
   RESERVED_CLAUDE_OAUTH_TOKEN,
   normalizeAgentAuth,
+  podNameFromSpec,
 } from "../src/boot.js";
 
 /** The commands run inside tmux via bash — they must PARSE, not just contain
@@ -218,6 +219,23 @@ describe("boot commands", () => {
       expect(boot).toContain("env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN claude");
       expect(boot).toContain("claude /login");
       expect(boot).not.toContain(RESERVED_ANTHROPIC_KEY);
+    });
+  });
+
+  describe("podNameFromSpec — the fresh display name a rename writes", () => {
+    it("returns the trimmed podName when present", () => {
+      expect(podNameFromSpec('{"podName":"test:1","slug":"christian-dormouse"}')).toBe("test:1");
+      expect(podNameFromSpec('{"podName":"  podbay first10  "}')).toBe("podbay first10");
+    });
+    it("returns null for a blank, missing, or non-string podName", () => {
+      expect(podNameFromSpec('{"podName":""}')).toBeNull();
+      expect(podNameFromSpec('{"podName":"   "}')).toBeNull();
+      expect(podNameFromSpec('{"slug":"x"}')).toBeNull();
+      expect(podNameFromSpec('{"podName":123}')).toBeNull();
+    });
+    it("returns null (never throws) on unparseable JSON", () => {
+      expect(podNameFromSpec("not json")).toBeNull();
+      expect(podNameFromSpec("")).toBeNull();
     });
   });
 

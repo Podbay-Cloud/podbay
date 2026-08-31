@@ -30,7 +30,7 @@ import { runGreeter, driveLoginMenu, startResumeWatch, type GreeterOptions } fro
 import { classifyGate, authFailureInPane, agentGone, type GateKind } from "@podbay/shared/pane";
 import type { RcState } from "@podbay/shared/protocol";
 import { classifyRcState, isOrphanedRcYield, shouldAttemptRcRestore } from "./rc-state.js";
-import { credentialsPathForAgent, sanitizeSessionName } from "./boot.js";
+import { credentialsPathForAgent, sanitizeSessionName, podNameFromSpec } from "./boot.js";
 import { shouldRepair, pruneHistory, isCapped, recoveryDue, type RepairAttempt } from "./repair-policy.js";
 import {
   collectDescendants,
@@ -488,7 +488,7 @@ export class AgentServer {
             // its Preview button on this instead of offering a dead link.
             appListening: this.metrics.appListening().listening,
             codexRcActive: this.codexRcActive,
-            deviceName: this.displayName || hostname(),
+            deviceName: this.freshDisplayName(),
             agents: this.agentStates(),
             // Targets the watchdog gave up on — a pod that is broken in a way it
             // cannot fix itself must SAY so, not sit in a state that reads as
@@ -1979,6 +1979,21 @@ export class AgentServer {
    * primary credential or the primary is codex (codex's RC never goes through this pane-based
    * classifier — see agentStates()'s own comment on that split) since those callers only ever care
    * about the greeter-driven Claude RC path this classification exists for. */
+  /** The pod's display name, read FRESH from the on-pod spec on each call. A dashboard rename writes
+   * the new name into /etc/podbay/pod-spec.json (patchPodSpec), but this.displayName is captured at
+   * boot — so without re-reading, a rename never reaches the Codex device name (or the healthz
+   * deviceName) until the pod-agent restarts (velsa: test:1 paired as the stale "podbay-dev-test1"
+   * while renamed to "test:1", 2026-08-31). Falls back to the boot-time name, then the hostname. */
+  private freshDisplayName(): string {
+    try {
+      const n = podNameFromSpec(readFileSync("/etc/podbay/pod-spec.json", "utf8"));
+      if (n) return n;
+    } catch {
+      // spec unreadable (early boot / odd fs) — fall back to the boot-time value below
+    }
+    return this.displayName || hostname();
+  }
+
   private primaryRcState(): RcState {
     if (!this.credential || this.credential.agent === "codex") return "unknown";
     const id = this.credential.agent;
@@ -2924,7 +2939,7 @@ export class AgentServer {
             // by decoding a real desktop-app pairing QR).
             pairingCode: String(j.pairingCode ?? ""),
             expiresAt: Number(j.expiresAt) || 0,
-            deviceName: this.displayName || hostname(),
+            deviceName: this.freshDisplayName(),
           };
         throw new Error("no manualPairingCode in output");
       } catch (e) {

@@ -486,6 +486,15 @@ daemon.
 - **WHEN** the owner switches remote control off and the pod later restarts or wakes
 - **THEN** the daemon SHALL NOT be restarted until the owner switches it back on
 
+#### Scenario: Pairing shows the pod's current name after a rename
+
+- **WHEN** a pod is renamed in the dashboard (which writes the new name into the pod's spec) and the
+  owner then requests a Codex pairing code
+- **THEN** the pairing SHALL report the pod's CURRENT name as the device name, read fresh from the
+  pod's spec rather than a value cached at boot, so the app shows the renamed pod without a restart
+- **AND** when the spec has no usable name the device name SHALL fall back to the boot-time name, then
+  the hostname
+
 ### Requirement: In-pod operations-job scheduler
 
 The agent SHALL run a scheduler loop that periodically evaluates user-defined jobs and fires the
