@@ -137,6 +137,9 @@ image shows its OWN earlier version rather than the newest ever recorded.
 - **THEN** the fields the caller did NOT supply — summary, build time, size, alias, changelog — SHALL
   retain their stored values rather than being cleared, so a partial update never destroys the rest of
   the row
+- **AND** a field arriving as `null` because the caller omitted it (the record API coerces every
+  omitted field to `null`) SHALL be treated as NOT supplied — never as an instruction to clear the
+  stored value — so cutting a release (which sends only the digest + version) preserves the whole row
 
 #### Scenario: Version never displaces the digest as identity
 

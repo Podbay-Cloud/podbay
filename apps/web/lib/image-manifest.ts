@@ -66,19 +66,22 @@ export function mergeReRecord(
 ): ReRecordable {
   const pick = <K extends keyof ReRecordable>(k: K, provided: boolean): ReRecordable[K] =>
     provided ? incoming[k] : (prev[k] as ReRecordable[K]);
+  // For EVERY preserve-on-partial field, `null` counts the same as `undefined` — i.e. "not provided".
+  // The admin API coerces any field the caller omits to `null` (route.ts), so a partial re-record
+  // like `cut-release` (which POSTs only {digest, version}) arrives with builtAt/summary/alias/
+  // size/builtBy all null. Treating that null as "provided" WIPED the whole row's metadata on a
+  // release cut (velsa: v0.2.0's date + summary vanished, 2026-08-31). No caller ever means "clear
+  // this field to null", so `!= null` preserves the stored value — matching the spec's
+  // "a partial re-record preserves fields it does not supply".
   return {
-    alias: pick("alias", input.alias !== undefined),
-    toSha: pick("toSha", input.toSha !== undefined),
-    summary: pick("summary", input.summary !== undefined),
-    // null AND undefined both mean "not provided" for version — no caller ever means "clear the
-    // stored version" (cut-release always sends a real one; a plain record sends none, which the
-    // admin route coerces to null). So a re-record without an explicit version PRESERVES the stored
-    // one instead of wiping it — the bug that would let an ad-hoc re-record blank a released version.
+    alias: pick("alias", input.alias != null),
+    toSha: pick("toSha", input.toSha != null),
+    summary: pick("summary", input.summary != null),
     version: pick("version", input.version != null),
-    sizeBytes: pick("sizeBytes", input.sizeBytes !== undefined),
-    builtAt: pick("builtAt", input.builtAt !== undefined),
-    builtBy: pick("builtBy", input.builtBy !== undefined),
-    notes: notesToPersist(input.notes !== undefined ? incoming.notes : prev.notes, prev.notes),
+    sizeBytes: pick("sizeBytes", input.sizeBytes != null),
+    builtAt: pick("builtAt", input.builtAt != null),
+    builtBy: pick("builtBy", input.builtBy != null),
+    notes: notesToPersist(input.notes != null ? incoming.notes : prev.notes, prev.notes),
   };
 }
 

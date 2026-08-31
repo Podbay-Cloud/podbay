@@ -65,41 +65,40 @@ describe("mergeReRecord — a partial re-record preserves fields the caller didn
     alias: null, toSha: null, summary: null, version: "0.1.0", sizeBytes: null,
     builtAt: null, builtBy: null, notes: null,
   };
+  // The EXACT RecordImageInput the admin route builds for cut-release's `{digest, version}` POST:
+  // every field the caller omits is coerced to `null` (route.ts), NOT left undefined. Tests must use
+  // this shape — the earlier `{digest, version}` input (fields undefined) never exercised the bug.
+  const cutReleaseInput = {
+    digest: "1ac359", version: "0.1.0",
+    alias: null, toSha: null, notes: null, summary: null, sizeBytes: null, builtBy: null, builtAt: null,
+  };
 
-  it("attaching ONLY a version keeps summary/builtAt/size/alias — the v0.1.0 bug", () => {
-    const m = mergeReRecord({ digest: "1ac359", version: "0.1.0" }, prev, incomingVersionOnly);
-    expect(m.version).toBe("0.1.0");        // the one thing the caller sent
+  it("cut-release (coerced-null POST) attaches the version and PRESERVES the whole row — the wipe bug", () => {
+    const m = mergeReRecord(cutReleaseInput, prev, incomingVersionOnly);
+    expect(m.version).toBe("0.1.0"); // the one field cut-release actually sent
+    // Everything else, coerced to null by the route, must survive rather than being wiped.
     expect(m.summary).toBe("the shipped summary");
     expect(m.sizeBytes).toBe(2928227942);
     expect(m.alias).toBe("pod-base-20260830-0001");
     expect(m.builtAt).toEqual(new Date("2026-08-30T00:01:00Z"));
+    expect(m.toSha).toBe("bbb");
+    expect(m.builtBy).toBe("velsa");
     expect(m.notes).toBe("- fix: real thing");
   });
 
-  it("a field the caller EXPLICITLY sends is applied (even to null)", () => {
+  it("a REAL value the caller sends is applied; a null is treated as not-provided", () => {
     const m = mergeReRecord(
-      { digest: "1ac359", summary: "corrected" },
+      { ...cutReleaseInput, summary: "corrected" },
       prev,
-      { ...incomingVersionOnly, version: null, summary: "corrected" },
+      { ...incomingVersionOnly, summary: "corrected" },
     );
-    expect(m.summary).toBe("corrected");
-    expect(m.version).toBeNull(); // caller re-sent nothing for version → but input.version undefined → keep prev (null)
+    expect(m.summary).toBe("corrected"); // real string → applied
+    expect(m.builtAt).toEqual(new Date("2026-08-30T00:01:00Z")); // null → preserved
   });
 
-  it("notes keep the rebuild-only guard: a version-only re-record never downgrades real notes", () => {
-    const m = mergeReRecord({ digest: "1ac359", version: "0.1.0" }, prev, incomingVersionOnly);
-    expect(m.notes).toBe("- fix: real thing");
-  });
-
-  it("a re-record with version=null (the admin-route coercion) PRESERVES the stored version", () => {
-    // The admin route coerces a missing `version` to null, so a plain re-record arrives as
-    // version:null — which must NOT wipe a released version. Guards the ad-hoc-rebuild case.
+  it("a re-record with version=null preserves a released version", () => {
     const released = { ...prev, version: "0.2.0" };
-    const m = mergeReRecord(
-      { digest: "1ac359", version: null },
-      released,
-      { ...incomingVersionOnly, version: null },
-    );
+    const m = mergeReRecord({ ...cutReleaseInput, version: null }, released, { ...incomingVersionOnly, version: null });
     expect(m.version).toBe("0.2.0");
   });
 });
