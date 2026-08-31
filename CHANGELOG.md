@@ -7,6 +7,14 @@ them, not the commit log. See [docs/runbooks/release-notes.md](docs/runbooks/rel
 The format is loosely [Keep a Changelog](https://keepachangelog.com): newest first, grouped
 **New / Fixed / Improved**. `scripts/cut-release.sh` reads the section for the version being cut.
 
+## 0.3.0
+
+### Fixed
+- Codex pairing now shows your pod's current name after you rename it, instead of an old name until
+  the next restart.
+- The "add GitHub to a pod" page recognizes a repo you already have in `~/work` — it says what you're
+  working on instead of pushing you to choose one to clone.
+
 ## 0.2.0
 
 ### Fixed
