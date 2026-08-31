@@ -5,11 +5,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { Check, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { qk } from "@/lib/query-keys";
 import { GithubDevicePanel } from "@/components/github-device-panel";
 import { RepoPicker } from "@/components/repo-picker";
-import { DisconnectGithubButton } from "@/components/disconnect-github-button";
 import {
   githubConnStatus,
   startGithubConnect,
@@ -18,16 +16,20 @@ import {
   pollPodGhLogin,
   githubConnRepos,
   cloneRepoIntoPod,
-  disconnectGithubConn,
 } from "@/lib/actions";
+import { githubAccountStatus, startGithubAccountWebConnect } from "@/lib/github-connect-actions";
 
 type Repo = { fullName: string; private: boolean; updatedAt: string };
 
 /**
- * Add GitHub to an existing pod — a dedicated, stepped wizard PAGE (mirrors the launch
- * flow): Step 1 authorize via the device flow, Step 2 choose a repo and clone it into
- * ~/work (only when empty — one pod, one repo). If the pod is already connected, it
- * opens straight on step 2.
+ * Add GitHub to an existing pod — a stepped wizard: Step 1 authorize, Step 2 choose a repo and clone
+ * it into ~/work (only when empty — one pod, one repo). Opens straight on step 2 if already connected.
+ *
+ * CLOUD connects with ONE-CLICK OAuth via the owner's durable ACCOUNT connection
+ * (global-github-connection) — the token then fans out to this pod, so there is no per-pod device
+ * code. (Device flow is only the fallback when the one-click OAuth app has no client secret.)
+ * Disconnect/reconnect live in Settings, not here. SELF-HOST keeps its per-pod in-pod `gh` device
+ * login. The page frames the content, so the wizard renders NO card of its own.
  */
 export default function GithubWizard({
   slug,
@@ -36,23 +38,26 @@ export default function GithubWizard({
 }: {
   slug: string;
   podName: string;
-  /** Self-host: authorize via an IN-POD `gh` device login (no podbay OAuth app) instead of the
-   * web-app device flow. Same device-code UX; the token is installed in the pod, not server-side. */
   oss?: boolean;
 }) {
-  // Connection status: cached via react-query (qk.github, shared with the Settings GitHub row), but
-  // the device flow and disconnect flip it locally too — `flow` (when set) overrides the fetched
-  // value so a just-connected/-disconnected UI doesn't wait on a refetch.
   const queryClient = useQueryClient();
+
+  // Whether THIS pod has GitHub is the pod's own signal — on cloud the account fan-out installs it,
+  // on self-host the in-pod login does. `flow` overrides while a connect is mid-flight.
   const { data: status } = useQuery({
     queryKey: qk.github(slug),
     queryFn: () => githubConnStatus(slug),
   });
+  // The account's webFlow flag decides one-click OAuth vs the device fallback (cloud only).
+  const { data: account } = useQuery({ queryKey: ["gh-account"], queryFn: githubAccountStatus, enabled: !oss });
   const [flow, setFlow] = useState<{ connected: boolean; login: string | null } | null>(null);
   const connected: boolean | null = flow ? flow.connected : (status?.connected ?? null);
   const login: string | null = flow ? flow.login : (status?.login ?? null);
+  const webFlow = !oss && account?.webFlow === true;
 
   const [device, setDevice] = useState<{ userCode: string; verificationUri: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [waiting, setWaiting] = useState(false); // OAuth returned; waiting for the fan-out to reach this pod
   const [error, setError] = useState<string | null>(null);
   const poll = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -61,8 +66,6 @@ export default function GithubWizard({
   const [confirmOverwrite, setConfirmOverwrite] = useState(false);
   const [result, setResult] = useState<{ tone: "ok" | "warn" | "err"; text: string } | null>(null);
 
-  // Repos, once connected: react-query gives a skeleton→data load, bounded retry (a reject surfaces
-  // an error instead of the old permanent "Loading your repositories…"), and cache.
   const { data: repos = null, error: reposErr } = useQuery({
     queryKey: [...qk.github(slug), "repos"] as const,
     enabled: connected === true,
@@ -73,57 +76,93 @@ export default function GithubWizard({
     },
   });
 
-  // Drive step 1 only: not connected → device flow. (Connected → repos is the query above.)
+  // A one-click OAuth return lands with ?github=connected|denied|error. On success the account is
+  // connected and the token is fanning out to this pod — poll the pod's status until it lands.
   useEffect(() => {
-    if (connected === null || connected) return;
-    let stop = false;
-    // Self-host: the POD runs the device flow (startPodGhLogin/pollPodGhLogin). Cloud: the web app
-    // does (startGithubConnect/completeGithubConnect). Same device-code UX either way.
-    const start = oss ? startPodGhLogin : startGithubConnect;
-    const pollOnce = oss
-      ? (dc: string) => pollPodGhLogin(slug, dc)
-      : (dc: string) => completeGithubConnect(slug, dc);
-    start(slug).then((res) => {
-      if ("error" in res) {
-        setError(res.error);
-        return;
-      }
-      setDevice({ userCode: res.userCode, verificationUri: res.verificationUri });
-      const deadline = Date.now() + res.expiresIn * 1000;
-      const iv = res.interval * 1000;
+    const p = new URLSearchParams(window.location.search).get("github");
+    if (p === "denied") setError("GitHub authorization was cancelled.");
+    else if (p === "error") setError("Couldn’t connect GitHub — please try again.");
+    else if (p === "connected") {
+      setWaiting(true);
+      let tries = 0;
       const tick = async () => {
-        if (stop) return;
-        if (Date.now() > deadline) {
-          setError("Code expired — reload to try again.");
-          setDevice(null);
-          return;
-        }
-        const r = await pollOnce(res.deviceCode);
-        if (r.status === "connected") {
-          setFlow({ connected: true, login: r.login });
-          setDevice(null);
+        const s = await githubConnStatus(slug).catch(() => null);
+        if (s?.connected) {
+          setWaiting(false);
           void queryClient.invalidateQueries({ queryKey: qk.github(slug) });
           return;
         }
-        if (r.status === "error") {
-          setError(r.message);
-          setDevice(null);
+        if (++tries > 20) {
+          setWaiting(false);
+          setError("Connected your account, but this pod hasn’t picked it up yet — reload in a moment.");
           return;
         }
-        if (r.status === "expired") {
-          setError("Code expired — reload to try again.");
-          setDevice(null);
-          return;
-        }
-        poll.current = setTimeout(tick, iv);
+        poll.current = setTimeout(tick, 1500);
       };
-      poll.current = setTimeout(tick, iv);
-    });
+      poll.current = setTimeout(tick, 1000);
+    }
     return () => {
-      stop = true;
       if (poll.current) clearTimeout(poll.current);
     };
-  }, [connected, slug]);
+  }, [slug, queryClient]);
+
+  // Cloud one-click OAuth: connect the ACCOUNT (fans out to this pod), returning to this wizard.
+  const connectWeb = useCallback(async () => {
+    setError(null);
+    setBusy(true);
+    const r = await startGithubAccountWebConnect(window.location.pathname);
+    if ("url" in r) window.location.href = r.url;
+    else {
+      setError(r.error);
+      setBusy(false);
+    }
+  }, []);
+
+  // Device-code fallback: OSS runs it IN the pod; cloud-without-a-client-secret uses the per-pod flow.
+  const connectDevice = useCallback(async () => {
+    setError(null);
+    setBusy(true);
+    const start = oss ? await startPodGhLogin(slug) : await startGithubConnect(slug);
+    if ("error" in start) {
+      setError(start.error);
+      setBusy(false);
+      return;
+    }
+    setDevice({ userCode: start.userCode, verificationUri: start.verificationUri });
+    const deadline = Date.now() + start.expiresIn * 1000;
+    const iv = start.interval * 1000;
+    const tick = async () => {
+      const r = oss ? await pollPodGhLogin(slug, start.deviceCode) : await completeGithubConnect(slug, start.deviceCode);
+      if (r.status === "connected") {
+        setFlow({ connected: true, login: r.login });
+        setDevice(null);
+        setBusy(false);
+        void queryClient.invalidateQueries({ queryKey: qk.github(slug) });
+        return;
+      }
+      if (r.status === "error") {
+        setError("message" in r ? r.message : "Couldn’t connect GitHub.");
+        setDevice(null);
+        setBusy(false);
+        return;
+      }
+      if (Date.now() > deadline || r.status === "expired") {
+        setError("Code expired — try connecting again.");
+        setDevice(null);
+        setBusy(false);
+        return;
+      }
+      poll.current = setTimeout(tick, iv);
+    };
+    poll.current = setTimeout(tick, iv);
+  }, [oss, slug, queryClient]);
+
+  const connect = () => (webFlow ? connectWeb() : connectDevice());
+  const cancelDevice = () => {
+    if (poll.current) clearTimeout(poll.current);
+    setDevice(null);
+    setBusy(false);
+  };
 
   const clone = useCallback(
     async (force = false) => {
@@ -134,26 +173,11 @@ export default function GithubWizard({
       const r = await cloneRepoIntoPod(slug, chosenRepo, force);
       setCloning(false);
       if ("error" in r) setResult({ tone: "err", text: r.error });
-      else if (r.status === "not-empty")
-        // ~/work isn't empty. Offer the explicit overwrite rather than a dead end.
-        setConfirmOverwrite(true);
+      else if (r.status === "not-empty") setConfirmOverwrite(true);
       else setResult({ tone: "ok", text: `Cloned ${chosenRepo} into ~/work.` });
     },
     [slug, chosenRepo],
   );
-
-  const disconnect = useCallback(async () => {
-    const r = await disconnectGithubConn(slug);
-    if (r?.error) {
-      setError(r.error);
-      return;
-    }
-    setFlow({ connected: false, login: null }); // back to step 1
-    setChosenRepo("");
-    setResult(null);
-    // Drop the cached status + repos so a reconnect (possibly a different account) refetches clean.
-    void queryClient.invalidateQueries({ queryKey: qk.github(slug) });
-  }, [slug, queryClient]);
 
   const step = connected ? 2 : 1;
   const stepLabel = connected ? "Choose a repository" : "Authorize on GitHub";
@@ -172,119 +196,115 @@ export default function GithubWizard({
         Step {step} of 2 — {stepLabel}
       </p>
 
-      <Card>
-        <CardContent className="flex flex-col gap-4">
-          {(error || reposErr) && (
-            <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {error ?? (reposErr as Error).message}
-            </p>
-          )}
+      {(error || reposErr) && (
+        <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error ?? (reposErr as Error).message}
+        </p>
+      )}
 
-          {step === 1 ? (
+      {step === 1 ? (
+        <div className="flex flex-col gap-4">
+          <p className="text-sm text-muted-foreground">
+            {oss
+              ? "Authorize GitHub so this pod can clone your repositories."
+              : "Connect GitHub once — every pod reuses it. This pod gets access straight away."}
+          </p>
+          {waiting ? (
+            <p className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" /> Connected — setting this pod up…
+            </p>
+          ) : device ? (
             <>
-              <p className="text-sm text-muted-foreground">
-                Authorize GitHub so this pod can clone your repositories.
-              </p>
-              {device ? (
-                <GithubDevicePanel
-                  userCode={device.userCode}
-                  verificationUri={device.verificationUri}
-                />
-              ) : (
-                !error && (
-                  <p className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Loader2 className="size-4 animate-spin" /> Starting…
-                  </p>
-                )
-              )}
-            </>
-          ) : (
-            <>
-              <p className="text-sm text-muted-foreground">
-                {login ? (
-                  <>
-                    <Check className="mr-1 inline-block size-3.5 align-[-0.15em] text-success" />
-                    Connected as @{login}.
-                  </>
-                ) : (
-                  "Connected."
-                )}{" "}
-                Pick a repository to clone into <code className="rounded bg-muted px-1 py-0.5 text-[11px]">~/work</code>.
-              </p>
-              <div className="flex flex-col gap-3">
-                <RepoPicker
-                  repos={repos ?? []}
-                  value={chosenRepo}
-                  onChange={setChosenRepo}
-                  placeholder={repos === null ? "Loading your repositories…" : "Search repositories…"}
-                />
-                <Button className="self-end" disabled={!chosenRepo || cloning} onClick={() => clone()}>
-                  {cloning ? "Cloning…" : "Clone to ~/work"}
+              <GithubDevicePanel userCode={device.userCode} verificationUri={device.verificationUri} />
+              <div>
+                <Button variant="outline" size="sm" onClick={cancelDevice}>
+                  Cancel
                 </Button>
               </div>
-              {confirmOverwrite && (
-                <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-[13px]">
-                  <p className="font-medium text-destructive">
-                    <code className="rounded bg-muted px-1 py-0.5 text-[11px]">~/work</code> already
-                    has a workspace.
-                  </p>
-                  <p className="mt-1 text-muted-foreground">
-                    Replace it with <span className="font-medium text-foreground">{chosenRepo}</span>?
-                    This <span className="font-medium">permanently deletes</span> the current contents
-                    of <code className="rounded bg-muted px-1 py-0.5 text-[11px]">~/work</code>,
-                    including anything not pushed to git.
-                  </p>
-                  <div className="mt-2 flex items-center gap-2">
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      disabled={cloning}
-                      onClick={() => clone(true)}
-                    >
-                      {cloning ? "Replacing…" : "Replace ~/work"}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={cloning}
-                      onClick={() => setConfirmOverwrite(false)}
-                    >
-                      Cancel
-                    </Button>
-                  </div>
-                </div>
-              )}
-              {result && (
-                <p
-                  className={
-                    result.tone === "ok"
-                      ? "text-[13px] text-success"
-                      : result.tone === "warn"
-                        ? "text-[13px] text-warning"
-                        : "text-[13px] text-destructive"
-                  }
-                >
-                  {result.text}
-                </p>
-              )}
             </>
-          )}
-
-          <div className="flex items-center justify-between pt-1">
-            <Button asChild variant="outline">
-              <Link href={`/dashboard/pods/${slug}`}>Back to {podName}</Link>
-            </Button>
-            <div className="flex items-center gap-2">
-              {connected && <DisconnectGithubButton login={login} onConfirm={disconnect} />}
-              {result?.tone === "ok" && (
-                <Button asChild>
-                  <Link href={`/dashboard/pods/${slug}`}>Done</Link>
-                </Button>
-              )}
+          ) : (
+            <div>
+              <Button
+                variant="outline"
+                className="border-sky-400/50 bg-sky-400/[0.06] text-sky-300 hover:bg-sky-400/10"
+                onClick={connect}
+                disabled={busy || connected === null}
+              >
+                {busy ? "Connecting…" : "Connect GitHub"}
+              </Button>
             </div>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-4">
+          <p className="text-sm text-muted-foreground">
+            {login ? (
+              <>
+                <Check className="mr-1 inline-block size-3.5 align-[-0.15em] text-success" />
+                Connected as @{login}.
+              </>
+            ) : (
+              "Connected."
+            )}{" "}
+            Pick a repository to clone into <code className="rounded bg-muted px-1 py-0.5 text-[11px]">~/work</code>.
+          </p>
+          <div className="flex flex-col gap-3">
+            <RepoPicker
+              repos={repos ?? []}
+              value={chosenRepo}
+              onChange={setChosenRepo}
+              placeholder={repos === null ? "Loading your repositories…" : "Search repositories…"}
+            />
+            <Button className="self-end" disabled={!chosenRepo || cloning} onClick={() => clone()}>
+              {cloning ? "Cloning…" : "Clone to ~/work"}
+            </Button>
           </div>
-        </CardContent>
-      </Card>
+          {confirmOverwrite && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-[13px]">
+              <p className="font-medium text-destructive">
+                <code className="rounded bg-muted px-1 py-0.5 text-[11px]">~/work</code> already has a workspace.
+              </p>
+              <p className="mt-1 text-muted-foreground">
+                Replace it with <span className="font-medium text-foreground">{chosenRepo}</span>? This{" "}
+                <span className="font-medium">permanently deletes</span> the current contents of{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-[11px]">~/work</code>, including anything not pushed to git.
+              </p>
+              <div className="mt-2 flex items-center gap-2">
+                <Button variant="destructive" size="sm" disabled={cloning} onClick={() => clone(true)}>
+                  {cloning ? "Replacing…" : "Replace ~/work"}
+                </Button>
+                <Button variant="ghost" size="sm" disabled={cloning} onClick={() => setConfirmOverwrite(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
+          {result && (
+            <p
+              className={
+                result.tone === "ok"
+                  ? "text-[13px] text-success"
+                  : result.tone === "warn"
+                    ? "text-[13px] text-warning"
+                    : "text-[13px] text-destructive"
+              }
+            >
+              {result.text}
+            </p>
+          )}
+        </div>
+      )}
+
+      <div className="flex items-center justify-between pt-1">
+        <Button asChild variant="outline">
+          <Link href={`/dashboard/pods/${slug}`}>Back to {podName}</Link>
+        </Button>
+        {result?.tone === "ok" && (
+          <Button asChild>
+            <Link href={`/dashboard/pods/${slug}`}>Done</Link>
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
